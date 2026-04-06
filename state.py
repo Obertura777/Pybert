@@ -1,0 +1,504 @@
+import numpy as np
+
+class InnerGameState:
+    def __init__(self):
+        # 1. Global Game State
+        self.g_NearEndGameFactor = 0.0
+        self.g_DeceitLevel = 0
+        self.g_MaxProvinceScore = np.zeros(256, dtype=np.float64)
+        self.g_MinScore = np.zeros(256, dtype=np.float64)
+        
+        # 2. Heuristics & Map Variables
+        # DAT_006040e8[pow*0x800+prov*8] — int64[pow*256+prov]
+        self.g_AttackCount = np.zeros((7, 256), dtype=np.float64)
+        # DAT_005a48e8[pow*0x800+prov*8] — int64[pow*256+prov]; >10 = danger zone
+        self.g_AttackHistory = np.zeros((7, 256), dtype=np.float64)
+        # DAT_0055b0e8[pow*0x800+prov*8] — int64[pow*256+prov]
+        self.g_DefenseScore = np.zeros((7, 256), dtype=np.float64)
+        # DAT_004f6ce8[pow*0x800+prov*8] — int64[pow*256+prov]; 1 = enemy unit present
+        self.g_EnemyPresence = np.zeros((7, 256), dtype=np.int32)
+        # DAT_00535ce8[pow*0x800+prov*8] — int64[pow*256+prov]; 1 = enemy can reach
+        self.g_EnemyReachScore = np.zeros((7, 256), dtype=np.int32)
+        self.g_SCOwnership = np.zeros((7, 256), dtype=np.int32)
+        self.g_TargetFlag = np.zeros((7, 256), dtype=np.int32)
+        
+        self.g_InfluenceMatrix_Raw = np.zeros((7, 7), dtype=np.float64)
+        self.g_InfluenceMatrix = np.zeros((7, 7), dtype=np.float64)
+        self.g_AllianceScore = np.zeros((7, 7), dtype=np.float64)
+        self.g_AllyTrustScore = np.zeros((7, 7), dtype=np.float64)
+        self.g_AllyMatrix = np.zeros((7, 7), dtype=np.int32)
+        
+        # Buffers for Heat Diffusion
+        self.g_CandidateScores = np.zeros((7, 256), dtype=np.float64)
+        # DAT_004ec2f0/f4[pow*0x800+prov*8] — movement heat scores (primary copy)
+        self.g_HeatMovement = np.zeros((7, 256), dtype=np.float64)
+        # DAT_005af0e8/ec[pow*0x800+prov*8] — second copy of movement heat scores
+        self.g_HeatMovement_B = np.zeros((7, 256), dtype=np.float64)
+        # DAT_004d62f0/f4[pow*0x100+prov] — BFS-accumulated influence heat score
+        self.g_HeatScore = np.zeros((7, 256), dtype=np.float64)
+        self.g_GlobalProvinceScore = np.zeros(256, dtype=np.float64)
+
+        # DAT_00b76a28[pow*0x40+prov] — Albert's influence / owner's influence ratio
+        # double[power*0x40+province]; values > 1.0 mean Albert projects more influence
+        self.g_InfluenceRatio = np.zeros((7, 256), dtype=np.float64)
+        # DAT_004e1af0/f4[pow*0x100+prov] — reachable-unit count per province
+        self.g_UnitAdjacencyCount = np.zeros((7, 256), dtype=np.int64)
+        # DAT_00b75578[pow*0x3f+other] — raw adjacency contact count per power pair
+        self.g_ContactCount = np.zeros((7, 7), dtype=np.int32)
+        # DAT_00b755cc[pow*0x3f+other] — weighted adjacency contact count
+        self.g_ContactWeighted = np.zeros((7, 7), dtype=np.int32)
+        # DAT_00b75620[pow*0x3f+other] — owner-side adjacency count
+        self.g_ContactOwnerCount = np.zeros((7, 7), dtype=np.int32)
+        # DAT_00ba2f70[province] — per-province SC owner index; -1 = unoccupied
+        # Alias of g_ScOwner (written by SnapshotProvinceState / ParseNOW)
+        self.g_ScOwner = np.full(256, -1, dtype=np.int32)
+        # DAT_004DA2F0[pow*0x100+prov] — 2D history-gate array; int64[pow*0x100+prov]
+        # Non-zero means activity recorded for (power, province); gate in Pass 5
+        # of ApplyInfluenceScores. Writer TBD (see Q-AIS-NEW-3 in OpenQuestions.md).
+        self.g_HistoryGate = np.zeros((7, 256), dtype=np.int64)
+        
+        # 3. Adjacency lists and internal maps
+        self.g_ProvinceAccessFlag = np.zeros((7, 256), dtype=np.int32)
+        self.g_CoverageFlag = np.zeros((7, 256), dtype=np.int32)
+        self.g_ConvoyReachCount = np.zeros((7, 256), dtype=np.int32)
+        self.g_OwnReachScore = np.zeros((7, 256), dtype=np.int32)
+        self.g_TotalReachScore = np.zeros((7, 256), dtype=np.int32)
+        self.g_EnemyMobilityCount = np.zeros((7, 256), dtype=np.int32)
+        self.g_ThreatLevel = np.zeros((7, 256), dtype=np.int32)
+        # DAT_00520ce8/ec[pow*0x100+prov] — enemy pressure/threat intensity per province
+        self.g_EnemyPressure = np.zeros((7, 256), dtype=np.int32)
+        # DAT_006190e8/ec[pow*0x40+prov*8] — {0} = no build pending; gate in AssignSupportOrder LAB_0044150f
+        self.g_BuildOrderPending = np.zeros((7, 256), dtype=np.int32)
+        self.g_ProvinceWeight = np.zeros((7, 256), dtype=np.float64)
+        
+        # Flags
+        self.g_UniformMode = 0
+        self.win_threshold = 18
+        self.ScoreCurrent = 0
+        self.ScoreBaseline = 0
+
+        # DAT_005460e8[(prov+pow*0x40)*2] — float64[pow*256+prov]
+        self.g_ProximityScore = np.zeros((7, 256), dtype=np.float64)
+
+        # 4. Monte Carlo Evaluation Variables
+
+        # g_OrderTable: DAT_00baeda0[prov*0x1e + field*4]
+        # 30-field per-province order state; fields defined by _F_* constants in monte_carlo.py
+        self.g_OrderTable = np.zeros((256, 30), dtype=np.float64)
+
+        # DAT_00baedb8[prov*0x1e] — order table [6]: convoy-chain depth score OR support order score lo-word (dual-use)
+        self.g_ConvoyChainScore = np.zeros(256, dtype=np.float64)
+        # DAT_00baedbc[prov*0x1e] — order table [7]: hi-word companion (dual-use g_OrderScoreHi)
+        self.g_OrderScoreHi = np.zeros(256, dtype=np.float64)
+        # DAT_00baedf4[prov*0x1e] — unit adjacency reach score per province
+        self.g_UnitReachScore = np.zeros(256, dtype=np.float64)
+        # DAT_00baedf8[prov*0x1e] — cut-support risk: <0 = own unit, >0 = enemy
+        self.g_CutSupportRisk = np.zeros(256, dtype=np.float64)
+        # DAT_00baeddc[prov*0x1e] — number of units demanding support to this province
+        self.g_SupportDemand = np.zeros(256, dtype=np.int32)
+        # DAT_00ba3770[province] — convoy source province score (0xffffffff = unset)
+        self.g_ConvoySourceProv = np.zeros(256, dtype=np.float64)
+
+        # Current game season token: 'SPR'|'SUM'|'FAL'|'AUT'|'WIN'
+        self.g_season = 'SPR'
+
+        self.FinalScoreSet = np.zeros((7, 256), dtype=np.float64)
+        self.g_WinterScore_A = np.zeros(256, dtype=np.float64)
+        self.g_WinterScore_B = np.zeros(256, dtype=np.float64)
+
+        self.g_HoldWeight = np.zeros(256, dtype=np.float64)
+        self.g_UnitMoveProb = np.zeros(256, dtype=np.float64)
+        self.g_FleetSupportScore = np.zeros(256, dtype=np.float64)
+
+        # DAT_00bc1e1c — set of province IDs that are scoring / build targets;
+        # consumed by EnumerateConvoyReach (BFS expansion gating).
+        # Populated by the order-candidate pipeline before EnumerateConvoyReach runs.
+        self.g_BuildCandidateList: set = set()
+
+        # DAT_00baed68 — press-mode flag; 1 = ComputePress runs this turn, 0 = off
+        self.g_PressFlag: int = 0
+
+        # DAT_00baed94 — proposal history; set of int keys
+        # key = (unit2_prov * 1000 + own_prov) * 1000 + dest
+        # Prevents duplicate XDO support proposals within a turn.
+        self.g_ProposalHistory: set = set()
+
+        # DAT_00baeb70[from_power + to_power * 0x15] — 1 = XDO press sent this turn.
+        # Indexed as [from_power, to_power]; shape (7, 7).
+        self.g_XdoPressSent = np.zeros((7, 7), dtype=np.int32)
+
+        # Accumulated XDO support-proposal dicts emitted by BuildSupportProposals.
+        # Each dict: {'type','supporter_prov','supporter_power','mover_prov',
+        #             'dest','priority','from_power','to_power'}
+        self.g_XdoPressProposals: list = []
+
+        # DAT_00ba1fb0[province] — safe-reach score per province.
+        # Set to max sorted-set rank of reachable uncontested provinces; 0xffffffff = no safe move.
+        # Written by ComputeSafeReach; uint32 sentinel matches original C 0xffffffff.
+        self.g_SafeReachScore = np.full(256, 0xffffffff, dtype=np.uint32)
+
+        # DAT_005658e8[pow*0x40+prov] — allied units' reachability (trust > 0).
+        # Written by EnumerateHoldOrders reach loop when trust > 0.
+        self.g_AllyReachScore = np.zeros((7, 256), dtype=np.float64)
+
+        # DAT_005ba0e8[pow*0x100+prov] — provinces reachable via 2-hop move (support chain reach).
+        # Written by ScoreOrderCandidates_AllPowers adjacency expansion.
+        self.g_SupportReach = np.zeros((7, 256), dtype=np.float64)
+
+        # DAT_005c48e8[pow*0x100+prov] — provinces reachable via convoy chain.
+        # Written by ScoreOrderCandidates_AllPowers BFS convoy expansion.
+        self.g_ConvoyReach = np.zeros((7, 256), dtype=np.float64)
+
+        # DAT_005cf0e8[pow*0x100+prov] — provinces convoy-supportable via a fleet unit.
+        # Written by ScoreOrderCandidates_AllPowers fleet-support analysis.
+        self.g_ConvoySupport = np.zeros((7, 256), dtype=np.float64)
+
+        # DAT_00baed69 — 1 = another power is close to solo victory (defensive mode).
+        self.g_OtherPowerLeadFlag: int = 0
+
+        # DAT_0062be94 — early-game adjacency score accumulator (Turn 1 only).
+        self.g_EarlyGameBonus: int = 0
+
+        # DAT_00bbf60c — global list of candidate proposal records.
+        # Each entry: {'power', 'orders', 'score', 'heat_scores', 'deviation', 'pressure_cost'}.
+        self.g_CandidateRecordList: list = []
+
+        # DAT_00bb65b4/b8 — cached std::set iterator (g_LastMTOInsert).
+        # Stores (type: int, province: int) of the last MTO/fleet insert, or None = set.end().
+        # AssignSupportOrder reads this to undo a conflicting fleet support commitment.
+        self.g_LastMTOInsert: tuple | None = None
+
+        # DAT_00bb66f8[power*0xc] — per-power deviation-detection tree.
+        # Maps (power, prov) -> expected order type; 0 = no expectation recorded.
+        self.g_DeviationTree: dict = {}
+
+        # DAT_00bb6e00 — order-position map: set of province IDs that have a committed SUB entry.
+        # Populated by DispatchSingleOrder; used to detect missing order assignments.
+        self.g_SubOrderMap: set = set()
+
+        # DAT_00bb69fc[power*3] — alternate order list per power.
+        # Maps power -> set of province IDs on the alternate order candidate list.
+        self.g_AltOrderList: dict = {}
+
+        # DAT_005b98e8/ec[province] — per-province rescore sentinel.
+        # Initialised to -1 (0xffffffff) by GenerateOrders; written to 0/1 by
+        # ScoreOrderCandidates_AllPowers during the MC trial loop.
+        self.g_NeedsRescore = np.full(256, -1, dtype=np.int64)
+
+        # g_OpeningTarget[power] — per-power opening deception target province.
+        # -1 = no target.  Set in SPR when g_DeceitLevel == 1.
+        self.g_OpeningTarget = np.full(7, -1, dtype=np.int32)
+
+        # ── CAL_BOARD globals ────────────────────────────────────────────────
+        # DAT_006238e8[power] — pow(sc_count, sc_count)*100+1
+        self.g_PowerExpScore = np.zeros(7, dtype=np.float64)
+        # DAT_0062e360[power] — sc_count*100/total
+        self.g_SCPercent = np.zeros(7, dtype=np.float64)
+        # DAT_004cf568[power] — 1 = this power is designated enemy this turn
+        self.g_EnemyFlag = np.zeros(7, dtype=np.int32)
+        # DAT_00633ec0[power] — count of genuine enemies for each power
+        self.g_EnemyCount = np.zeros(7, dtype=np.int32)
+        # DAT_00633e68[power] — 1 = ally is distressed (attacked by both top enemies)
+        self.g_AllyDistressFlag = np.zeros(7, dtype=np.int32)
+        # DAT_00633780[pow*21+other] — -2=self, -1=unranked, 1-N=rank
+        self.g_RankMatrix = np.full((7, 7), -1, dtype=np.int32)
+        np.fill_diagonal(self.g_RankMatrix, -2)
+        # DAT_00baed6a — 1 = Albert dominant leader (>75% SC influence, gap >2%)
+        self.g_LeadingFlag: int = 0
+        # DAT_0062480c — index of power close to solo victory
+        self.g_NearVictoryPower: int = -1
+        # DAT_00baed2a — 1 = send DRW proposal this turn
+        self.g_RequestDrawFlag: int = 0
+        # DAT_00baed30 — 1 = map static for many turns → request draw
+        self.g_StaticMapFlag: int = 0
+        # DAT_00baed6b — 1 = own power exactly 1 SC from winning
+        self.g_OneScFromWin: int = 0
+        # DAT_00633f18[pow*5+rank] — top-N preferred alliance targets (1-indexed)
+        self.g_AllyPrefRanking = np.full((7, 5), -1, dtype=np.int32)
+        # DAT_006340c0[pow*21+other] — selection-sort visit flag: -1=unranked, -2=self, 1-N=rank
+        self.g_InfluenceRankFlag = np.full((7, 7), -1, dtype=np.int32)
+        np.fill_diagonal(self.g_InfluenceRankFlag, -2)
+        # DAT_00baed6c — 1 = war mode (a power has >80% SCs)
+        self.g_WarModeFlag: int = 0
+        # DAT_00baed5f — 1 = Albert was stabbed; triggers enemy-desired mode
+        self.g_StabbedFlag: int = 0
+        # DAT_00baed69 — 1 = another power is close to solo victory
+        # (already defined as g_OtherPowerLeadFlag above)
+        # g_InfluenceMatrix_Alt is the same array as g_InfluenceMatrix (alias)
+        # DAT_00b81ff0 — trust-adjusted, noise-perturbed, row-normalised influence matrix
+        # (self.g_InfluenceMatrix already declared above)
+
+        # Current SC counts and targets derived each turn from g_SCOwnership
+        # sc_count[power] — int[7]; filled by synchronize_from_game / cal_board
+        self.sc_count = np.zeros(7, dtype=np.int32)
+        # target_sc_count[power] — int[7]; win threshold per power (all 18 in std Dip)
+        self.target_sc_count = np.full(7, 18, dtype=np.int32)
+
+        # DAT_004cf4c0[power*2] — g_EnemySlot priority queue (top-3 enemies, -1=empty)
+        self.g_EnemySlot = np.full(3, -1, dtype=np.int32)
+
+        # ── PostProcessOrders (move-history matrix) ──────────────────────────
+        # DAT_00635578[power*0x10000+src*0x100+dst] — fading move-history table
+        # Decays 3/turn; +10 on successful support; zeroed on disruption.
+        self.g_MoveHistoryMatrix = np.zeros((7, 256, 256), dtype=np.int32)
+
+        # ── ComputePress globals ─────────────────────────────────────────────
+        # DAT_00b85768[power*0x100+province] — bool: 1 = power presses this province
+        self.g_PressMatrix = np.zeros((7, 256), dtype=np.int32)
+        # DAT_00b85710[power] — count of provinces this power presses
+        self.g_PressCount = np.zeros(7, dtype=np.int32)
+
+        # ── ProposeDMZ globals ───────────────────────────────────────────────
+        # DAT_00bb7130 — per-(power,province) proposal send-count tracking
+        self.g_SentProposals: dict = {}    # {(power, province): count}
+        # DAT_004c6bd4 / 4 − 4 — randomized DMZ aggressiveness ∈ [−4, 20]
+        self.g_DMZAggressiveness: int = 0
+        # Press proposal candidate slate built by ApplyInfluenceScores / ProposeDMZ
+        # Each entry: {'flag1': bool, 'flag2': bool, 'flag3': bool, 'province': int,
+        #              'ally_power': int, 'score': int, 'done': bool}
+        self.g_OrderList: list = []
+
+        # ── UpdateScoreState / BuildAndSendSUB globals ───────────────────────
+        # DAT_0062e460[power] — unit count; non-zero = power has live units
+        self.g_UnitCount = np.zeros(7, dtype=np.int32)
+        # DAT_00bc1e04 — current round number
+        self.g_CurrentRound: int = 0
+        # DAT_00bc1e00 per-power game-board round records; power → last seen round
+        # Used by UpdateScoreState to detect stale-round ally order tables.
+        self.g_PowerRoundRecord: dict = {}  # {power_idx: round_number}
+        # DAT_00baed48 — cumulative score counter
+        self.g_CumScore: int = 0
+        # DAT_0062d34c — score baseline (subtracted from cumulative)
+        self.g_ScoreBaseline: int = 0
+        # DAT_0062e4b4 — alternative score accumulator
+        self.g_ScoreAlt: int = 0
+
+        # ── CheckTimeLimit globals ───────────────────────────────────────────
+        # g_NetworkState+0x20 — MTL timeout flag; set by timer thread when MTL fires
+        self.mtl_expired: int = 0
+
+        # ── BuildAndSendSUB globals ──────────────────────────────────────────
+        # DAT_00bb65f0 — outer broadcast proposal list
+        self.g_BroadcastList: list = []
+        # DAT_004c6bbc — MC trial cap per proposal (difficulty=100 → 30)
+        self.g_PressProposalsCap: int = 30
+        # DAT_00b95368/58/e0[trial*4] — per-trial score tracking arrays
+        self.g_TrialScoreA: list = []
+        self.g_TrialScoreB: list = []
+        self.g_TrialScoreC: list = []
+        # DAT_00bbf690/94[pow*0x3c] — current best order sequence per-power
+        self.g_CurrentBestOrder: dict = {}
+        # DAT_00bc0a40/44[pow*0xf0] — backup of best orders at best-trial point
+        self.g_BestOrderBackup: dict = {}
+        # DAT_00baed94/98 — press deal records (earlier proposals received)
+        self.g_DealList: list = []
+        # DAT_00bb69fc[power*3] — per-power alternate order list
+        # (already declared as g_AltOrderList above)
+        # g_HistoryCounter > 19 gates some press sending
+        self.g_HistoryCounter: int = 0
+
+        # ── DispatchScheduledPress globals ───────────────────────────────────
+        # DAT_00bb65c0 — master scheduled press list
+        # Each entry: {'scheduled_time': float, 'press_type': str,
+        #              'data': list, 'sent': bool}
+        self.g_MasterOrderList: list = []
+        # DAT_00ba2884:ba2880 — session start time (int64 Unix timestamp)
+        self.g_SessionStartTime: float = 0.0
+
+        # ── CancelPriorPress globals ─────────────────────────────────────────
+        # DAT_004c6ce4 — prior press token to cancel (NOT message)
+        self.g_prior_press_token: object = None
+        # DAT_00baed47 — once-per-turn send guard
+        self.g_cancel_press_sent: int = 0
+
+        # ── EvaluateAllianceScore scratch ────────────────────────────────────
+        # Computed per turn; shape (7,) — per-power desirability score
+        self.g_AllianceDesirability = np.zeros(7, dtype=np.float64)
+
+        # ── FRIENDLY globals ─────────────────────────────────────────────────
+        # DAT_004d552c[pow*21+other] — hi-word of ally trust score (≥5 = full trust threshold)
+        # Paired with g_AllyTrustScore (lo-word); both int.  Alliance upgrades when hi≥5.
+        self.g_AllyTrustScore_Hi = np.zeros((7, 7), dtype=np.int32)
+
+        # DAT_00634e90[pow*21+other] — relationship score: −50=hated, 0=neutral, +50=allied
+        self.g_RelationScore = np.zeros((7, 7), dtype=np.int32)
+        # Cumulative relation history (UpdateRelationHistory / FUN_0040d7e0 accumulator)
+        self.g_RelationHistory = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062cc68[pow*21+other] — 1 = pow stabbed other this game
+        self.g_StabFlag = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062b0c8[pow*21+other] — 1 = cease-fire declared between pow and other
+        self.g_CeaseFire = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062be98[pow*21+other] — cooperation / non-aggression signal
+        self.g_CoopFlag = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062a9e0[pow*21+other] — 1 = peace overture signal received from other
+        self.g_PeaceSignal = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062b7b0[pow*21+other] — non-zero = neutral/cease-fire state suppresses relation gain
+        self.g_NeutralFlag = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062a2f8[pow*21+other] — count of consecutive stab-penalty steps applied
+        self.g_StabCounter = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062c580[pow*21+other] — third flag in stab/cease-fire/coop chain
+        self.g_SomeCoopScore = np.zeros((7, 7), dtype=np.int32)
+        # DAT_004d4610/14[pow*21+other] — extended trust lo/hi words (cleared for eliminated)
+        self.g_TrustExtended_Lo = np.zeros((7, 7), dtype=np.int32)
+        self.g_TrustExtended_Hi = np.zeros((7, 7), dtype=np.int32)
+
+        # ── PostProcessOrders globals ────────────────────────────────────────
+        # Submitted-order list filled by DispatchSingleOrder / SUB handling:
+        # each entry: {'power': int, 'src_prov': int, 'dst_prov': int,
+        #              'flag_A': bool, 'flag_B': bool, 'flag_C': bool}
+        self.g_SubmittedOrderList: list = []
+
+        self.prov_to_id = {}
+        self.adj_matrix = {}
+        self.unit_info = {} # prov_id -> {'power': int, 'type': 'AMY'/'FLT', 'coast': str}
+
+        # ── PhaseHandler snapshots (FUN_0040df20) ────────────────────────────
+        # DAT_0062e4b8 — phase×power snapshot of g_AllyTrustScore lo-word
+        self.g_TrustSnapshot    = np.zeros((4 * 21, 7), dtype=np.float64)
+        # g_AllyTrustScore hi-word snapshot (paired with lo-word per 64-bit struct)
+        self.g_TrustSnapshot_Hi = np.zeros((4 * 21, 7), dtype=np.int32)
+        # DAT_00631bd8 — phase×power snapshot of g_RelationScore (DAT_00634e90)
+        self.g_InfluenceSnapshot = np.zeros((4 * 21, 7), dtype=np.int32)
+
+        # ── MOVE_ANALYSIS / HOSTILITY opening-phase globals ──────────────────
+        # DAT_00baed4x — opening sticky-mode flag; 1 = single original enemy found
+        self.g_OpeningStickyMode: int = 0
+        # DAT_00baed4x — power index of identified single original enemy
+        self.g_OpeningEnemy: int = -1
+        # DAT_00baed45 — 1 = best ally is fully pressured this turn
+        self.g_AllyUnderAttack: int = 0
+        # DAT_004c6bc4/c8/cc — top-3 opening ally candidates (-1 = empty)
+        self.g_BestAllySlot0: int = -1
+        self.g_BestAllySlot1: int = -1
+        self.g_BestAllySlot2: int = -1
+        # DAT_00baed42 — set when 3rd-proximity ally randomly selected
+        self.g_TripleFrontMode2: int = 0
+        # DAT_00baed43 — set when all-front mode selected (≥ 75 random roll)
+        self.g_TripleFrontFlag: int = 0
+
+        # ── HOSTILITY globals (FUN_~0x42F200) ────────────────────────────────
+        # DAT_00b9fdd8[power] — best mutual enemy per power (-1 = none)
+        self.g_MutualEnemyTable = np.full(7, -1, dtype=np.int32)
+        # DAT_004cf4c0[power] — betrayal counter; increments when formerly hostile goes neutral
+        self.g_BetrayalCounter  = np.zeros(7, dtype=np.int64)
+        # DAT_004d55c8[power] — ally press dispatch counter (reset on first press turn)
+        self.g_AllyPressCount   = np.zeros(7, dtype=np.int32)
+        # DAT_004d6248[power] — ally press hi-word counter
+        self.g_AllyPressHi      = np.zeros(7, dtype=np.int32)
+        # DAT_0062480c — power index of the committed strategic enemy
+        self.g_CommittedEnemy: int = -1
+        # DAT_00633f20[power*5+rank] — pre-sorted power proximity ranks (stride 5)
+        # Populated by map-init; None until set externally.
+        self.g_PowerProximityRank: np.ndarray | None = None
+        # DAT_00b84948[pow*21+other] — second influence scratch matrix (zeroed each turn)
+        self.g_InfluenceMatrix_B = np.zeros((7, 7), dtype=np.float64)
+
+    def synchronize_from_game(self, game):
+        """
+        Takes the current game state (`diplomacy.Game` object) 
+        and updates Albert's internal numpy matrix arrays.
+        """
+        power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+        power_to_id = {p: i for i, p in enumerate(power_names)}
+        
+        if not self.prov_to_id:
+            for prov in game.map.locs:
+                if prov not in self.prov_to_id:
+                    self.prov_to_id[prov] = len(self.prov_to_id)
+            
+            # Build adjacency graph
+            for prov in self.prov_to_id:
+                base_prov = prov.split('/')[0] if '/' in prov else prov
+                self.adj_matrix[self.prov_to_id[prov]] = []
+                for adj in game.map.abut_list(prov):
+                    adj_base = adj.split('/')[0] if '/' in adj else adj
+                    if adj_base in self.prov_to_id:
+                        self.adj_matrix[self.prov_to_id[prov]].append(self.prov_to_id[adj_base])
+
+        # Reset turn specific structures
+        self.g_SCOwnership.fill(0)
+        self.g_OwnReachScore.fill(0)
+        self.unit_info.clear()
+        self.g_ProposalHistory.clear()
+        self.g_XdoPressSent.fill(0)
+        self.g_XdoPressProposals.clear()
+
+        # Parse Ownership
+        for power_name, centers in game.get_centers().items():
+            if power_name in power_to_id:
+                p_id = power_to_id[power_name]
+                for center in centers:
+                    prov = center.split('/')[0] if '/' in center else center
+                    if prov in self.prov_to_id:
+                        self.g_SCOwnership[p_id, self.prov_to_id[prov]] = 1
+                        
+        # Register Unit Ownership
+        for power_name, units in game.get_units().items():
+            if power_name in power_to_id:
+                p_id = power_to_id[power_name]
+                for unit_str in units:
+                    parts = unit_str.split()
+                    if len(parts) >= 2:
+                        unit_type = parts[0]
+                        prov = parts[1].split('/')[0]
+                        coast = parts[1].split('/')[1] if '/' in parts[1] else ''
+                        if prov in self.prov_to_id:
+                            prov_id = self.prov_to_id[prov]
+                            self.g_OwnReachScore[p_id, prov_id] = 1
+                            self.unit_info[prov_id] = {'power': p_id, 'type': unit_type, 'coast': coast}
+                            
+        # Populate sc_count from current centers
+        self.sc_count.fill(0)
+        for power_name, centers in game.get_centers().items():
+            if power_name in power_to_id:
+                self.sc_count[power_to_id[power_name]] = len(centers)
+
+        # Compute Near End Game Factor (placeholder; cal_board computes the real value)
+        max_scs = int(np.max(self.sc_count)) if np.any(self.sc_count) else 0
+        self.g_NearEndGameFactor = max_scs / 18.0 * 5.0
+
+        # Season token: SPR/SUM/FAL/AUT/WIN from phase string e.g. "S1901M"
+        phase = game.get_phase() if hasattr(game, 'get_phase') else ''
+        if isinstance(phase, str) and len(phase) >= 1:
+            _season_map = {'S': 'SPR', 'F': 'FAL', 'W': 'WIN'}
+            self.g_season = _season_map.get(phase[0], 'SPR')
+
+    def get_unit_type(self, prov_id: int):
+        return self.unit_info.get(prov_id, {}).get('type', None)
+        
+    def has_unit(self, prov_id: int):
+        return prov_id in self.unit_info
+
+    def has_own_unit(self, power_id: int, prov_id: int):
+        return self.unit_info.get(prov_id, {}).get('power', -1) == power_id
+
+    def get_unit_power(self, prov_id: int):
+        return self.unit_info.get(prov_id, {}).get('power', -1)
+
+    def get_unit_adjacencies(self, prov_id: int):
+        return self.adj_matrix.get(prov_id, [])
+
+    def can_reach(self, src_prov: int, dst_prov: int):
+        return dst_prov in self.adj_matrix.get(src_prov, [])
+
+    def get_max_threatening_adj_scs(self, prov_id: int, power_id: int) -> int:
+        max_scs = 0
+        for adj in self.adj_matrix.get(prov_id, []):
+            enemy_id = self.get_unit_power(adj)
+            if enemy_id != -1 and enemy_id != power_id:
+                sc_count = np.sum(self.g_SCOwnership[enemy_id])
+                if sc_count > max_scs:
+                    max_scs = sc_count
+        return max_scs
+
+    def CandidateSet_contains(self, power: int, province: int) -> bool:
+        return self.g_CandidateScores[power, province] > 0
+
+    def get_candidate_score(self, power: int, province: int, iteration: int) -> float:
+        return self.g_CandidateScores[power, province] # simplified fallback
+
+    def get_enemy_reach(self, power_id: int, province: int) -> int:
+        return int(self.g_EnemyReachScore[power_id, province])
+
+    def get_trial_order_table(self, trial_state_data: np.ndarray):
+        return {}
