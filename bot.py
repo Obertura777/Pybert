@@ -42,6 +42,9 @@ _DAIDE_COAST_TO_STR = {
     0: '',
 }
 
+# Power index → DAIDE short token name (AUS=0x4100 … TUR=0x4106)
+_DAIDE_POWER_NAMES = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
+
 
 # ── Stub sub-functions (unimplemented; named after research.md §sub-function table) ──
 
@@ -549,6 +552,64 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     state.g_VictoryThreshold = len(state.unit_info) // 2 + 1
 
 
+def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | None':
+    """
+    Port of FUN_00460110 — build DAIDE token string for one retreat-phase order node.
+
+    C param_2 layout (int *):
+        [0..3] = unit data (province, type, power, ...)  → consumed by FUN_0045ffa0
+        [4]    = order type: 0 or 8 → DSB, 7 → RTO, other → skip (return param_1 unchanged)
+        [5]    = destination province ID (RTO only)      → FUN_0045fca0
+        [6]    = coast low-byte; CONCAT22(0x46, [6]) → coast token (RTO only)
+
+    Key constants:
+        DAT_004c7690 = DSB (0x4340)   — appended by FUN_00466480 for DSB path
+        DAT_004c7694 = RTO (0x4341)   — appended by FUN_00466480 for RTO path
+
+    Returns DAIDE order string (without outer parens) for appending to GOF seq,
+    or None to skip this node entirely.
+
+    Inline helpers absorbed into string operations (no standalone Python port needed):
+        FUN_0045ffa0  — build unit token seq  ('POWER AMY|FLT PROVINCE [COAST]')
+        FUN_0045fca0  — build province+coast dest seq  ('PROVINCE [COAST]')
+        FUN_00466480  — append single token to seq     (→ string concat)
+        FUN_00466330  — concat two token seqs          (→ string concat)
+        FUN_00465870  — init empty token list          (→ not needed in Python)
+    """
+    order_type = node.get('order_type', -1)
+
+    # FUN_0045ffa0: build unit token seq → 'POWER AMY|FLT PROVINCE [COAST]'
+    if not state._id_to_prov:
+        state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
+    power_idx = node.get('power', 0)
+    power_name = _DAIDE_POWER_NAMES[power_idx] if 0 <= power_idx < len(_DAIDE_POWER_NAMES) else 'UNO'
+    unit_chr = 'AMY' if node.get('unit_type', 'AMY') == 'AMY' else 'FLT'
+    prov_name = state._id_to_prov.get(node.get('province', 0), str(node.get('province', 0)))
+    unit_coast = node.get('unit_coast', '')
+    unit_str = f"{power_name} {unit_chr} {prov_name}"
+    if unit_coast:
+        unit_str += f" {unit_coast}"
+
+    if order_type == 7:  # RTO
+        # FUN_0045fca0: build destination seq ('PROVINCE [COAST]')
+        dest_id = node.get('dest_province', 0)
+        dest_name = state._id_to_prov.get(dest_id, str(dest_id))
+        # C: param_3._1_1_ == 'F' checks high byte == 0x46 (coast category).
+        # dest_coast stores the full DAIDE coast token (0 = no coast, 0x46xx = coast).
+        coast_tok = node.get('dest_coast', 0)
+        coast_str = _DAIDE_COAST_TO_STR.get(coast_tok, '')
+        dest_str = f"{dest_name} {coast_str}".rstrip() if coast_str else dest_name
+        # FUN_00466480(unit_seq, buf, &DAT_004c7694=RTO) + FUN_00466330(unit+RTO, buf, dest)
+        return f"{unit_str} RTO {dest_str}"
+
+    elif order_type in (0, 8):  # DSB
+        # FUN_00466480(unit_seq, buf, &DAT_004c7690=DSB)
+        return f"{unit_str} DSB"
+
+    # All other order types: C returns param_1 unchanged (no entry appended)
+    return None
+
+
 def _build_gof_seq(state: 'InnerGameState') -> list:
     """
     Port of FUN_00464460 — builds the DAIDE GOF+orders token sequence
@@ -573,8 +634,9 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
     TokenSeq_Count in the caller counts list nodes; > 1 means at least one
     order entry is present (header alone = 1).
 
-    FUN_00463690 / FUN_00460110 / FUN_0045fca0 not yet decompiled.
-    Orders are read from state.g_OrderList (populated by _build_and_send_sub).
+    FUN_00463690 not yet decompiled.
+    SPR/SUM orders are read from state.g_OrderList (populated by _build_and_send_sub).
+    FAL/AUT orders are read from state.g_retreat_order_list (populated before _send_gof).
     """
     phase = getattr(state, 'g_season', 'SPR')
     orders: list = list(getattr(state, 'g_OrderList', []))
@@ -587,9 +649,12 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
         for order in orders:
             seq.append(f'( {order} )')          # FUN_00466c40 wraps in parens
     elif phase in ('FAL', 'AUT'):
-        # FUN_00460110: retreat order token builder (retreat unit list)
-        for order in orders:
-            seq.append(f'( {order} )')
+        # FUN_00460110: retreat order token builder over retreat list (this+0x245c/2460).
+        # g_OrderList is NOT used here — that is the press-candidate list.
+        for node in state.g_retreat_order_list:
+            tok = _build_retreat_order_token(state, node)
+            if tok is not None:
+                seq.append(f'( {tok} )')          # FUN_00466c40 wraps in parens
     else:
         # WIN: BLD/REM per candidate (build list this+0x2474/2478) +
         #      WVE per waiver (count at this+0x2480).
@@ -651,7 +716,7 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
         return None
 
     # Build reverse province-id → name map on demand
-    if not hasattr(state, '_id_to_prov'):
+    if not state._id_to_prov:
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
     id_to_prov = state._id_to_prov
 

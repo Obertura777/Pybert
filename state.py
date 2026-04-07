@@ -268,6 +268,17 @@ class InnerGameState:
         #              'ally_power': int, 'score': int, 'done': bool}
         self.g_OrderList: list = []
 
+        # Retreat order list iterated by _build_gof_seq FAL/AUT branch (this+0x245c/2460).
+        # Each entry: {'province': int, 'unit_type': str, 'unit_coast': str,
+        #              'power': int, 'order_type': int,
+        #              'dest_province': int, 'dest_coast': int}
+        # order_type: 0 or 8 = DSB, 7 = RTO.  Populated before _send_gof is called.
+        self.g_retreat_order_list: list = []
+
+        # Lazy-built reverse map: province_id (int) → province name (str).
+        # Built on first use from prov_to_id; cached here for all callers.
+        self._id_to_prov: dict = {}
+
         # ── UpdateScoreState / BuildAndSendSUB globals ───────────────────────
         # DAT_0062e460[power] — unit count; non-zero = power has live units
         self.g_UnitCount = np.zeros(7, dtype=np.int32)
