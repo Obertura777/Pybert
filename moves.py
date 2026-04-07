@@ -247,9 +247,10 @@ def assign_support_order(
                     state.g_ProximityScore[w_power, src_prov] += 2
 
 # ── g_OrderTable field indices (subset needed here; full list in monte_carlo.py) ─
-_F_ORDER_TYPE = 0   # 1=HLD 2=MTO 3=SUP_HLD 4=SUP_MTO 5=CVY 6=CTO
-_F_DEST_PROV  = 2   # destination province (MTO/CTO)
-_F_ORDER_ASGN = 20  # 1 = support order committed
+_F_ORDER_TYPE    =  0   # 1=HLD 2=MTO 3=SUP_HLD 4=SUP_MTO 5=CVY 6=CTO
+_F_DEST_PROV     =  2   # destination province (MTO/CTO)
+_F_INCOMING_MOVE = 13   # 1 = province has incoming MTO/CTO (DAT_00baedd4 = g_ProvinceBaseScore)
+_F_ORDER_ASGN    = 20   # 1 = support order committed
 
 _ORDER_MTO = 2
 _ORDER_CVY = 5
@@ -416,32 +417,27 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
     Port of FUN_0043e370 = BuildSupportProposals.
 
     For each unit belonging to *power_idx*, determines the unit's target province
-    (dest) and counts how many other powers threaten it via g_CoverageFlag /
-    g_ProximityScore.  Depending on threat_count:
+    (dest) and counts threatening powers via g_CoverageFlag / g_ProximityScore.
 
       0 threats  — no action.
       1 threat + convoy order + press off
-                 — alliance handshake: flag g_XdoPressSent for every unit
-                   adjacent to dest; no XDO proposal content emitted.
-      2+ threats — emit a prioritised XDO SUP proposal for each reachable
-                   neutral/unoccupied unit adjacent to dest that has not
-                   already been proposed this turn (deduped via
-                   g_ProposalHistory).
-
-    Globals consumed (all on InnerGameState):
-      g_OrderTable[_F_ORDER_TYPE / _F_DEST_PROV]  — unit's assigned order
-      g_CoverageFlag[other_power, dest]            — DAT_00ba4370 base slice
-      g_ProximityScore[other_power, dest]          — DAT_00ba4370+0x1500 slice
-      g_AllyTrustScore[power_idx, dest_owner]      — trust towards dest owner
-      g_SCOwnership[power_idx, dest]               — own-SC flag
-      g_AllyMatrix[power_idx, unit2_power]         — 1 = allied
-      g_PressFlag                                  — DAT_00baed68; 0 = press off
-      unit_info[prov].alive                        — province.alive field
-        (approximated: alive iff NOT has_unit, per decompile "province.alive==0")
+                 — alliance handshake: set g_XdoPressSent for units adjacent to
+                   dest whose power != power_idx; no XDO content emitted.
+      2+ threats — outer loop over each threatening power (local_1ec).
+                   For each threatening power whose score exceeds the unit's base
+                   score, determine priority then scan all units for candidate
+                   supporters, filtering by:
+                     1. unit2.power != power_idx
+                     2. unit2.power != threatening power (local_1ec)
+                     3. unit2.power != g_AllyDesignation_B[dest]
+                     4. unit2.power != g_AllyDesignation_A[dest]
+                     5. g_OrderTable[unit2_prov, _F_INCOMING_MOVE] == 0
+                   If unit2 can reach dest, emit XDO SUP proposal (deduped via
+                   g_ProposalHistory; priority added to existing entry if seen).
 
     Globals written:
-      g_ProposalHistory  — set of (unit2_prov*1000 + own_prov)*1000 + dest keys
-      g_XdoPressSent[power_idx, unit2_power]  — 1 when press flagged
+      g_ProposalHistory — map of key → priority accumulator
+      g_XdoPressSent[power_idx, unit2_power] — 1 when press flagged
       g_XdoPressProposals — list of proposal dicts (consumed by ComputePress)
     """
     ot = state.g_OrderTable
@@ -453,17 +449,23 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
 
         order_type = int(ot[own_prov, _F_ORDER_TYPE])
         if order_type == 0:
-            continue  # no order assigned
+            continue
 
-        # Determine the destination province being contested
+        # dest: where the unit is headed (or its current province for non-moves)
+        # local_1e5 in decompile: 1 if MTO/CTO (used as base_score adjustment)
         if order_type in (_ORDER_MTO, _ORDER_CTO):
             dest = int(ot[own_prov, _F_DEST_PROV])
+            is_move = 1
         else:
             dest = own_prov
+            is_move = 0
 
-        # ── Count threatening powers ─────────────────────────────────────────
-        # DAT_00ba4370[dest + other_power*0x100] = g_CoverageFlag[other_power, dest]
-        # DAT_00ba4370[dest + 0x1500 + other_power*0x100] = g_ProximityScore[other_power, dest]
+        # base score for this province (g_ProvinceBaseScore = g_OrderTable field 13)
+        base_score = int(ot[dest, _F_INCOMING_MOVE])
+
+        # ── Count threatening powers ──────────────────────────────────────────
+        # g_CoverageFlag[other, dest] = DAT_00ba4370[dest + other*0x100]
+        # g_ProximityScore[other, dest] = DAT_00ba4370[dest+0x1500 + other*0x100]
         threat_count = 0
         max_threat = 0
         for other in range(num_powers):
@@ -478,67 +480,97 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                 threat_count += 1
 
         if threat_count < 2:
-            # Single-threat + convoy-order + press off → alliance handshake only
+            # 0 or 1 threat: only act for convoy order with press off
+            # decompile line 169: order_type check uses own_prov's field (iVar1+0x20), i.e. _ORDER_CVY
             if (threat_count == 1
-                    and order_type == _ORDER_CVY
+                    and int(ot[own_prov, _F_ORDER_TYPE]) == _ORDER_CVY
                     and state.g_PressFlag == 0):
                 for unit2_prov, u2_info in state.unit_info.items():
+                    if u2_info['power'] == power_idx:
+                        continue
                     if dest in state.get_unit_adjacencies(unit2_prov):
                         state.g_XdoPressSent[power_idx, u2_info['power']] = 1
         else:
-            # 2+ threats — determine priority
-            dest_owner = -1
-            for pw in range(num_powers):
-                if state.g_SCOwnership[pw, dest] == 1:
-                    dest_owner = pw
-                    break
+            # 2+ threats — outer loop over all powers as threatening-power candidates
+            # (local_1ec in decompile, iterates 0..numPowers with local_1c4 striding
+            #  through g_ProximityScore columns)
+            for threat_power in range(num_powers):
+                if threat_power == power_idx:
+                    continue
 
-            trust = (float(state.g_AllyTrustScore[power_idx, dest_owner])
-                     if dest_owner != -1 else 0.0)
-            if trust < 15.0:
-                if (dest_owner == power_idx
-                        and state.g_AllyTrustScore[power_idx, power_idx] >= 1.0):
-                    priority = 8    # defend own SC
+                # Re-score this specific threatening power (same formula as threat loop)
+                t_coverage  = int(state.g_CoverageFlag[threat_power, dest])
+                t_proximity = int(state.g_ProximityScore[threat_power, dest])
+                t_score = t_coverage - (t_proximity if t_proximity > 0 else 0)
+
+                # Decompile line 290-291: skip if score <= 0 OR score <= base_score - is_move
+                if t_score <= 0:
+                    continue
+                if t_score <= base_score - is_move:
+                    continue
+
+                # Priority logic (decompile lines 292-303):
+                # trust = g_AllyTrustScore[power_idx * 0x15 + threat_power] (lo-word, int)
+                trust = int(state.g_AllyTrustScore[power_idx, threat_power])
+                if trust < 0xf:
+                    # priority=8 when: g_AllyDesignation_B[dest] == power_idx
+                    #                  AND dest == own_prov AND base_score < t_score
+                    if (int(state.g_AllyDesignation_B[dest]) == power_idx
+                            and dest == own_prov
+                            and base_score < t_score):
+                        priority = 8
+                    else:
+                        priority = 4
                 else:
-                    priority = 4
-            else:
-                priority = 1
+                    priority = 1
 
-            for unit2_prov, u2_info in list(state.unit_info.items()):
-                unit2_power = u2_info['power']
-                if unit2_power == power_idx:
-                    continue
-                # Not allied, not enemy: neutral stance required
-                if state.g_AllyMatrix[power_idx, unit2_power] != 0:
-                    continue
-                # province.alive == 0  (unit2's square is unoccupied by a *third* unit)
-                # The decompile checks "province.alive == 0" meaning the supporter's
-                # home province is free — approximated as: no other unit occupies it
-                # (the unit itself being there is already in unit_info).
-                if int(ot[unit2_prov, _F_ORDER_ASGN]) != 0:
-                    continue  # already committed to a support role
+                # Inner loop: find supporter candidates
+                for unit2_prov, u2_info in list(state.unit_info.items()):
+                    unit2_power = u2_info['power']
 
-                if dest not in state.get_unit_adjacencies(unit2_prov):
-                    continue
+                    # Filter 1: not own power
+                    if unit2_power == power_idx:
+                        continue
+                    # Filter 2: not the threatening power
+                    if unit2_power == threat_power:
+                        continue
+                    # Filter 3: not ally-B designated power for dest
+                    if unit2_power == int(state.g_AllyDesignation_B[dest]):
+                        continue
+                    # Filter 4: not ally-A designated power for dest
+                    if unit2_power == int(state.g_AllyDesignation_A[dest]):
+                        continue
+                    # Filter 5: unit2's province must have no incoming move
+                    # (g_ProvinceBaseScore[unit2_prov * 0x1e] == 0, i.e. _F_INCOMING_MOVE)
+                    if int(ot[unit2_prov, _F_INCOMING_MOVE]) != 0:
+                        continue
 
-                # Deduplicate via proposal history
-                # key = (unit2_prov * 1000 + own_prov) * 1000 + dest
-                key = (unit2_prov * 1000 + own_prov) * 1000 + dest
-                if key in state.g_ProposalHistory:
-                    continue
+                    if dest not in state.get_unit_adjacencies(unit2_prov):
+                        continue
 
-                state.g_ProposalHistory.add(key)
-                state.g_XdoPressSent[power_idx, unit2_power] = 1
-                state.g_XdoPressProposals.append({
-                    'type':             'XDO_SUP',
-                    'supporter_prov':   unit2_prov,
-                    'supporter_power':  unit2_power,
-                    'mover_prov':       own_prov,
-                    'dest':             dest,
-                    'priority':         priority,
-                    'from_power':       power_idx,
-                    'to_power':         unit2_power,
-                })
+                    key = (unit2_prov * 1000 + own_prov) * 1000 + dest
+                    if key in state.g_ProposalHistory:
+                        # Already proposed: accumulate priority into existing entry
+                        # (decompile line 388-389: *(local_1bc + 0x24) += local_1c8)
+                        for prop in state.g_XdoPressProposals:
+                            if prop.get('key') == key:
+                                prop['priority'] += priority
+                                break
+                        continue
+
+                    state.g_ProposalHistory.add(key)
+                    state.g_XdoPressSent[power_idx, unit2_power] = 1
+                    state.g_XdoPressProposals.append({
+                        'type':            'XDO_SUP',
+                        'key':             key,
+                        'supporter_prov':  unit2_prov,
+                        'supporter_power': unit2_power,
+                        'mover_prov':      own_prov,
+                        'dest':            dest,
+                        'priority':        priority,
+                        'from_power':      power_idx,
+                        'to_power':        unit2_power,
+                    })
 
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int) -> None:
     """

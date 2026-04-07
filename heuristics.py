@@ -399,34 +399,226 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                         elif state.has_own_unit(power, province) and enemy_reach == 0:
                             state.g_ProvinceAccessFlag[power, province] = 1
 
-def compute_draw_vote(state: InnerGameState, submitted_orders: list, power_name: str) -> bool:
+def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name: str) -> bool:
     """
-    Port of ComputeDrawVote / FUN_004440e0.
-    Nash-stability check returning True if all units are fully committed.
-    Returns False if any unit has >= 2 uncommitted free-move targets.
+    Port of ComputeDrawVote (FUN_004440e0).
+
+    Nash-stability check. Returns True (vote draw) only if all submitted units
+    are fully committed with no profitable unilateral deviations. Returns False
+    if any unit has >=2 uncommitted free-move targets.
+
+    param_1 (submitted_orders) is the accumulated order list from BuildAndSendSUB.
+    Internally mirrors local_108 (province metadata map) and local_e4 (reach map).
     """
-    if not submitted_orders:
+    # Build set of submitted provinces from best candidate orders
+    submitted_provinces: set = set()
+    if submitted_orders:
+        best = submitted_orders[0]
+        for prov, _ in best.get('orders', []):
+            submitted_provinces.add(prov)
+
+    if not submitted_provinces:
         return False
-        
-    power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
-    power_id = power_names.index(power_name) if power_name in power_names else 0
-        
-    # Translate local_108 metadata tracker
-    for prov_id, info in state.unit_info.items():
-        if info['power'] == power_id:
-            # Flood fill / reachability proxy
-            free_moves_available = 0
-            
-            for adj in state.get_unit_adjacencies(prov_id):
-                # Count adjacencies without immediate conflict
-                if not state.has_unit(adj):
-                    free_moves_available += 1
-                    
-            if free_moves_available >= 2:
-                # >=2 uncommitted free-move targets breaks stability
-                return False
-                
-    return True
+
+    # --- Step 1: Province metadata init (local_108) + reach-map init (local_e4) ---
+    # local_108[prov]: [flag_a, supporter, flag_b, committed_votes,
+    #                   free_candidates, no_order, _, _, _, resolved, ..., fully_committed]
+    # Python: dict per province with named fields.
+    def _new_meta():
+        return {
+            'flag_a': 0,          # [0]  set when entry is pre-resolved (free_candidates<=1)
+            'supporter': -1,      # [1]  province ID of assigned supporter (-1 = none)
+            'committed': 0,       # [2]  committed flag (no/one free target)
+            'committed_votes': 0, # [3]  count of committed backers
+            'free_candidates': 0, # [4]  total free-move candidate count
+            'no_order': 0,        # [5]  1 = unit here has no submitted order
+            'resolved': 0,        # +9   forced-commitment resolved flag
+            'fully_committed': 0, # +0x19 fully-committed flag (required for draw)
+        }
+
+    province_meta: dict = {}
+    reach_map: dict = {}   # local_e4: province → bool (reachable without conflict)
+
+    for prov in state.adj_matrix:
+        province_meta.setdefault(prov, _new_meta())
+        for adj in state.adj_matrix.get(prov, []):
+            reach_map.setdefault(adj, False)
+
+    # --- Step 2: Unit-to-order correlation ---
+    for prov in list(state.unit_info.keys()):
+        province_meta.setdefault(prov, _new_meta())
+        if prov not in submitted_provinces:
+            province_meta[prov]['no_order'] = 1   # unsubmitted unit
+        else:
+            reach_map[prov] = True                # has a submitted order
+
+    # --- Step 3: Adjacency flood-fill from submitted-order provinces ---
+    # Expand reach to adjacent provinces that have no submitted order.
+    changed = True
+    while changed:
+        changed = False
+        for prov, reachable in list(reach_map.items()):
+            if not reachable:
+                continue
+            if province_meta.get(prov, {}).get('no_order', 0):
+                continue  # unsubmitted province is not a seed
+            for adj in state.adj_matrix.get(prov, []):
+                adj_meta = province_meta.get(adj, {})
+                if adj_meta.get('no_order', 0) == 0:
+                    continue  # adj already has submitted order
+                if not reach_map.get(adj, False):
+                    reach_map[adj] = True
+                    changed = True
+
+    # --- Step 4: First draw-vote candidate check ---
+    vote = True
+    for prov, reachable in reach_map.items():
+        if not state.has_unit(prov):
+            continue
+        meta = province_meta.get(prov, {})
+        # Check if this unit's power has any submitted orders
+        unit_power = state.unit_info.get(prov, {}).get('power', -1)
+        power_has_orders = any(
+            state.unit_info.get(sp, {}).get('power') == unit_power
+            for sp in submitted_provinces
+        )
+        if not power_has_orders and meta.get('no_order', 0) == 1:
+            vote = False
+
+    if not vote:
+        return False
+
+    # --- Supporter assignment pre-pass ---
+    # For each unsubmitted province, count free-move candidates among its neighbours
+    # and assign itself as supporter to those neighbours.
+    prev_no_order_prov = -1
+    for prov in sorted(province_meta.keys()):
+        meta = province_meta.get(prov, {})
+        if meta.get('no_order', 0) != 1:
+            continue
+        if prov != prev_no_order_prov:
+            for adj in state.adj_matrix.get(prov, []):
+                province_meta.setdefault(adj, _new_meta())
+                province_meta[adj]['free_candidates'] += 1
+            prev_no_order_prov = prov
+        for adj in state.adj_matrix.get(prov, []):
+            adj_meta = province_meta.get(adj, {})
+            if adj_meta.get('no_order', 0) == 1:
+                adj_meta['supporter'] = prov
+
+    # Pre-resolution: for submitted units with free_candidates <= 1, mark resolved.
+    for prov in state.unit_info:
+        if prov not in submitted_provinces:
+            continue
+        meta = province_meta.get(prov, _new_meta())
+        if meta['free_candidates'] > 1:
+            meta['supporter'] = -1   # reset supporter; will be handled by sub-pass B
+        else:
+            meta['flag_a'] = 1
+            meta['resolved'] = 1
+
+    # --- Step 5: Iterative resolution (outer loop runs while progress is made) ---
+    for _outer in range(10):
+        if not vote:
+            break
+
+        # Sub-pass A: mark committed units (entries with flag_a=1, committed=0)
+        for prov, meta in province_meta.items():
+            if meta.get('flag_a', 0) != 1 or meta.get('committed', 0) == 1:
+                continue
+            supporter = meta.get('supporter', -1)
+            free_count = 0
+            free_target = -1
+            for adj in state.adj_matrix.get(prov, []):
+                adj_meta = province_meta.get(adj, {})
+                if adj_meta.get('no_order', 0) != 1:
+                    continue
+                if adj_meta.get('resolved', 0) != 0:
+                    continue
+                if adj == free_target:
+                    continue   # dedup
+                via_supporter = True
+                if supporter != -1:
+                    via_supporter = state.can_reach(supporter, adj)
+                if via_supporter:
+                    free_count += 1
+                    free_target = adj
+            if free_count == 0:
+                meta['committed'] = 1
+            elif free_count == 1:
+                meta['committed'] = 1
+                province_meta.setdefault(free_target, _new_meta())
+                province_meta[free_target]['committed_votes'] += 1
+            else:
+                vote = False
+
+        # Check fully-committed after sub-pass A
+        for meta in province_meta.values():
+            if meta.get('resolved', 0) == 1:
+                total = meta.get('free_candidates', 0)
+                backed = meta.get('committed_votes', 0)
+                if total - 1 <= backed:
+                    meta['fully_committed'] = 1
+
+        if not vote:
+            break
+
+        # Sub-pass B: resolve remaining via IsLegalMove (can_reach)
+        progress = False
+        for prov, meta in province_meta.items():
+            if meta.get('resolved', 0) != 0:
+                continue
+            supporter = meta.get('supporter', -1)
+            legal_count = 0
+            committed_targets: list = []
+            for adj in state.adj_matrix.get(prov, []):
+                adj_meta = province_meta.get(adj, {})
+                if adj_meta.get('no_order', 0) != 1:
+                    continue
+                if adj_meta.get('flag_a', 0) != 1:
+                    continue
+                if adj_meta.get('committed', 0) == 1:
+                    continue
+                if supporter == -1:
+                    legal = state.can_reach(prov, adj)
+                else:
+                    legal = (state.can_reach(supporter, adj)
+                             and state.can_reach(prov, adj))
+                if legal:
+                    legal_count += 1
+                    committed_targets.append(adj)
+
+            total = meta.get('free_candidates', 0)
+            committed_votes = meta.get('committed_votes', 0)
+            remaining = total - legal_count - committed_votes
+            if remaining < 2:
+                if remaining == 1:
+                    progress = True
+                    meta['resolved'] = 1
+                    for t in committed_targets:
+                        province_meta.setdefault(t, _new_meta())['committed'] = 1
+            else:
+                vote = False
+
+        # Re-check fully-committed after sub-pass B
+        for meta in province_meta.values():
+            if meta.get('resolved', 0) == 1:
+                total = meta.get('free_candidates', 0)
+                backed = meta.get('committed_votes', 0)
+                if total - 1 <= backed:
+                    meta['fully_committed'] = 1
+
+        if not progress:
+            break
+
+    # --- Step 6: Final validation ---
+    if vote:
+        for meta in province_meta.values():
+            if meta.get('resolved', 0) == 1 and meta.get('fully_committed', 0) == 0:
+                vote = False
+                break
+
+    return vote
 
 def detect_stabs_and_hostility(state: InnerGameState, power_idx: int):
     """

@@ -118,6 +118,16 @@ class InnerGameState:
         # DAT_00baed68 — press-mode flag; 1 = ComputePress runs this turn, 0 = off
         self.g_PressFlag: int = 0
 
+        # DAT_004d2e10/14 — g_AllyDesignation_A: int64[province], power booked as ally-A for
+        # that province; -1 = none. Read by BuildSupportProposals to exclude the designated
+        # ally-A power from supporter candidates.
+        self.g_AllyDesignation_A = np.full(256, -1, dtype=np.int64)
+
+        # DAT_004d2610/14 — g_AllyDesignation_B: int64[province], power booked as ally-B for
+        # that province; -1 = none. Used by BuildSupportProposals for priority-8 (defend own SC)
+        # detection and to exclude the designated ally-B power from supporter candidates.
+        self.g_AllyDesignation_B = np.full(256, -1, dtype=np.int64)
+
         # DAT_00baed94 — proposal history; set of int keys
         # key = (unit2_prov * 1000 + own_prov) * 1000 + dest
         # Prevents duplicate XDO support proposals within a turn.

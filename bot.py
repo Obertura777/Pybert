@@ -25,6 +25,7 @@ from .heuristics import (
     cal_board,
     compute_draw_vote, detect_stabs_and_hostility,
     post_process_orders, compute_press, compute_influence_matrix,
+    _safe_pow,
 )
 from .dispatch import dispatch_single_order
 from .utils import dipnet_order  # noqa: F401 — re-exported for callers
@@ -469,21 +470,47 @@ def _post_friendly_update(state: InnerGameState) -> None:
 
 
 def _cleanup_turn(state: InnerGameState) -> None:
-    """CleanupTurn (FUN_0040cdc0). Post-turn linked-list and scratch cleanup."""
-    # Reset single-turn scratch that must be clean at turn start
-    state.g_SubOrderMap.clear()
-    state.g_XdoPressProposals.clear()
-    state.g_CandidateRecordList.clear()
-    
-    # Also clean support proposals and convoy tracking from the turn's MC evaluations
-    if hasattr(state, 'g_SupportProposals'):
-        state.g_SupportProposals.clear()
-    if hasattr(state, 'g_ProposalHistory'):
-        state.g_ProposalHistory.clear()
-    if hasattr(state, 'g_ConvoyFleetList'):
-        state.g_ConvoyFleetList.clear()
-    if hasattr(state, 'g_ConvoyRoute'):
-        state.g_ConvoyRoute.clear()
+    """NormalizeInfluenceMatrix. Trust-adjusts g_InfluenceMatrix_Raw by
+    (g_AllyTrustScore + 1), injects _safe_pow noise, and row-normalises to 100.
+
+    Was mislabelled 'Per-turn cleanup'; corrected per _index.md.
+    Writes g_InfluenceMatrix (consumed by compute_influence_matrix ranking).
+
+    Decompile: decompiled.txt lines 460-593.
+    Phases match GenerateOrders Phase 4-5 but operate on Raw/trust-adjusted copy.
+    """
+    n = 7  # numPowers
+
+    # Phase 1 — trust-adjust: g_InfluenceMatrix[row,col] = Raw[row,col] / (trust+1)
+    # C: DAT_00b82db8 = g_InfluenceMatrix_Raw / CONCAT44(trust_hi+carry, trust_lo+1)
+    for row in range(n):
+        for col in range(n):
+            raw   = float(state.g_InfluenceMatrix_Raw[row, col])
+            trust = float(state.g_AllyTrustScore[row, col])
+            state.g_InfluenceMatrix[row, col] = raw / (trust + 1.0)
+
+    # Phase 2 — per-power row sum via PackScoreU64 (banker's round → int64)
+    # C: DAT_004f6b98[power*2] = PackScoreU64() after FPU row-sum accumulation
+    power_sum = np.array(
+        [round(float(np.sum(state.g_InfluenceMatrix[p]))) for p in range(n)],
+        dtype=np.int64,
+    )
+
+    # Phase 3 — per-cell noise: cell += _safe_pow(cell / (col_sum+1), 0.3) * 500
+    # C: fVar8 = _safe_pow(); *pdVar6 = fVar8 * 500.0 + *pdVar6
+    # base exponent 0.3 = DAT_004af9f8 (33 33 33 33 33 33 d3 3f)
+    for row in range(n):
+        for col in range(n):
+            col_total = float(power_sum[col])
+            base = float(state.g_InfluenceMatrix[row, col]) / (col_total + 1.0)
+            state.g_InfluenceMatrix[row, col] += _safe_pow(base, 0.3) * 500.0
+
+    # Phase 4 — row-normalise to 100
+    # C: cell = (cell * 100.0) / row_sum  (skipped when row_sum == 0)
+    for row in range(n):
+        row_sum = float(np.sum(state.g_InfluenceMatrix[row]))
+        if row_sum != 0.0:
+            state.g_InfluenceMatrix[row] = (state.g_InfluenceMatrix[row] * 100.0) / row_sum
 
 
 def _init_position_for_orders(state: InnerGameState) -> None:
@@ -522,12 +549,86 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     state.g_VictoryThreshold = len(state.unit_info) // 2 + 1
 
 
-def _send_gof(power_name: str, game) -> None:
-    """send_GOF (FUN_00456b50). Sends GOF (Go Flag) to signal orders are complete."""
-    logger.debug(f"GOF sent for {power_name}")
-    if game is not None:
-        if hasattr(game, 'set_wait'):
-            game.set_wait(power_name, True)
+def _build_gof_seq(state: 'InnerGameState') -> list:
+    """
+    Port of FUN_00464460 — builds the DAIDE GOF+orders token sequence
+    from the inner gamestate.
+
+    C structure:
+      1. Init output list (param_1) and working list (local_b8).
+      2. Prepend DAT_004c77a0 = GOF (0x4803) to output.
+      3. Phase-dependent order iteration:
+           SPR/SUM  (0x4700/4701): iterate active unit list (this+0x2450/2454);
+                    for each own unit (unit.power==own_power) with an order
+                    (unit+0x20 != 0): FUN_00463690 builds the movement-order
+                    token seq; FUN_00466c40 wraps it in parens and appends to output.
+           FAL/AUT  (0x4702/4703): same pattern over retreat list (this+0x245c/2460);
+                    FUN_00460110 builds the retreat-order token seq.
+           WIN: iterate build list (this+0x2474/2478);
+                    for each candidate append power_token + BLD(0x4380)/REM(0x4381)
+                    + province + coast (DAT_004c7698 or DAT_004c769c per this+0x2488);
+                    then for each waived build (count at this+0x2480) append WVE(0x4382).
+      4. Each per-order entry is wrapped: ( order_tokens ) via FUN_00466c40.
+
+    TokenSeq_Count in the caller counts list nodes; > 1 means at least one
+    order entry is present (header alone = 1).
+
+    FUN_00463690 / FUN_00460110 / FUN_0045fca0 not yet decompiled.
+    Orders are read from state.g_OrderList (populated by _build_and_send_sub).
+    """
+    phase = getattr(state, 'g_season', 'SPR')
+    orders: list = list(getattr(state, 'g_OrderList', []))
+
+    # DAT_004c77a0 = GOF (0x4803) — always the first token
+    seq: list = ['GOF']
+
+    if phase in ('SPR', 'SUM'):
+        # FUN_00463690: movement order token builder (active unit list)
+        for order in orders:
+            seq.append(f'( {order} )')          # FUN_00466c40 wraps in parens
+    elif phase in ('FAL', 'AUT'):
+        # FUN_00460110: retreat order token builder (retreat unit list)
+        for order in orders:
+            seq.append(f'( {order} )')
+    else:
+        # WIN: BLD/REM per candidate (build list this+0x2474/2478) +
+        #      WVE per waiver (count at this+0x2480).
+        # DAT_004c7670=BLD(0x4380), DAT_004c7674=REM(0x4381), DAT_004c76a0=WVE(0x4382).
+        # Coast selection per build candidate: this+0x2488 == 0 → DAT_004c769c,
+        # else → DAT_004c7698 (two fleet-build coast tokens, values TBC).
+        for order in orders:
+            seq.append(f'( {order} )')
+        waive_count: int = int(getattr(state, 'g_waive_count', 0))
+        for _ in range(waive_count):
+            # FUN_00466540(own_power_token, ..., &DAT_004c76a0) → ( power WVE )
+            seq.append(f'( WVE )')              # DAT_004c76a0 = WVE(0x4382)
+
+    return seq
+
+
+def _send_gof(state: 'InnerGameState', send_dm) -> None:
+    """
+    Port of FUN_0045aa40 = send_GOF.
+
+    Builds the GOF (Go Order Final) DAIDE token sequence from the inner
+    gamestate (FUN_00464460 = _build_gof_seq) and transmits it via SendDM
+    only when the sequence contains more than one token (non-empty guard).
+
+    C flow:
+      local_2c  = FUN_00465870()          // init temp list
+      ppvVar1   = FUN_00464460(gamestate, local_1c)  // build GOF seq
+      AppendList(local_2c, ppvVar1)
+      FreeList(local_1c)
+      if TokenSeq_Count(local_2c) > 1:
+          puVar3 = FUN_00464460(gamestate, local_1c)  // rebuild for send
+          SendDM(this, puVar3)
+          FreeList(local_1c)
+      FreeList(local_2c)
+    """
+    gof_seq = _build_gof_seq(state)          # FUN_00464460
+    if len(gof_seq) > 1:                     # TokenSeq_Count(local_2c) > 1
+        gof_seq = _build_gof_seq(state)      # FUN_00464460 — rebuild for send
+        send_dm(gof_seq)                     # SendDM
 
 
 # ── Order-sequence builder ───────────────────────────────────────────────────
@@ -740,7 +841,7 @@ class AlbertClient:
         if game_over:
             logger.info("Game-over flag set — skipping order generation")
             _cleanup_turn(self.state)
-            _send_gof(self.power_name, self.game)
+            _send_gof(self.state, self._send_dm)
             return
 
         # ── Step 5 — main AI block ──────────────────────────────────────────
@@ -855,7 +956,7 @@ class AlbertClient:
 
         # Step 6 — CleanupTurn + GOF
         _cleanup_turn(self.state)
-        _send_gof(self.power_name, self.game)
+        _send_gof(self.state, self._send_dm)
 
     # ── DM wire helper ───────────────────────────────────────────────────────
 
