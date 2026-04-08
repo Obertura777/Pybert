@@ -97,60 +97,108 @@ def _move_analysis(state: InnerGameState) -> None:
     g_AllyTrustScore based on observed aggression ratios.  On exactly one
     hostile power detected, sets g_OpeningStickyMode and g_OpeningEnemy.
 
-    Four phases per research.md §6582:
-      1. Build reachability table (reach 1=reachable, 2=contested, 3=threatening)
-      2. Count pressuring units  (b5e8[a][b])
-      3. Trust updates           (ratio logic)
-      4. Opening ally selection  (compact slots, detect single enemy)
+    Decompile-verified structure (decompiled.txt):
+      1. Per-(a,b) reach table: reach[a][adj]=1 for adj-of-a-units not occupied by b;
+         upgrade to 2 where b-unit is adjacent; b5e8[a][b] = b-units adj to reach≥2 zones;
+         bcd0[a][b] = b's MTO/CTO moving into a-reachable (reach 2→3), SUP_MTO similarly.
+      2. Pre-ratio trust reset: non-own-power pairs with trust < 3 → force to 1.
+      3. Ratio trust updates for all (a,b) pairs.
+      4. Pre-compaction restore: if no current trust<2, restore first original low-trust ally.
+      5. Slot invalidation (trust < 2 → drop), compact, best-ally check, sticky-enemy detect.
     """
     num_powers = 7
     own_power  = getattr(state, 'albert_power_idx', 0)
 
-    # --- Phase 1 — reachability table ----------------------------------------
-    reach = np.zeros((num_powers, 256), dtype=np.int32)
-    bcd0  = np.zeros((num_powers, num_powers), dtype=np.int32)  # moves/convoys a→b
-    af00  = np.zeros((num_powers, num_powers), dtype=np.int32)  # ally units near convoy dest
-    b5e8  = np.zeros((num_powers, num_powers), dtype=np.int32)  # units of a pressuring b
+    trust = state.g_AllyTrustScore  # (7,7) float64; updated in-place
 
+    # Save own_power's trust row before any modifications (for pre-compaction restore)
+    orig_own_trust = trust[own_power, :].copy()
+
+    bcd0 = np.zeros((num_powers, num_powers), dtype=np.int32)  # b's aggressive moves toward a
+    af00 = np.zeros((num_powers, num_powers), dtype=np.int32)  # allied (a) units near contested dest
+    b5e8 = np.zeros((num_powers, num_powers), dtype=np.int32)  # b-units pressuring a
+
+    # Build province→power map and per-power province lists
+    prov_power = np.full(256, -1, dtype=np.int32)
+    power_provs: list[list[int]] = [[] for _ in range(num_powers)]
     for prov, unit in state.unit_info.items():
-        a = unit.get('power', -1)
-        if a < 0:
+        p = unit.get('power', -1)
+        if 0 <= p < num_powers:
+            prov_power[prov] = p
+            power_provs[p].append(prov)
+
+    # --- Phases 1 & 2: per-(a,b) reach table ---------------------------------
+    # For each attacking power a and defending power b:
+    #   reach[adj]=1  ← adj province of an a-unit, not occupied by b
+    #   reach[adj]=2  ← upgrade if also adjacent to a b-unit
+    #   b5e8[a][b]    ← count b-units that have at least one reach≥2 adjacent province
+    #   bcd0[a][b]    ← b's MTO/CTO moves into reach-2 zones (upgrade to 3); SUP_MTO similarly
+    reach = np.zeros(256, dtype=np.int32)  # per-(a,b) scratch table
+
+    for a in range(num_powers):
+        for b in range(num_powers):
+            if a == b:
+                continue
+
+            reach[:] = 0
+
+            # Pass 1: mark adj-of-a-units that are NOT b-occupied as reach=1
+            for prov in power_provs[a]:
+                for adj in state.adj_matrix.get(prov, []):
+                    if prov_power[adj] != b and reach[adj] == 0:
+                        reach[adj] = 1
+
+            # Pass 2: for each b-unit, upgrade reach-1 adjacent provinces to reach-2
+            for b_prov in power_provs[b]:
+                for adj in state.adj_matrix.get(b_prov, []):
+                    if reach[adj] == 1:
+                        reach[adj] = 2
+
+            # Pass 3: count b5e8 and apply order effects for bcd0/af00
+            for b_prov in power_provs[b]:
+                # b5e8: b-unit counts if ANY adjacent province has reach≥2
+                for adj in state.adj_matrix.get(b_prov, []):
+                    if reach[adj] >= 2:
+                        b5e8[a, b] += 1
+                        break
+
+                # Order effects (C types 2=MTO, 6=CTO, 4=SUP_MTO)
+                order_type = int(state.g_OrderTable[b_prov, _F_ORDER_TYPE])
+                dest       = int(state.g_OrderTable[b_prov, _F_DEST_PROV])
+
+                if order_type in (_ORDER_MTO, _ORDER_CTO):      # C types 2 and 6
+                    if 0 <= dest < 256:
+                        if reach[dest] == 2:
+                            # b moves into a-reachable contested province → aggressive
+                            bcd0[a, b] += 1
+                            reach[dest] = 3
+                            for adj2 in state.adj_matrix.get(dest, []):
+                                if prov_power[adj2] == a:
+                                    af00[a, b] += 1
+                        elif reach[dest] == 3:
+                            # b was moving to already-upgraded province → un-count
+                            bcd0[a, b] -= 1
+                            reach[dest] = 2
+                elif order_type == _ORDER_SUP_MTO:              # C type 4
+                    # Only count if b is NOT supporting an a-unit
+                    secondary = int(state.g_OrderTable[b_prov, _F_SECONDARY])
+                    if (0 <= dest < 256
+                            and not (0 <= secondary < 256 and prov_power[secondary] == a)
+                            and reach[dest] >= 2):
+                        bcd0[a, b] += 1
+
+    # --- Pre-ratio trust reset -----------------------------------------------
+    # Other powers' inter-trust: if not strongly allied (trust<3) → set to 1 (suspicious)
+    for a in range(num_powers):
+        if a == own_power:
             continue
-        reach[a, prov] = max(reach[a, prov], 1)
-        for adj in state.adj_matrix.get(prov, []):
-            b = state.get_unit_power(adj)
-            if 0 <= b != a and reach[a, adj] == 1:
-                reach[a, adj] = 2
+        for b in range(num_powers):
+            if a != b and trust[a, b] < 3:
+                trust[a, b] = 1
 
-        order_type = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
-        dest       = int(state.g_OrderTable[prov, _F_DEST_PROV])
-
-        if order_type == _ORDER_CTO:
-            if 0 <= dest < 256 and reach[a, dest] == 2:
-                reach[a, dest] = 3
-                dest_power = state.get_unit_power(dest)
-                if 0 <= dest_power != a:
-                    bcd0[a, dest_power] += 1
-                for adj2 in state.adj_matrix.get(dest, []):
-                    if state.get_unit_power(adj2) == a:
-                        af00[a, max(dest_power, 0)] += 1
-        elif order_type in (_ORDER_MTO, _ORDER_SUP_MTO):
-            if 0 <= dest < 256 and reach[a, dest] == 3:
-                reach[a, dest] = 2
-
-    # --- Phase 2 — count pressuring units ------------------------------------
-    for prov, unit in state.unit_info.items():
-        a = unit.get('power', -1)
-        if a < 0:
-            continue
-        for adj in state.adj_matrix.get(prov, []):
-            b = state.get_unit_power(adj)
-            if 0 <= b != a and reach[a, adj] >= 2:
-                b5e8[a, b] += 1
-
-    # --- Phase 3 — trust updates ---------------------------------------------
-    trust = state.g_AllyTrustScore  # float64 (7,7) in-place
-
+    # --- Phase 3 — ratio-based trust updates (all (a,b) pairs) ---------------
+    # ratio_ab = bcd0[a][b] / b5e8[a][b]: fraction of b's pressure that is aggressive toward a
+    # High ratio_ab → b is hostile to a → trust[a][b] decreases
     for a in range(num_powers):
         for b in range(num_powers):
             if a == b:
@@ -159,43 +207,73 @@ def _move_analysis(state: InnerGameState) -> None:
             ratio_ba = float(bcd0[b, a]) / b5e8[b, a] if b5e8[b, a] > 0 else -1.0
 
             if ratio_ab < 0:
-                continue  # no pressure from a toward b
+                continue  # no pressure from b toward a; skip
 
-            if ratio_ab == 0.0 and ratio_ba == 0.0:
-                trust[a, b] = 5
-            elif ratio_ab == 1.0 and b5e8[a, b] == 1 and af00[a, b] == 0 and trust[a, b] > 1:
-                trust[a, b] = 2   # bounced — may still ally
-            elif ratio_ab >= 0.55 and trust[a, b] < 5:
-                trust[a, b] = 1   # high aggression → hostile
-            elif ratio_ab < 0.55:
+            if ratio_ab == 0.0:
+                # b not aggressive → increment trust; if mutually non-aggressive: allies
+                trust[a, b] += 1
+                if ratio_ba == 0.0:
+                    trust[a, b] = 5  # override: mutual non-aggression
+                    logger.debug(
+                        "Seems (%d) and (%d) have applied no pressure to each other", a, b)
+            elif (ratio_ab == 1.0 and b5e8[a, b] == 1
+                  and af00[a, b] == 0 and af00[b, a] == 0
+                  and trust[a, b] > 1):
+                trust[a, b] = 2  # single-unit bounce; may still ally
+                logger.debug(
+                    "Seems (%d) and (%d) have bounced and still may have a viable alliance",
+                    a, b)
+            elif ratio_ab >= 0.55:
+                if trust[a, b] < 5:
+                    trust[a, b] = 1  # high aggression → hostile
+            else:  # 0 < ratio_ab < 0.55
                 trust[a, b] += 1
                 if ratio_ba == 0.0:
                     trust[a, b] += 1
+                    logger.debug(
+                        "Seems (%d) and (%d) have applied little pressure to each other", a, b)
 
-    # Best ally fully pressured by one power → g_AllyUnderAttack
-    best_ally = getattr(state, 'g_BestAllySlot0', -1)
-    if 0 <= best_ally < num_powers:
-        for c in range(num_powers):
-            if c != best_ally and bcd0[best_ally, c] > 1 and bcd0[best_ally, c] == b5e8[best_ally, c]:
-                state.g_AllyUnderAttack = 1
+    # --- Pre-compaction: restore original hostility if trust inflated --------
+    # If no power currently has trust<2 but originally some did, restore the first such ally.
+    # (C: cStack_bd79 / LAB_00435fe6 guard; prevents false trust upgrades.)
+    has_low_trust_now = any(
+        trust[own_power, p] < 2 for p in range(num_powers) if p != own_power
+    )
+    if not has_low_trust_now:
+        for p in range(num_powers):
+            if p != own_power and orig_own_trust[p] < 2:
+                trust[own_power, p] = orig_own_trust[p]
                 break
 
     # --- Phase 4 — opening ally selection ------------------------------------
-    # Invalidate ally slots where trust has degraded to ≥ 2
+    # Invalidate ally slots where trust dropped below 2 (distrusted)
     for attr in ('g_BestAllySlot0', 'g_BestAllySlot1', 'g_BestAllySlot2'):
         slot = getattr(state, attr, -1)
-        if 0 <= slot < num_powers and trust[own_power, slot] >= 2:
+        if 0 <= slot < num_powers and trust[own_power, slot] < 2:
             setattr(state, attr, -1)
 
-    # Compact: shift valid slots to front
+    # Compact: shift valid slots to front (left-pack)
     slots = [getattr(state, f'g_BestAllySlot{i}', -1) for i in range(3)]
     valid = [s for s in slots if s >= 0]
     while len(valid) < 3:
         valid.append(-1)
-    state.g_BestAllySlot0, state.g_BestAllySlot1, state.g_BestAllySlot2 = valid
+    state.g_BestAllySlot0, state.g_BestAllySlot1, state.g_BestAllySlot2 = (
+        valid[0], valid[1], valid[2])
 
-    # Detect single hostile power → sticky enemy mode
-    hostile = [p for p in range(num_powers) if p != own_power and trust[own_power, p] == 1]
+    # Best ally (after compaction) fully pressured by one power → g_AllyUnderAttack
+    best_ally = getattr(state, 'g_BestAllySlot0', -1)
+    if 0 <= best_ally < num_powers:
+        for c in range(num_powers):
+            if (c != best_ally
+                    and bcd0[best_ally, c] > 1
+                    and bcd0[best_ally, c] == b5e8[best_ally, c]):
+                state.g_AllyUnderAttack = 1
+                logger.debug(
+                    "Best ally (%d) severely pressured by power (%d)", best_ally, c)
+                break
+
+    # Detect single hostile (trust==1) power → sticky enemy mode
+    hostile = [p for p in range(num_powers) if trust[own_power, p] == 1]
     if len(hostile) == 1:
         p = hostile[0]
         state.g_OpeningStickyMode = 1
@@ -203,8 +281,9 @@ def _move_analysis(state: InnerGameState) -> None:
         trust[own_power, p]       = 0
         state.g_StabbedFlag       = 1   # DAT_00baed5f = g_EnemyDesired
         logger.debug("Enemy set to single original enemy: power %d", p)
+        return  # goto LAB_00436427 (skip triple-front check)
 
-    # Triple-front mode: demote all trust-3 entries to trust-1
+    # Triple-front mode: demote trust-3 entries to trust-1 for own_power
     if getattr(state, 'g_TripleFrontFlag', 0) == 1:
         for p in range(num_powers):
             if trust[own_power, p] == 3:
@@ -575,13 +654,13 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         [8]  secondary dest province (SUP_MTO dest; CVY army dest)
         [10] CTO via-list head pointer (linked list of convoy fleet provinces)
 
-    Token DAT constants (DAIDE 0x43 order-type category):
-        DAT_004c7678 = CTO (0x4300)
-        DAT_004c767c = CVY (0x4301)
-        DAT_004c7680 = HLD (0x4302)
-        DAT_004c7684 = MTO (0x4303)
-        DAT_004c7688 = SUP (0x4304)
-        DAT_004c768c = VIA (0x4305)
+    Token DAT constants (confirmed from token table at 0x004c7670):
+        DAT_004c7678 = CTO (0x4320)
+        DAT_004c767c = CVY (0x4321)
+        DAT_004c7680 = HLD (0x4322)
+        DAT_004c7684 = MTO (0x4323)
+        DAT_004c7688 = SUP (0x4324)
+        DAT_004c768c = VIA (0x4325)
 
     Python mapping of param_2 fields → g_OrderTable columns:
         param_2[4]   order type  → _F_ORDER_TYPE  (1-indexed; 0/1→HLD=1, 2→MTO=2, …)
@@ -806,21 +885,33 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
     TokenSeq_Count in the caller counts list nodes; > 1 means at least one
     order entry is present (header alone = 1).
 
-    FUN_00463690 not yet decompiled.
-    SPR/SUM orders are read from state.g_OrderList (populated by _build_and_send_sub).
-    FAL/AUT orders are read from state.g_retreat_order_list (populated before _send_gof).
+    FUN_00463690 = _build_movement_order_token (fully ported).
+    SPR/SUM orders are read from state.unit_info (own-power units with non-zero order type).
+    FAL/AUT orders are read from state.g_retreat_order_list (populated before _send_gof);
+         only own-power nodes are emitted (mirrors C power check at iVar6+0x18).
+    WIN:
+      Build entries should come from the build-candidate list at this+0x2474/0x2478.
+      Each candidate has province at +0x0c (int) and BLD/REM DAIDE token at +0x10 (short).
+      this+0x2480 (int) = waive count; this+0x2488 (char) = fleet-build flag.
+      THESE FIELDS HAVE NO PYTHON EQUIVALENT YET — the build loop currently falls back
+      to state.g_build_order_list (stub) so callers must populate that list before
+      invoking _send_gof. state.g_waive_count (int) and state.g_fleet_build_flag (bool)
+      must also be set. TODO: add these fields to InnerGameState once the winter-order
+      handler that populates this+0x2474 is ported (needs Ghidra for handler function).
     """
     phase = getattr(state, 'g_season', 'SPR')
-    orders: list = list(getattr(state, 'g_OrderList', []))
+    own_power = getattr(state, 'albert_power_idx', 0)
+    power_name = _DAIDE_POWER_NAMES[own_power] if 0 <= own_power < len(_DAIDE_POWER_NAMES) else 'UNO'
 
     # DAT_004c77a0 = GOF (0x4803) — always the first token
     seq: list = ['GOF']
 
     if phase in ('SPR', 'SUM'):
-        # FUN_00463690: for each own unit (unit.power==own_power) with an order
-        # (unit+0x20 != 0 ↔ g_OrderTable[prov, _F_ORDER_TYPE] != 0):
-        # build DAIDE movement-order token seq; FUN_00466c40 wraps in parens.
-        own_power = getattr(state, 'albert_power_idx', 0)
+        # FUN_00463690 = _build_movement_order_token.
+        # C: for each unit in active list (this+0x2450/2454):
+        #   if unit.power (iVar6+0x18) == own_power (this+0x2424) AND
+        #      unit.order_flag (iVar6+0x20) != 0:
+        #     build token via FUN_00463690; FUN_00466c40 wraps in parens, appends to output.
         for prov, unit_data in state.unit_info.items():
             if unit_data.get('power') != own_power:
                 continue
@@ -828,24 +919,46 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
             if tok is not None:
                 seq.append(f'( {tok} )')        # FUN_00466c40 wraps in parens
     elif phase in ('FAL', 'AUT'):
-        # FUN_00460110: retreat order token builder over retreat list (this+0x245c/2460).
-        # g_OrderList is NOT used here — that is the press-candidate list.
+        # FUN_00460110 = _build_retreat_order_token.
+        # C: for each unit in retreat list (this+0x245c/2460):
+        #   if unit.power (iVar6+0x18) == own_power (this+0x2424) AND
+        #      unit.order_flag (iVar6+0x20) != 0:
+        #     build token; FUN_00466c40 wraps in parens, appends to output.
+        # Power filter mirrors the C power check; g_retreat_order_list may contain
+        # all powers' retreat units.
         for node in state.g_retreat_order_list:
+            if node.get('power') != own_power:          # iVar6+0x18 == own_power check
+                continue
             tok = _build_retreat_order_token(state, node)
             if tok is not None:
                 seq.append(f'( {tok} )')          # FUN_00466c40 wraps in parens
     else:
         # WIN: BLD/REM per candidate (build list this+0x2474/2478) +
         #      WVE per waiver (count at this+0x2480).
-        # DAT_004c7670=BLD(0x4380), DAT_004c7674=REM(0x4381), DAT_004c76a0=WVE(0x4382).
-        # Coast selection per build candidate: this+0x2488 == 0 → DAT_004c769c,
-        # else → DAT_004c7698 (two fleet-build coast tokens, values TBC).
-        for order in orders:
+        # DAT values (all confirmed — see DaideTokenEncoding.md token table at 0x004c7670):
+        #   DAT_004c7670 = AMY (0x4200)
+        #   DAT_004c7674 = FLT (0x4201)
+        #   DAT_004c7698 = BLD (0x4380)
+        #   DAT_004c769c = REM (0x4381)
+        #   DAT_004c76a0 = WVE (0x4382)
+        # C per-candidate:
+        #   1. [POWER] from this+0x2424
+        #   2. If *(short*)(iVar3+0x10) == AMY: append AMY; else append FLT → [POWER, AMY/FLT]
+        #      (iVar3+0x10 = unit type token: AMY=0x4200 or FLT=0x4201)
+        #   3. Province from iVar3+0x0c; CONCAT22(0x46, 0x42xx) → byte1=0x42≠0x46 → no coast
+        #      → [POWER, FLT/AMY, PROV]
+        #   4. FUN_00465aa0 wraps → ( POWER FLT/AMY PROV )  ← standard DAIDE unit spec
+        #   5. If this+0x2488 == 0: append REM (remove phase); else append BLD (build phase)
+        #   6. FUN_00466c40 wraps all → ( ( POWER FLT/AMY PROV ) BLD/REM )  ← standard DAIDE ✓
+        # this+0x2488 = 0 → remove phase; != 0 → build phase.
+        # g_build_order_list stub: caller must populate; see Q-GOF-1 in OpenQuestions.md.
+        for order in getattr(state, 'g_build_order_list', []):
             seq.append(f'( {order} )')
+        # WVE: C calls FUN_00466540(own_power_tok, ..., WVE) → [own_power, WVE].
+        # AppendSeq wraps to ( own_power WVE ). Per DAIDE spec: "power WVE".
         waive_count: int = int(getattr(state, 'g_waive_count', 0))
         for _ in range(waive_count):
-            # FUN_00466540(own_power_token, ..., &DAT_004c76a0) → ( power WVE )
-            seq.append(f'( WVE )')              # DAT_004c76a0 = WVE(0x4382)
+            seq.append(f'( {power_name} WVE )')  # DAT_004c76a0=WVE; power from this+0x2424
 
     return seq
 

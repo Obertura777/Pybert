@@ -1112,21 +1112,21 @@ def post_process_orders(state: InnerGameState) -> None:
         if not (0 <= src_prov < num_provinces): continue
         if not (0 <= dst_prov < num_provinces): continue
 
+        # Check 1 (C++ order): flag_a=1 and flag_b=0 → successful support → +10 capped at 201
         if flag_a == 1 and flag_b == 0:
-            # Successful uncut support → +10, capped at 201
             cur = int(state.g_MoveHistoryMatrix[power, src_prov, dst_prov])
             if cur < 201:
                 state.g_MoveHistoryMatrix[power, src_prov, dst_prov] = min(cur + 10, 201)
 
-        elif flag_b == 1:
-            # Unit disrupted at src → zero entire src row
-            state.g_MoveHistoryMatrix[power, src_prov, :] = 0
-
-        elif flag_c == 1:
-            # Full conflict → zero row and column for both src and dst
+        # Check 2: flag_c=1 → full conflict → zero src row, dst row, dst column (independent if)
+        if flag_c == 1:
             state.g_MoveHistoryMatrix[power, src_prov, :] = 0
             state.g_MoveHistoryMatrix[power, dst_prov, :] = 0
             state.g_MoveHistoryMatrix[power, :, dst_prov] = 0
+
+        # Check 3: flag_b=1 → unit disrupted at src → zero src row (independent if)
+        if flag_b == 1:
+            state.g_MoveHistoryMatrix[power, src_prov, :] = 0
 
 
 # ── EvaluateAllianceScore ─────────────────────────────────────────────────────
