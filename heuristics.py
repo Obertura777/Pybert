@@ -806,26 +806,63 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
 # ── ComputeInfluenceMatrix / NormalizeInfluenceMatrix ────────────────────────
 
-def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:  # noqa: ARG001
+def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
     """
-    Port of ComputeInfluenceMatrix (FUN_0040d8c0) — ranking phase.
+    Port of ComputeInfluenceMatrix (FUN_0040d8c0).
 
-    Assumes g_InfluenceMatrix (= g_InfluenceMatrix_Alt) has already been
-    populated and row-normalised by generate_orders (inlined pipeline).
-    Performs:
+    All 6 phases from the decompile (decompiled.txt):
+      Phase 1 — trust-adjust g_InfluenceMatrix_Raw → g_InfluenceMatrix
+      Phase 2 — per-power row-sum via PackScoreU64 (banker's-round int64)
+      Phase 3 — add _safe_pow noise: cell += pow(cell/(col_sum+1), 0.3) * 500
+      Phase 4 — row-normalise each row to sum = 100
       Phase 5 — initialise g_AllyPrefRanking / g_InfluenceRankFlag
-      Phase 6 — insertion-sort to build ranked alliance preference list
-
-    Research.md §4292.
+      Phase 6 — selection-sort to build ranked alliance preference list
     """
     num_powers = 7
 
+    # Phase 1 — trust-adjust raw matrix
+    # own_power row/col: copy raw directly (no scaling)
+    # other pairs: trust_hi<0 OR (trust_hi<1 AND trust_lo<6) → divide by (trust_lo+1)
+    #              otherwise (confirmed ally) → divide by 6.0
+    for row in range(num_powers):
+        for col in range(num_powers):
+            raw = float(state.g_InfluenceMatrix_Raw[row, col])
+            if row == own_power or col == own_power:
+                state.g_InfluenceMatrix[row, col] = raw
+            else:
+                trust_hi = int(state.g_AllyTrustScore_Hi[row, col])
+                trust_lo = int(state.g_AllyTrustScore[row, col])
+                if trust_hi < 0 or (trust_hi < 1 and trust_lo < 6):
+                    divisor = trust_lo + 1
+                    state.g_InfluenceMatrix[row, col] = raw / divisor if divisor != 0 else raw
+                else:
+                    state.g_InfluenceMatrix[row, col] = raw / 6.0
+
+    # Phase 2 — per-power row sum (PackScoreU64 = trunc toward zero, not banker's round;
+    # FRNDINT is intermediate, correction code always restores truncation)
+    power_sum = np.array(
+        [int(float(np.sum(state.g_InfluenceMatrix[p]))) for p in range(num_powers)],
+        dtype=np.int64,
+    )
+
+    # Phase 3 — noise injection: cell += _safe_pow(cell / (col_sum+1), 0.3) * 500
+    for row in range(num_powers):
+        for col in range(num_powers):
+            col_sum = float(power_sum[col])
+            base = float(state.g_InfluenceMatrix[row, col]) / (col_sum + 1.0)
+            state.g_InfluenceMatrix[row, col] += _safe_pow(base, 0.3) * 500.0
+
+    # Phase 4 — row-normalise to 100
+    for row in range(num_powers):
+        row_sum = float(np.sum(state.g_InfluenceMatrix[row]))
+        if row_sum != 0.0:
+            state.g_InfluenceMatrix[row] = (state.g_InfluenceMatrix[row] * 100.0) / row_sum
+
     # Phase 5 — init ranking arrays
-    state.g_AllyPrefRanking.fill(-1)
+    # All g_AllyPrefRanking slots initialised to own_power sentinel (per decompile)
+    state.g_AllyPrefRanking.fill(own_power)
     state.g_InfluenceRankFlag.fill(-1)
-    for p in range(num_powers):
-        state.g_AllyPrefRanking[p, 0] = p           # slot 0 = own power (sentinel)
-        state.g_InfluenceRankFlag[p, p] = -2         # self = skip
+    np.fill_diagonal(state.g_InfluenceRankFlag, -2)  # self = skip
 
     # Phase 6 — selection-sort to build ranked list (1-indexed ranks 1..numPowers-1)
     for p in range(num_powers):

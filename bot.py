@@ -12,6 +12,7 @@ from .monte_carlo import (
     update_score_state,
     check_time_limit,
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,
+    _F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2,
     _ORDER_HLD, _ORDER_MTO, _ORDER_SUP_HLD, _ORDER_SUP_MTO,
     _ORDER_CVY, _ORDER_CTO,
 )
@@ -469,7 +470,8 @@ def _post_friendly_update(state: InnerGameState) -> None:
     """ComputeInfluenceMatrix (FUN_0040d8c0). Trust-adjusts g_InfluenceMatrix,
     adds noise, row-normalises to 100, builds g_AllyPrefRanking.
     research.md §4241."""
-    compute_influence_matrix(state)
+    own_power = getattr(state, 'albert_power_idx', 0)
+    compute_influence_matrix(state, own_power)
 
 
 def _cleanup_turn(state: InnerGameState) -> None:
@@ -492,10 +494,11 @@ def _cleanup_turn(state: InnerGameState) -> None:
             trust = float(state.g_AllyTrustScore[row, col])
             state.g_InfluenceMatrix[row, col] = raw / (trust + 1.0)
 
-    # Phase 2 — per-power row sum via PackScoreU64 (banker's round → int64)
+    # Phase 2 — per-power row sum via PackScoreU64 (trunc toward zero, not banker's round;
+    # FRNDINT+correction always restores truncation)
     # C: DAT_004f6b98[power*2] = PackScoreU64() after FPU row-sum accumulation
     power_sum = np.array(
-        [round(float(np.sum(state.g_InfluenceMatrix[p]))) for p in range(n)],
+        [int(float(np.sum(state.g_InfluenceMatrix[p]))) for p in range(n)],
         dtype=np.int64,
     )
 
@@ -552,6 +555,167 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     state.g_VictoryThreshold = len(state.unit_info) // 2 + 1
 
 
+def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | None':
+    """
+    Port of FUN_00463690 — build DAIDE token string for one movement-phase order.
+
+    C: undefined4 * __thiscall FUN_00463690(void *this, undefined4 *param_1, int *param_2)
+      this    = inner gamestate (unit list at this+0x2450)
+      param_1 = output token list
+      param_2 = order record starting at unit+0x10 in the unit struct:
+        [0]  source province ID
+        [1]  source coast token
+        [2]  power index
+        [3]  unit type (0=AMY, 1=FLT)
+        [4]  order type: 0/1=HLD, 2=MTO, 3=SUP_HLD, 4=SUP_MTO, 5=CVY, 6=CTO
+               (unit+0x20 != 0 guard in caller = this field non-zero)
+        [5]  dest province (MTO, CTO)
+        [6]  dest coast token (MTO, CTO; high byte 0x46 = coast category)
+        [7]  target unit province (SUP_HLD, SUP_MTO, CVY)
+        [8]  secondary dest province (SUP_MTO dest; CVY army dest)
+        [10] CTO via-list head pointer (linked list of convoy fleet provinces)
+
+    Token DAT constants (DAIDE 0x43 order-type category):
+        DAT_004c7678 = CTO (0x4300)
+        DAT_004c767c = CVY (0x4301)
+        DAT_004c7680 = HLD (0x4302)
+        DAT_004c7684 = MTO (0x4303)
+        DAT_004c7688 = SUP (0x4304)
+        DAT_004c768c = VIA (0x4305)
+
+    Python mapping of param_2 fields → g_OrderTable columns:
+        param_2[4]   order type  → _F_ORDER_TYPE  (1-indexed; 0/1→HLD=1, 2→MTO=2, …)
+        param_2[7]   target prov → _F_SECONDARY   (SUP target or CVY army)
+        param_2[5,8] dest prov   → _F_DEST_PROV   (MTO/CTO dest; SUP_MTO/CVY dest)
+        param_2[6]   dest coast  → _F_DEST_COAST
+        param_2[10]  via list    → _F_CONVOY_LEG0/_LEG1/_LEG2 (up to 3 fleet provinces)
+
+    Absorbed helpers:
+        FUN_0045ffa0 → inline: build ( POWER AMY|FLT PROVINCE [COAST] ) unit token
+        FUN_0045fca0 → inline: build PROVINCE or ( PROVINCE COAST ) dest token
+        FUN_00466480/FUN_00466330/AppendList → string concat (no Python equivalent needed)
+        FUN_00465870 → token-list alloc (no Python equivalent needed)
+        FUN_00466c40 → wrap sub-list in parens (absorbed as f"( {via_str} )")
+        UnitList_FindOrInsert → state.unit_info.get(target_prov)
+    """
+    order_type = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
+    if order_type == 0:
+        return None
+
+    unit_data = state.unit_info.get(prov)
+    if unit_data is None:
+        return None
+
+    if not state._id_to_prov:
+        state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
+    id_to_prov = state._id_to_prov
+
+    # FUN_0045ffa0: build unit identifier ( POWER AMY|FLT PROVINCE [COAST] )
+    # param_2[0..3] = {province, coast, power, unit_type}
+    power_idx  = unit_data.get('power', 0)
+    power_name = _DAIDE_POWER_NAMES[power_idx] if 0 <= power_idx < len(_DAIDE_POWER_NAMES) else 'UNO'
+    unit_chr   = 'AMY' if unit_data.get('type', 'AMY') == 'AMY' else 'FLT'
+    prov_name  = id_to_prov.get(prov, str(prov))
+    unit_coast = unit_data.get('coast', '')
+    if unit_coast:
+        unit_tok = f"( {power_name} {unit_chr} {prov_name} {unit_coast} )"
+    else:
+        unit_tok = f"( {power_name} {unit_chr} {prov_name} )"
+
+    # FUN_0045fca0: build dest token — PROVINCE or ( PROVINCE COAST )
+    # param_2[5] = dest province, param_2[6] = dest coast (high byte 0x46 = coast category)
+    dest_id       = int(state.g_OrderTable[prov, _F_DEST_PROV])
+    dest_name     = id_to_prov.get(dest_id, str(dest_id))
+    dest_coast_tok = int(state.g_OrderTable[prov, _F_DEST_COAST])
+    dest_coast_str = _DAIDE_COAST_TO_STR.get(dest_coast_tok, '')
+    if dest_coast_str:
+        dest_tok = f"( {dest_name} {dest_coast_str} )"
+    else:
+        dest_tok = dest_name
+
+    def _target_unit_tok(target_prov: int) -> 'str | None':
+        """FUN_0045ffa0 applied to target unit at target_prov."""
+        td = state.unit_info.get(target_prov)
+        if td is None:
+            return None
+        tp = td.get('power', 0)
+        tn = _DAIDE_POWER_NAMES[tp] if 0 <= tp < len(_DAIDE_POWER_NAMES) else 'UNO'
+        tc = 'AMY' if td.get('type', 'AMY') == 'AMY' else 'FLT'
+        tp_name = id_to_prov.get(target_prov, str(target_prov))
+        tcoast  = td.get('coast', '')
+        if tcoast:
+            return f"( {tn} {tc} {tp_name} {tcoast} )"
+        return f"( {tn} {tc} {tp_name} )"
+
+    if order_type == _ORDER_HLD:
+        # case 0/1: DAT_004c7680 = HLD
+        # FUN_0045ffa0 → unit_tok; FUN_00466480(unit_tok, HLD); AppendList
+        return f"{unit_tok} HLD"
+
+    elif order_type == _ORDER_MTO:
+        # case 2: FUN_0045fca0 → dest_tok; FUN_0045ffa0 → unit_tok
+        #         FUN_00466480(unit_tok, MTO=DAT_004c7684); FUN_00466330(+dest_tok); AppendList
+        return f"{unit_tok} MTO {dest_tok}"
+
+    elif order_type == _ORDER_SUP_HLD:
+        # case 3: UnitList_FindOrInsert(param_2+7) → target unit
+        #         FUN_0045ffa0(target) → target_tok
+        #         FUN_0045ffa0(self)   → unit_tok
+        #         FUN_00466480(unit_tok, SUP=DAT_004c7688); FUN_00466330(+target_tok); AppendList
+        target_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        target_tok  = _target_unit_tok(target_prov)
+        if target_tok is None:
+            return None
+        return f"{unit_tok} SUP {target_tok}"
+
+    elif order_type == _ORDER_SUP_MTO:
+        # case 4: UnitList_FindOrInsert(param_2+7) → target; dest = this+param_2[8]*0x24
+        #         FUN_0045ffa0(target) → target_tok
+        #         FUN_0045ffa0(self)   → unit_tok
+        #         FUN_00466480(unit_tok, SUP); concat(+target_tok)
+        #         FUN_00466480(+MTO=DAT_004c7684); FUN_00466480(+dest_province); AppendList
+        # param_2[7] = _F_SECONDARY (supported unit); param_2[8] = _F_DEST_PROV (its destination)
+        target_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        target_tok  = _target_unit_tok(target_prov)
+        if target_tok is None:
+            return None
+        return f"{unit_tok} SUP {target_tok} MTO {dest_name}"
+
+    elif order_type == _ORDER_CVY:
+        # case 5: UnitList_FindOrInsert(param_2+7) → army unit at army_prov
+        #         FUN_0045ffa0(army)  → army_tok
+        #         FUN_0045ffa0(fleet) → unit_tok
+        #         FUN_00466480(unit_tok, CVY=DAT_004c767c); concat(+army_tok)
+        #         FUN_00466480(+CTO=DAT_004c7678); FUN_00466480(+dest_province); AppendList
+        # param_2[7] = army prov (_F_SECONDARY); param_2[8] = army dest (_F_DEST_PROV)
+        army_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        army_tok  = _target_unit_tok(army_prov)
+        if army_tok is None:
+            return None
+        return f"{unit_tok} CVY {army_tok} CTO {dest_name}"
+
+    elif order_type == _ORDER_CTO:
+        # case 6: FUN_0045fca0 → dest_tok (with coast); FUN_0045ffa0 → army unit_tok
+        #         FUN_00466480(unit_tok, CTO=DAT_004c7678); concat(+dest_tok); AppendList main order
+        #         iterate param_2[10] via-list (linked list), each node[2]=fleet_prov:
+        #           FUN_00466480(local_1ec, fleet_prov_token); AppendList(local_1ec)
+        #         FUN_00466480(param_1, VIA=DAT_004c768c)
+        #         FUN_00466c40(+local_1ec wrapped in parens); AppendList
+        # param_2[10] via list → _F_CONVOY_LEG0/_LEG1/_LEG2 (non-zero fleet province IDs)
+        via_provs = []
+        for leg_col in (_F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2):
+            leg_prov = int(state.g_OrderTable[prov, leg_col])
+            if leg_prov:
+                via_provs.append(id_to_prov.get(leg_prov, str(leg_prov)))
+        if via_provs:
+            # FUN_00466c40 wraps the via-province list in parens (DAT_004c768c = VIA)
+            via_tok = "( " + " ".join(via_provs) + " )"
+            return f"{unit_tok} CTO {dest_tok} VIA {via_tok}"
+        return f"{unit_tok} CTO {dest_tok}"
+
+    return None
+
+
 def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | None':
     """
     Port of FUN_00460110 — build DAIDE token string for one retreat-phase order node.
@@ -586,9 +750,12 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
     unit_chr = 'AMY' if node.get('unit_type', 'AMY') == 'AMY' else 'FLT'
     prov_name = state._id_to_prov.get(node.get('province', 0), str(node.get('province', 0)))
     unit_coast = node.get('unit_coast', '')
-    unit_str = f"{power_name} {unit_chr} {prov_name}"
+    # FUN_00465aa0 wraps the unit seq in parens at the end of FUN_0045ffa0,
+    # so the unit portion must be ( POWER UNIT PROVINCE [COAST] ).
+    unit_str = f"( {power_name} {unit_chr} {prov_name}"
     if unit_coast:
         unit_str += f" {unit_coast}"
+    unit_str += " )"
 
     if order_type == 7:  # RTO
         # FUN_0045fca0: build destination seq ('PROVINCE [COAST]')
@@ -598,7 +765,12 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
         # dest_coast stores the full DAIDE coast token (0 = no coast, 0x46xx = coast).
         coast_tok = node.get('dest_coast', 0)
         coast_str = _DAIDE_COAST_TO_STR.get(coast_tok, '')
-        dest_str = f"{dest_name} {coast_str}".rstrip() if coast_str else dest_name
+        # FUN_00466540 builds [province_tok, coast_tok]; FUN_00465aa0 then wraps in ( ).
+        # DAIDE prov_coast grammar: ( province coast ) — parens required for coasted dest.
+        if coast_str:
+            dest_str = f"( {dest_name} {coast_str} )"
+        else:
+            dest_str = dest_name
         # FUN_00466480(unit_seq, buf, &DAT_004c7694=RTO) + FUN_00466330(unit+RTO, buf, dest)
         return f"{unit_str} RTO {dest_str}"
 
@@ -645,9 +817,16 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
     seq: list = ['GOF']
 
     if phase in ('SPR', 'SUM'):
-        # FUN_00463690: movement order token builder (active unit list)
-        for order in orders:
-            seq.append(f'( {order} )')          # FUN_00466c40 wraps in parens
+        # FUN_00463690: for each own unit (unit.power==own_power) with an order
+        # (unit+0x20 != 0 ↔ g_OrderTable[prov, _F_ORDER_TYPE] != 0):
+        # build DAIDE movement-order token seq; FUN_00466c40 wraps in parens.
+        own_power = getattr(state, 'albert_power_idx', 0)
+        for prov, unit_data in state.unit_info.items():
+            if unit_data.get('power') != own_power:
+                continue
+            tok = _build_movement_order_token(state, prov)
+            if tok is not None:
+                seq.append(f'( {tok} )')        # FUN_00466c40 wraps in parens
     elif phase in ('FAL', 'AUT'):
         # FUN_00460110: retreat order token builder over retreat list (this+0x245c/2460).
         # g_OrderList is NOT used here — that is the press-candidate list.
