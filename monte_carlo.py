@@ -689,43 +689,448 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     build_support_opportunities(state)
 
 
-def process_turn(state: InnerGameState, num_trials: int = 4000) -> list:
+def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000) -> None:
     """
-    Orchestrator of the Monte Carlo loop (BuildAndSendSUB / ScoreOrderCandidates).
+    Port of FUN_00453220 = ProcessTurn(Albert *this, int **power_index, int num_trials).
 
-    1. generate_orders — full influence-matrix pipeline + order enumeration.
-    2. score_order_candidates_all_powers — dot-product scoring of enumerated candidates.
-    3. MC trial loop: EvaluateOrderProposal per trial, track best candidate.
+    Per-power Monte Carlo order-assignment engine.  Called by ScoreOrderCandidates
+    once per active power.  Runs ``num_trials`` independent MC trials for
+    ``power_index`` and accumulates results into state.g_CandidateRecordList.
+
+    Signature matches decompiled: __thiscall ProcessTurn(param_1_00, power_index, num_trials)
+      param_1_00  → state (Albert *this)
+      power_index → the power being simulated this call
+      num_trials  → number of Monte Carlo iterations
+
+    Phase 0 — Setup (once per call)
+    --------------------------------
+    0a. Build reachable-province set (g_ReachableProvinces) by scanning the ally-
+        shared order-history list for power_index (or own-power variant when
+        power_index == own_power).
+    0b. Per-power order-history copy: copy g_OrderHistory[p] → local per-power sets.
+    0c. Ally flag scan: local_76f = 1 if g_XdoPressSent[power_index, p] for any p.
+    0d. Random start offset for the cyclical power-expand pass.
+
+    Phase 1 — Monte Carlo trial loop (num_trials iterations)
+    ----------------------------------------------------------
+    Each trial:
+    1a. Per-trial state reset:
+        - clear g_SupportTrustAdj / g_RingConvoyScore / g_EarlyGameAdjScore / g_OtherScore
+        - clear g_ConvoyDstList, g_TrialList2, g_TrialMap
+        - reset g_OrderTable all-provinces (order type 0, coast -1, other fields 0)
+        - reset g_ConvoySourceProv[prov] = -1, g_ConvoyActiveFlag[prov] = 0,
+          g_ProvinceScore[prov] = 0, g_ArmyAdjCount[prov] = 0
+        - reset g_UnitPresence[power, prov] = -1 for all power,prov
+    1b. Unit list scan:
+        - g_UnitPresence[unit.power, unit.province] = 0
+        - for own armies: g_ArmyAdjCount[adj]++ for each AMY-adjacent province
+    1c. Dispatch existing orders (priority HLD→MTO→CTO→CVY→SUP):
+        - If power_index == own_power (or trusted ally): dispatch g_AllianceOrders[power_index]
+        - Dispatch g_GeneralOrders[power_index] (second pass)
+    1d. Ring-convoy check (if g_RingConvoyEnabled):
+        - Verify ring A→B, B→C, C→A is still intact; build MTO orders if valid.
+    1e. Random exploit pass (15% chance; 35% if late-game + has_ally):
+        - Cycle through allied powers looking for defection / secondary targets.
+        - Insert matching proposal records from g_DealList into local candidate set.
+    1f. Support assignment:
+        - Find own unordered SC provinces → call assign_hold_supports.
+    1g. Convoy chain assignment:
+        - Iterate g_ConvoyDstList; score / rank fleet candidates via score_convoy_fleet.
+    1h. Target-bonus scoring:
+        - +150/+75 per MTO/CTO unit moving to a flagged target province.
+        - +50 per SUP_MTO into an SC-gaining support.
+    1i. Call evaluate_order_proposal(state, power_index) once per trial.
+
+    Callees (unported stubs where noted):
+      reset_per_trial_state   — FUN_00460be0; resets board-level snapshot
+      dispatch_single_order   — dispatch.py; already ported
+      assign_hold_supports    — FUN_0041d270; STUB
+      score_convoy_fleet      — BST insert-with-score; STUB
+      move_candidate          — BST erase/pop from Albert+0x4cfc; STUB
+      build_order_mto         — writes MTO into g_OrderTable; STUB
+      insert_order_candidate  — inserts candidate into local set; STUB
+      evaluate_order_proposal — monte_carlo.py; already ported
     """
-    own_power = getattr(state, 'albert_power_idx', 0)
+    import logging
+    logger = logging.getLogger(__name__)
 
-    # Full influence-matrix + enumeration pipeline
-    generate_orders(state, own_power)
+    own_power: int = getattr(state, 'albert_power_idx', 0)
+    num_provinces: int = int(getattr(state, 'num_provinces',
+                                     state.g_OrderTable.shape[0]))
+    num_powers: int = 7
 
-    # Dot-product scoring of enumerated candidates with random round weights
-    round_weights = [random.uniform(0.8, 1.2) for _ in range(10)]
-    score_order_candidates_all_powers(state, round_weights, own_power)
+    # ── helpers for unported stubs ────────────────────────────────────────────
+    def _reset_per_trial_state() -> None:
+        """Stub for FUN_00460be0 — resets board-level per-trial snapshot arrays."""
+        # Clears the intermediate simulation data so each trial starts fresh.
+        pass  # TODO: port FUN_00460be0 = ResetPerTrialState
 
-    # BuildSupportProposals runs once per power after candidate scoring
-    for p in range(7):
-        build_support_proposals(state, p)
+    def _assign_hold_supports(candidates: dict) -> None:
+        """Stub for FUN_0041d270 = AssignHoldSupports."""
+        # Assigns hold / support orders to provinces that have no order yet.
+        # candidates: {prov: True} for own unordered SC provinces.
+        pass  # TODO: port FUN_0041d270 = AssignHoldSupports
 
-    best_candidate_set = []
-    max_score = -1.0
+    def _score_convoy_fleet(prov: int, score: int) -> None:
+        """ScoreConvoyFleet (FUN_00419790) — BST insert into g_ConvoyFleetCandidates.
 
-    for _ in range(num_trials):
-        state.g_CandidateRecordList.clear()
-        for p in range(7):
-            evaluate_order_proposal(state, p)
+        Mirrors MSVC std::map<int,int>::insert: lower-bound traversal (decompiled
+        loop at FUN_00419790) followed by FUN_00413ba0 (actual RB-tree node alloc
+        + link).  In Python the sorted list replaces the RB-tree; bisect.insort
+        keeps it ordered by score ascending (same traversal direction as the C
+        loop: key > node[3] → go left, i.e. larger keys are to the left, so the
+        BST is effectively descending — but the Python list is ascending; Phase 2
+        drains from the front, which is lowest score first).
+        """
+        import bisect
+        bisect.insort(state.g_ConvoyFleetCandidates, (score, prov))
 
-        own_records = [r for r in state.g_CandidateRecordList if r['power'] == own_power]
-        if own_records:
-            best = max(own_records, key=lambda r: r['score'])
-            if best['score'] > max_score:
-                max_score = best['score']
-                best_candidate_set = [best]
+    def _move_candidate(prov: int) -> None:
+        """MoveCandidate (FUN_00411cf0) — BST erase from g_ConvoyFleetCandidates.
 
-    return best_candidate_set
+        Removes the existing entry for *prov* (if any) before re-inserting with
+        an updated score.  Mirrors std::map::erase(iterator).
+        """
+        state.g_ConvoyFleetCandidates = [
+            e for e in state.g_ConvoyFleetCandidates if e[1] != prov
+        ]
+
+    def _build_order_mto(src: int, dst: int, coast: int) -> None:
+        """Stub for BuildOrder_MTO — write MTO into g_OrderTable."""
+        state.g_OrderTable[src, _F_ORDER_TYPE] = float(_ORDER_MTO)
+        state.g_OrderTable[src, _F_DEST_PROV]  = float(dst)
+        state.g_OrderTable[src, _F_DEST_COAST] = float(coast)
+
+    # ── lazy-init per-trial arrays not yet on state ───────────────────────────
+    if not hasattr(state, 'g_UnitPresence'):
+        state.g_UnitPresence = np.full((num_powers, num_provinces), -1, dtype=np.int32)
+    if not hasattr(state, 'g_ArmyAdjCount'):
+        state.g_ArmyAdjCount = np.zeros(num_provinces, dtype=np.int32)
+    if not hasattr(state, 'g_ConvoyActiveFlag'):
+        state.g_ConvoyActiveFlag = np.zeros(num_provinces, dtype=np.int32)
+    if not hasattr(state, 'g_ProvinceScoreTrial'):
+        state.g_ProvinceScoreTrial = np.zeros(num_provinces, dtype=np.int32)
+    if not hasattr(state, 'g_ConvoyDstList'):
+        state.g_ConvoyDstList = []
+    if not hasattr(state, 'g_TrialList2'):
+        state.g_TrialList2 = []
+    if not hasattr(state, 'g_TrialMap'):
+        state.g_TrialMap = {}
+    if not hasattr(state, 'g_SupportTrustAdj'):
+        state.g_SupportTrustAdj = 0
+    if not hasattr(state, 'g_RingConvoyScore'):
+        state.g_RingConvoyScore = 0
+    if not hasattr(state, 'g_OtherScore'):
+        state.g_OtherScore = 0
+    if not hasattr(state, 'g_RingConvoyEnabled'):
+        state.g_RingConvoyEnabled = 0
+    if not hasattr(state, 'g_RingProv_A'):
+        state.g_RingProv_A = -1
+    if not hasattr(state, 'g_RingProv_B'):
+        state.g_RingProv_B = -1
+    if not hasattr(state, 'g_RingProv_C'):
+        state.g_RingProv_C = -1
+    if not hasattr(state, 'g_RingCoast_A'):
+        state.g_RingCoast_A = 0
+    if not hasattr(state, 'g_RingCoast_B'):
+        state.g_RingCoast_B = 0
+    if not hasattr(state, 'g_RingCoast_C'):
+        state.g_RingCoast_C = 0
+    if not hasattr(state, 'g_AllianceOrders'):
+        state.g_AllianceOrders = {}          # {power: [order_seq, ...]}
+    if not hasattr(state, 'g_GeneralOrders'):
+        state.g_GeneralOrders = {}           # {power: [order_seq, ...]}
+    if not hasattr(state, 'g_AllianceOrdersPresent'):
+        state.g_AllianceOrdersPresent = np.zeros(num_powers, dtype=np.int32)
+    if not hasattr(state, 'g_GeneralOrdersPresent'):
+        state.g_GeneralOrdersPresent = np.zeros(num_powers, dtype=np.int32)
+    if not hasattr(state, 'g_OrderHistory'):
+        state.g_OrderHistory = {}            # {power: [{province, ...}, ...]}
+    if not hasattr(state, 'g_AllyOrderHistory'):
+        state.g_AllyOrderHistory = {}        # {power: [{province, ...}, ...]}
+    if not hasattr(state, 'g_ProposalHistoryMap'):
+        # DAT_00baed98 — proposal history map; mirrors state.g_DealList
+        state.g_ProposalHistoryMap = getattr(state, 'g_DealList', [])
+    if not hasattr(state, 'g_StabMode'):
+        state.g_StabMode = 0                 # DAT_00baed69
+
+    # ── Phase 0 — Setup ───────────────────────────────────────────────────────
+
+    # 0a. Build reachable-province set (g_ReachableProvinces) for power_index.
+    #     Mirrors the StdMap_FindOrInsert(&DAT_00bb7124, ...) scan in decompile.
+    g_ReachableProvinces = {}  # {prov: True}; DAT_00bb7124
+    if power_index == own_power:
+        # own power: scan ally-shared order history (DAT_00bb7028[power_index])
+        for entry in state.g_AllyOrderHistory.get(power_index, []):
+            prov = entry.get('province', -1)
+            if prov >= 0:
+                g_ReachableProvinces[prov] = True
+    else:
+        # ally: only scan when relation > 9 OR trust (hi > 0, or hi >= 0 and lo > 5)
+        trust_lo = int(state.g_AllyTrustScore[own_power, power_index])
+        trust_hi = int(state.g_AllyTrustScore_Hi[own_power, power_index])
+        rel      = int(state.g_RelationHistory[own_power, power_index])
+        if rel > 9 or (trust_hi > 0) or (trust_hi >= 0 and trust_lo > 5):
+            for entry in state.g_AllyOrderHistory.get(power_index, []):
+                prov = entry.get('province', -1)
+                if prov >= 0:
+                    g_ReachableProvinces[prov] = True
+
+    # 0b. Per-power order-history snapshot (auStack_138[p] in decompile).
+    #     Mirrors the DAT_00bb6f2c[p] copy loop.
+    per_power_order_sets: list = [
+        dict(state.g_OrderHistory.get(p, {})) for p in range(num_powers)
+    ]
+
+    # 0c. Ally flag scan: local_76f = 1 if any g_XdoPressSent[power_index, p] == 1.
+    has_ally: bool = bool(
+        np.any(state.g_XdoPressSent[power_index] == 1)
+    )
+
+    # 0d. Random start offset for the cyclical power-expand pass.
+    rand_power_start: int = random.randrange(num_powers)
+    rand_power_cursor: int = rand_power_start
+
+    # ── Phase 1 — Monte Carlo trial loop ─────────────────────────────────────
+    # Mirror of the do { ... } while (iStack_684 < num_trials) block.
+
+    for _trial in range(num_trials):
+
+        # 1a. Per-trial state reset ────────────────────────────────────────────
+        state.g_SupportTrustAdj   = 0     # DAT_00633f14
+        state.g_RingConvoyScore   = 0     # DAT_0062c57c
+        state.g_EarlyGameBonus    = 0     # DAT_0062be94 (g_EarlyGameAdjScore)
+        state.g_OtherScore        = 0     # DAT_0062b7ac
+
+        _reset_per_trial_state()           # FUN_00460be0
+
+        # Clear per-trial lists (DAT_00bb65a4 / DAT_00bbf648 / DAT_00bb6e04).
+        state.g_ConvoyDstList.clear()
+        state.g_TrialList2.clear()
+        state.g_TrialMap.clear()
+
+        # Reset per-province order-table fields.
+        # Mirrors the loop over 0..numProvinces zeroing DAT_00baedac fields.
+        state.g_OrderTable[:num_provinces, :] = 0.0
+        state.g_OrderTable[:num_provinces, _F_DEST_COAST] = -1.0   # 0xffffffff
+        state.g_ConvoySourceProv[:num_provinces]  = -1.0  # g_SupportAssignmentMap sentinel
+        state.g_ConvoyActiveFlag[:num_provinces]  = 0
+        state.g_ProvinceScoreTrial[:num_provinces] = 0
+        state.g_ArmyAdjCount[:num_provinces]      = 0
+
+        # Reset unit-presence matrix (g_UnitPresence[power*0x100+prov] = -1).
+        state.g_UnitPresence[:, :num_provinces] = -1
+
+        # 1b. Unit list scan ───────────────────────────────────────────────────
+        # Mirrors: for each unit in this+8+0x2450 { g_UnitPresence[...] = 0;
+        #           if own AMY: g_ArmyAdjCount[adj]++ }
+        for prov, unit in state.unit_info.items():
+            p_u  = unit['power']
+            utyp = unit.get('type', '')
+            state.g_UnitPresence[p_u, prov] = 0
+
+            if p_u == power_index and utyp == 'AMY':
+                for adj in state.get_unit_adjacencies(prov):
+                    state.g_ArmyAdjCount[adj] += 1
+
+        # 1c. Dispatch existing orders (priority HLD→MTO→CTO→CVY→SUP) ─────────
+        # First pass: alliance orders (DAT_00bb65f8[power*0xc]) — own or trusted ally.
+        from .dispatch import dispatch_single_order as _dso
+        dispatch_first_pass = False
+        if power_index == own_power:
+            dispatch_first_pass = True
+        else:
+            trust_lo2 = int(state.g_AllyTrustScore[own_power, power_index])
+            trust_hi2 = int(state.g_AllyTrustScore_Hi[own_power, power_index])
+            if trust_hi2 > 0 or (trust_hi2 >= 0 and trust_lo2 > 2):
+                dispatch_first_pass = True
+
+        _ORDER_PRIORITY = [_ORDER_HLD, _ORDER_MTO, _ORDER_CTO, _ORDER_CVY, _ORDER_SUP_MTO]
+        _ORDER_TYPE_MAP  = {
+            _ORDER_HLD: 'HLD', _ORDER_MTO: 'MTO', _ORDER_CTO: 'CTO',
+            _ORDER_CVY: 'CVY', _ORDER_SUP_MTO: 'SUP',
+        }
+
+        if dispatch_first_pass and state.g_AllianceOrdersPresent[power_index]:
+            for order_type in _ORDER_PRIORITY:
+                for order_seq in state.g_AllianceOrders.get(power_index, []):
+                    if order_seq.get('type') == _ORDER_TYPE_MAP.get(order_type):
+                        _dso(state, power_index, order_seq)
+
+        # Second pass: general orders (DAT_00bb6cf8[power*0xc]) — unconditional.
+        if state.g_GeneralOrdersPresent[power_index]:
+            for order_type in _ORDER_PRIORITY:
+                for order_seq in state.g_GeneralOrders.get(power_index, []):
+                    if order_seq.get('type') == _ORDER_TYPE_MAP.get(order_type):
+                        _dso(state, power_index, order_seq)
+
+        # 1d. Ring-convoy check (DAT_00baed5c == 1) ───────────────────────────
+        if state.g_RingConvoyEnabled == 1:
+            ring_broken = False
+            pA, pB, pC = state.g_RingProv_A, state.g_RingProv_B, state.g_RingProv_C
+            if (int(state.g_OrderTable[pA, _F_ORDER_TYPE]) == _ORDER_MTO and
+                    int(state.g_OrderTable[pA, _F_DEST_PROV]) != pB):
+                ring_broken = True
+            if (int(state.g_OrderTable[pB, _F_ORDER_TYPE]) == _ORDER_MTO and
+                    int(state.g_OrderTable[pB, _F_DEST_PROV]) != pC):
+                ring_broken = True
+            if (int(state.g_OrderTable[pC, _F_ORDER_TYPE]) == _ORDER_MTO and
+                    int(state.g_OrderTable[pC, _F_DEST_PROV]) != pA):
+                ring_broken = True
+
+            # Also check whether unit is absent from ring province (own-power gate).
+            if power_index == own_power:
+                # Mirroring: FUN_00402140 checks whether ring prov is in own order set.
+                ring_in_set = (pA in per_power_order_sets[power_index] and
+                               pB in per_power_order_sets[power_index] and
+                               pC in per_power_order_sets[power_index])
+                if not ring_in_set:
+                    ring_broken = True
+            # If ring intact: build the three MTO orders.
+            if not ring_broken:
+                _build_order_mto(pA, pB, state.g_RingCoast_A)
+                _build_order_mto(pB, pC, state.g_RingCoast_B)
+                _build_order_mto(pC, pA, state.g_RingCoast_C)
+
+        # 1e. Random exploit pass (15% chance; 35% if late-game ally mode) ────
+        # Mirrors: if (iVar20 < 0x0f) { ... } else if (...) goto LAB_004505d1
+        r_exploit = random.randrange(100)
+        do_exploit = r_exploit < 15
+        if (not do_exploit and has_ally
+                and state.g_NearEndGameFactor > 6.0
+                and getattr(state, 'g_AlbertPower', own_power) != power_index
+                and r_exploit < 35):
+            do_exploit = True
+
+        if do_exploit:
+            # Advance cyclical power cursor to next allied power.
+            rand_power_cursor = (rand_power_cursor + 1) % num_powers
+            # Find an allied power.
+            exploit_power = rand_power_cursor
+            for _ in range(num_powers):
+                if state.g_XdoPressSent[power_index, exploit_power]:
+                    break
+                exploit_power = (exploit_power + 1) % num_powers
+
+            # Determine secondary target for stab scoring (65% × late-game).
+            secondary_target = -1
+            r2 = random.randrange(100)
+            if (r2 < 65 and state.g_StabMode == 1
+                    and state.g_NearEndGameFactor > 6.0):
+                trust_lo3 = int(state.g_AllyTrustScore[own_power, exploit_power])
+                trust_hi3 = int(state.g_AllyTrustScore_Hi[own_power, exploit_power])
+                if trust_hi3 > 0 or (trust_hi3 >= 0 and trust_lo3 != 0):
+                    secondary_target = (exploit_power + 1) % num_powers
+                    for _ in range(num_powers):
+                        st_lo = int(state.g_AllyTrustScore[own_power, secondary_target])
+                        st_hi = int(state.g_AllyTrustScore_Hi[own_power, secondary_target])
+                        if st_lo == 0 and st_hi == 0:
+                            secondary_target = -1
+                            break
+                        if secondary_target == exploit_power:
+                            secondary_target = -1
+                            break
+                        secondary_target = (secondary_target + 1) % num_powers
+
+            # Count cap: mirrors ppiStack_7bc random table (< 40 → 1, < 60 → 2, …)
+            r3 = random.randrange(100)
+            if secondary_target < 0:
+                if r3 < 65:
+                    count_cap = 1
+                elif r3 < 84:
+                    count_cap = 2
+                else:
+                    count_cap = 4 + int(r3 > 89)
+            else:
+                if r3 < 40:
+                    count_cap = 1
+                elif r3 < 60:
+                    count_cap = 2
+                elif r3 < 80:
+                    count_cap = 3
+                else:
+                    count_cap = 4 + int(r3 > 89)
+
+            # Scan proposal history (DAT_00baed98 / g_DealList) for matching entries.
+            inserted = 0
+            for rec in list(state.g_ProposalHistoryMap):
+                if rec.get('power') != power_index:
+                    continue
+                rec_prov = rec.get('province', -1)
+                # Check reachable / alt order set match (mirroring GameBoard_GetPowerRec checks).
+                if rec_prov not in per_power_order_sets[power_index]:
+                    continue
+                if rec.get('target_power') == exploit_power:
+                    # Insert as primary candidate.
+                    if inserted < count_cap:
+                        # Mirrors InsertOrderCandidate into local_6e4 set.
+                        # (no Python BST needed; append with score from rec)
+                        pass  # STUB: InsertOrderCandidate
+                    inserted += 1
+                if secondary_target >= 0 and rec.get('target_power') == secondary_target:
+                    if rec.get('src_prov') == rec.get('dst_prov'):
+                        pass  # STUB: InsertOrderCandidate for secondary
+
+        # 1f. Support assignment ───────────────────────────────────────────────
+        # Find own unordered SC provinces; call AssignHoldSupports.
+        # Mirrors: for each prov where g_SCOwnership[power_index,prov]==1 AND
+        #          g_OrderTable[prov,0]==0 → add to support_candidates.
+        support_candidates: dict = {}
+        for prov in range(num_provinces):
+            if (state.g_SCOwnership[power_index, prov] == 1 and
+                    int(state.g_OrderTable[prov, _F_ORDER_TYPE]) == 0):
+                support_candidates[prov] = True
+        _assign_hold_supports(support_candidates)
+
+        # 1g. Convoy chain assignment ─────────────────────────────────────────
+        # Iterate g_ConvoyDstList (DAT_00bb65a4); for each prov with enemy presence /
+        # SC ownership: find in Albert+0x4cfc candidate list → ScoreConvoyFleet.
+        fleet_pool_a = 0x7ffb   # ppiStack_7c0 initial value (from decompile line 1239)
+        inserted_count = 0
+        for prov in list(state.g_ConvoyDstList):
+            iVar20 = power_index * 0x100 + prov
+            enemy_hi  = int(state.g_EnemyPresence[power_index, prov])
+            sc_own    = int(state.g_SCOwnership[power_index, prov])
+            if enemy_hi > 0 or (enemy_hi >= 0 and sc_own != 0):
+                # Mirrors: find ppiStack_7bc in Albert+0x4cfc where node[4]==prov
+                # then MoveCandidate + StdMap_FindOrInsert + ScoreConvoyFleet.
+                inserted_count += 1
+                fleet_pool_a -= 1
+                _move_candidate(prov)
+                _score_convoy_fleet(prov, fleet_pool_a)
+
+        # Own-power only: second convoy pass (lines 1294–1390 in decompile).
+        if power_index == own_power:
+            pass  # STUB: second convoy pass (pool-B scoring, decompile lines 1294+)
+
+        # 1h. Target-bonus scoring ────────────────────────────────────────────
+        # Pass 1: MTO/CTO toward target-flagged provinces (+150 or +75).
+        # Pass 2: RTO / unit-presence check (lines 2909–2940 in decompile).
+        # Pass 3: SUP_MTO toward SC-gaining flag (+50, lines 2958–3032).
+        for prov, unit in state.unit_info.items():
+            if unit['power'] != power_index:
+                continue
+            order_type = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
+            press_active = bool(state.g_PressFlag)
+
+            if order_type in (_ORDER_MTO, _ORDER_CTO):
+                dest = int(state.g_OrderTable[prov, _F_DEST_PROV])
+                tflag = int(state.g_TargetFlag[power_index, dest])
+                if tflag == 2:
+                    state.g_EarlyGameBonus += 150 if press_active else 75
+
+            elif order_type == _ORDER_SUP_MTO:
+                via = int(state.g_OrderTable[prov, _F_SECONDARY])
+                iVar20 = via + power_index * 0x100
+                tflag_via = int(state.g_TargetFlag[power_index, via])
+                sc_hi = int(state.g_SCOwnership[power_index, via])
+                if (tflag_via == 2 and sc_hi == 0 and
+                        state.g_HistoryCounter == 0):
+                    state.g_EarlyGameBonus += 50
+
+        # 1i. Evaluate order proposal for this power (once per trial). ─────────
+        # Mirrors: EvaluateOrderProposal(param_1_00, power_index) at decompile line 3747.
+        evaluate_order_proposal(state, power_index)
 
 
 # ── UpdateScoreState ──────────────────────────────────────────────────────────

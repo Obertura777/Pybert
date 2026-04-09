@@ -21,6 +21,7 @@ from .communications import (
     dispatch_scheduled_press,
     cancel_prior_press,
     friendly,
+    _send_ally_press_by_power,
 )
 from .heuristics import (
     cal_board,
@@ -351,45 +352,139 @@ def _stabbed(state: InnerGameState) -> None:
 
 
 def _deviate_move(state: InnerGameState) -> None:
-    """DEVIATE_MOVE (FUN_0043a000). Stab detection engine for retreat phase.
-    Year >= 2 or retreat phase — handle ally deviation."""
+    """DEVIATE_MOVE (FUN_0043a000). Stab detection + consequence engine.
+    Year >= 2 or retreat phase.
+
+    Structure (outer loop = all 7 powers as victim perspective):
+      Phase 0 – zero init pass (6 arrays, numPowers×numPowers)
+      Phase 1 – retreat-list peace signal (stub: g_RetreatList not yet in state)
+      Phase 2 – order-history retreat stab detection (g_OrderHistList type-7 records)
+      Phase 3 – movement-order deviation stab (stub: requires g_RetreatList)
+      On stab detected → _apply_deviate_stab consequences
+    """
     own_power = getattr(state, 'albert_power_idx', 0)
     num_powers = 7
+    season = state.g_season
 
-    # Phase 0: Init pass
+    # Phase 0: Init pass — identical stride/layout in both STABBED and DEVIATE_MOVE
     state.g_StabFlag.fill(0)
     state.g_NeutralFlag.fill(0)
     state.g_CeaseFire.fill(0)
     state.g_PeaceSignal.fill(0)
-    if state.g_season == 'SPR':
+    if season == 'SPR':
         state.g_CoopScoreFlag_A.fill(0)
-    elif state.g_season == 'FAL':
+    elif season == 'FAL':
         state.g_CoopScoreFlag_B.fill(0)
 
-    # Detect deviation orders vs expected targets
-    detect_stabs_and_hostility(state, own_power)
+    # Phase 1: retreat-list peace signal (C: Albert+0x248c/0x2490 = g_RetreatList)
+    # For each retreating unit: scan adjacency; if source province owned by p AND
+    # dest owned by p → g_PeaceSignal[p*21+other]=1.
+    # TODO: implement when g_RetreatList is added to InnerGameState.
 
-    # Handle the stab consequences
-    for attacker in range(num_powers):
-        if state.g_StabFlag[attacker, own_power] == 1:
-            if getattr(state, 'g_NearEndGameFactor', 0.0) >= 4.0:
-                continue # End game exception
-                
-            state.g_AllyTrustScore[attacker, own_power] = 0
-            state.g_AllyTrustScore[own_power, attacker] = 0
-            
-            for j in range(num_powers):
-                state.g_AllyMatrix[attacker, j] = 0
-                state.g_AllyMatrix[own_power, j] = 0
+    # Phase 2: order-history retreat stab detection (C: Albert+0x2498/0x249c = g_OrderHistList)
+    # Outer loop uStack_1c0 = victim power p (0..numPowers-1).
+    # Gate: trust[attacker + p*21] > 0.  Order type 7 = retreat order.
+    # Checks expected_dest against ally designation; determines stab vs neutral.
+    order_hist = getattr(state, 'g_OrderHistList', [])
+    for p in range(num_powers):
+        for rec in order_hist:
+            attacker = int(rec.get('power', -1))
+            if not (0 <= attacker < num_powers) or attacker == p:
+                continue
 
-            slots = [s for s in getattr(state, 'g_EnemySlot', [-1]*3) if s != attacker and s != -1]
-            slots.insert(0, attacker)
-            while len(slots) < 3:
-                slots.append(-1)
-            state.g_EnemySlot = slots[:3]
+            # Gate: trust[attacker + p*21] > 0  (C: g_AllyTrustScore_Hi check)
+            if int(state.g_AllyTrustScore[attacker, p]) <= 0:
+                continue
 
-            if getattr(state, 'g_OpeningStickyMode', 0) == 1 and getattr(state, 'g_OpeningEnemy', -1) != attacker:
+            order_type = int(rec.get('order_type', -1))
+            if order_type != 7:
+                continue  # phase 2 only handles retreat orders (type 7)
+
+            expected_dest = int(rec.get('expected_dest', rec.get('dst_prov', -1)))
+            if expected_dest < 0:
+                continue
+
+            # Check expected_dest against ally designation tables
+            # C: DAT_004cf610/DAT_004cfe10 (two per-province designation arrays).
+            # Python approximation via g_AllyDesignation_A/B indexed by province.
+            desig_a = int(state.g_AllyDesignation_A[expected_dest]) if expected_dest < 256 else -1
+            desig_b = int(state.g_AllyDesignation_B[expected_dest]) if expected_dest < 256 else -1
+            if desig_a != p and desig_b != p:
+                continue  # dest not in p's designated ally territory
+
+            # Reverse-trust check determines stab vs neutral (C: lines 260-274)
+            trust_pa = int(state.g_AllyTrustScore[p, attacker])
+            if trust_pa <= 0:
+                # Both directions ≤ 0 → neutral attack
+                state.g_NeutralFlag[attacker, p] = 1
+                if p == own_power:
+                    logger.info("We have been attacked by (%d) during the retreat phase", attacker)
+            else:
+                # At least one direction > 0 → stab (LAB_0043bad4)
+                _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
+                                    retreat_phase=True)
+
+    # Phase 3: movement-order deviation stab (C: LAB_0043aacd / LAB_0043b0b2)
+    # For each unit in g_RetreatList: compare actual order type/dest against expected
+    # ally designation. If deviation and 4.0 <= g_NearEndGameFactor → skip.
+    # trust[p][attacker] < 0 AND trust[attacker][p] < 0 → g_NeutralFlag
+    # else → _apply_deviate_stab
+    # TODO: implement when g_RetreatList is added to InnerGameState.
+
+
+def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
+                        retreat_phase=False):
+    """Apply stab consequences from DEVIATE_MOVE (LAB_0043bad4 / LAB_0043b0b2).
+
+    Sets g_StabFlag[attacker,p], bilateral CoopScoreFlag (season-dependent),
+    bilateral trust reset, and — when p==own_power — clears AllyMatrix rows,
+    manages g_EnemySlot (removal-based, C lines 1263-1321), g_OpeningStickyMode.
+    """
+    state.g_StabFlag[attacker, p] = 1
+
+    # Bilateral CoopScoreFlag update (C lines 306-325):
+    #   SUM or FAL → g_CoopScoreFlag_A[attacker+p*21] and [attacker*21+p]
+    #   AUT, WIN, SPR → g_CoopScoreFlag_B (same indices)
+    if season in ('SUM', 'FAL'):
+        state.g_CoopScoreFlag_A[attacker, p] = 1
+        state.g_CoopScoreFlag_A[p, attacker] = 1
+    else:
+        state.g_CoopScoreFlag_B[attacker, p] = 1
+        state.g_CoopScoreFlag_B[p, attacker] = 1
+
+    # Bilateral trust reset (C lines 358-366)
+    state.g_AllyTrustScore[attacker, p] = 0
+    state.g_AllyTrustScore[p, attacker] = 0
+
+    if p == own_power:
+        if retreat_phase:
+            logger.info("We have been stabbed by (%d) during the retreat phase", attacker)
+        else:
+            logger.info("We have been stabbed by (%d) during the turn", attacker)
+
+        # Clear g_AllyMatrix[attacker row] (C lines 1219-1222)
+        for j in range(num_powers):
+            state.g_AllyMatrix[attacker, j] = 0
+
+        # g_EnemySlot: REMOVAL-based management (C lines 1263-1321).
+        # When attacker == slot[k]: remove attacker, shift remaining slots left.
+        # This is distinct from STABBED's push-front insertion.
+        slots = list(getattr(state, 'g_EnemySlot', np.array([-1, -1, -1])))
+        if attacker in slots:
+            idx = slots.index(attacker)
+            slots.pop(idx)
+            slots.append(-1)
+        state.g_EnemySlot = slots[:3]
+
+        # g_OpeningStickyMode (C lines 1254-1261)
+        if getattr(state, 'g_OpeningStickyMode', 0) == 1:
+            if getattr(state, 'g_OpeningEnemy', -1) != attacker:
                 state.g_OpeningStickyMode = 0
+
+    elif attacker == own_power:
+        # We (own_power) stabbed victim p: clear own AllyMatrix row (C lines 1243-1249)
+        for j in range(num_powers):
+            state.g_AllyMatrix[own_power, j] = 0
 
 
 def _friendly(state: InnerGameState) -> None:
@@ -405,10 +500,10 @@ def _hostility(state: InnerGameState) -> None:
 
     Block 1 — enemy activation: random roll gates g_EnemyDesired (= g_StabbedFlag).
     Block 2 — CAL_BOARD + mutual-enemy table (press_on or FAL/WIN).
-    Block 3 — FUN_004113d0 (UpdateAllyRelations, role TBD — skipped).
-    Block 4 — first-turn press-on initialisation (trust from proximity, random ally).
-    Block 5 — enemy-desired trust management (betrayal counter, peace overtures).
-    Block 6 — UpdateRelationHistory when press off or near-end (deferred to friendly).
+    Block 3 — FUN_004113d0 (ComputeOrderDipFlags) — always; not yet ported, skipped.
+    Block 4 — press-on initialisation (SPR/FAL): trust from proximity, random ally.
+    Block 5 — enemy-desired trust management (SPR/FAL): betrayal counter, peace overtures.
+    Block 6 — UpdateRelationHistory when press off or near-end (embedded in friendly()).
     """
     num_powers = 7
     own_power  = getattr(state, 'albert_power_idx', 0)
@@ -419,8 +514,9 @@ def _hostility(state: InnerGameState) -> None:
     enemy_desired = state.g_StabbedFlag
 
     # ── Block 1: enemy activation check ──────────────────────────────────────
-    # Gate: g_EnemyDesired == 0 AND press_off
-    # Threshold = (g_DeceitLevel + 3) * 15  → ~60 % year-1, ~75 % year-2
+    # C: outer gate = g_EnemyDesired==0; inner gate = press_off (DAT_00baed68==0).
+    # Threshold = (g_DeceitLevel + 3) * 15  → ~60 % year-1, ~75 % year-2.
+    # C fires multiple rand calls but only the final value is used.
     if enemy_desired == 0 and not press_on:
         threshold = (state.g_DeceitLevel + 3) * 15
         if random.randrange(100) < threshold:
@@ -432,32 +528,42 @@ def _hostility(state: InnerGameState) -> None:
             )
 
     # ── Block 2: CAL_BOARD + mutual-enemy table ───────────────────────────────
+    # C gate: press_on OR FAL OR WIN.
     if press_on or phase in ('FAL', 'WIN'):
         cal_board(state, own_power)
 
-        # For each power find best mutual enemy: minimise sum of rank scores
-        # vs. the power and its best ally.  Filter: own rank to candidate < 4,
-        # or candidate is the committed enemy already (g_EnemyDesired + committed).
+        # For each power a, find best mutual enemy c that minimises
+        # rank[own_power,c] + rank[a,c].
+        # Mandatory inner filter: rank[a,c] < 4.
+        # Outer filter: rank[own_power,c] < 4  OR  c is the committed enemy.
+        # C: a == own_power is excluded by the condition (uVar7 != local_70);
+        #    g_MutualEnemyTable[own_power] stays -1.
+        rank_mtx  = state.g_InfluenceRankFlag   # DAT_006340c0
         ally_slot0 = state.g_BestAllySlot0
-        rank_mtx   = state.g_InfluenceRankFlag   # DAT_006340c0
 
         for a in range(num_powers):
-            ally_a = ally_slot0 if a == own_power else -1
+            state.g_MutualEnemyTable[a] = -1
+            if a == own_power:
+                continue
             best_c, best_score = -1, 10_000
             for c in range(num_powers):
-                if c == a or c == ally_a or int(state.sc_count[c]) <= 0:
+                if c == a or c == own_power:
                     continue
-                r_ac    = int(rank_mtx[a, c])        if rank_mtx[a, c] >= 0 else 9_999
-                r_allc  = (int(rank_mtx[ally_a, c])  if 0 <= ally_a < num_powers
-                           and rank_mtx[ally_a, c] >= 0 else 9_999)
-                combined = r_ac + r_allc
-                our_rank = int(rank_mtx[own_power, c]) if rank_mtx[own_power, c] >= 0 else 9_999
-                is_committed = (enemy_desired and c == state.g_CommittedEnemy
-                                and state.g_EnemyFlag[c])
-                if our_rank >= 4 and not is_committed:
+                if int(state.sc_count[c]) <= 0:
                     continue
-                if combined < best_score:
-                    best_score, best_c = combined, c
+                r_ac = int(rank_mtx[a, c])
+                if r_ac >= 4:
+                    continue  # mandatory inner filter
+                r_own_c = int(rank_mtx[own_power, c])
+                is_committed = (
+                    enemy_desired and c == state.g_CommittedEnemy
+                    and int(state.g_EnemyFlag[c]) != 0
+                )
+                if r_own_c >= 4 and not is_committed:
+                    continue
+                score = r_own_c + r_ac
+                if score < best_score:
+                    best_score, best_c = score, c
             state.g_MutualEnemyTable[a] = best_c
 
         if 0 <= ally_slot0 < num_powers and state.g_MutualEnemyTable[ally_slot0] >= 0:
@@ -466,82 +572,181 @@ def _hostility(state: InnerGameState) -> None:
                 ally_slot0, state.g_MutualEnemyTable[ally_slot0],
             )
 
-    # ── Block 4: first-turn press-on initialisation ───────────────────────────
-    if press_on and state.g_HistoryCounter == 0:
-        state.g_AllyPressCount.fill(0)
-        state.g_AllyPressHi.fill(0)
+    # ── Block 3: ComputeOrderDipFlags (FUN_004113d0) — always ────────────────
+    # TODO: port ComputeOrderDipFlags; sets flag1/flag2/flag3 on each g_OrderList node.
 
-        # Assign initial trust from g_InfluenceMatrix_B proximity values.
-        # ≤ 17.0 → nearby power (trust 5); > 17.0 → distant (trust 3).
-        inf_b = state.g_InfluenceMatrix_B
-        for p in range(num_powers):
-            if p == own_power:
-                continue
-            state.g_AllyTrustScore[own_power, p] = (
-                5.0 if float(inf_b[own_power, p]) <= 17.0 else 3.0
-            )
+    # ── SPR||FAL outer gate (wraps Blocks 4 and 5) ───────────────────────────
+    if phase in ('SPR', 'FAL'):
 
-        # Random ally selection from proximity rank table (stride 5 per power).
-        prox = state.g_PowerProximityRank
-        if prox is not None:
-            base = own_power * 5
-            roll = random.randrange(100)
-            if roll < 25:
-                state.g_BestAllySlot0 = int(prox[base])
-            elif roll < 50:
-                state.g_BestAllySlot0 = int(prox[base + 1])
-            elif roll < 75:
-                state.g_BestAllySlot0 = int(prox[base + 2])
-                state.g_TripleFrontMode2 = 1
-            else:
-                state.g_TripleFrontFlag  = 1
-                state.g_BestAllySlot0    = int(prox[base])
-                state.g_BestAllySlot1    = int(prox[base + 1])
-                state.g_BestAllySlot2    = int(prox[base + 2])
-            # Self-invalidate any slot equal to own power
-            for attr in ('g_BestAllySlot0', 'g_BestAllySlot1', 'g_BestAllySlot2'):
-                if getattr(state, attr) == own_power:
-                    setattr(state, attr, -1)
+        # ── Block 4: press-on per-turn initialisation ─────────────────────────
+        # C: runs every SPR/FAL with press_on (not gated by g_HistoryCounter==0).
+        if press_on:
+            # Zero per-power press counters.
+            state.g_AllyPressCount.fill(0)
+            state.g_AllyPressHi.fill(0)
 
-    # ── Near-end-game overrides ───────────────────────────────────────────────
-    if state.g_NearEndGameFactor > 5.0:
-        state.g_StabbedFlag = 1
-    if state.g_NearEndGameFactor > 3.0:
-        cal_board(state, own_power)
+            # Trust init from g_InfluenceMatrix_B for ALL power pairs (not just own).
+            # ≤ 17.0 → nearby (trust 5); > 17.0 → distant (trust 3).
+            # C outer loop: uVar7 = 0..num_powers-1; inner: uVar12 = 0..num_powers-1.
+            inf_b = state.g_InfluenceMatrix_B
+            prox  = state.g_PowerProximityRank
+            for a in range(num_powers):
+                for p in range(num_powers):
+                    if p == a:
+                        continue
+                    state.g_AllyTrustScore_Hi[a, p] = 0
+                    state.g_AllyTrustScore[a, p] = (
+                        5 if float(inf_b[a, p]) <= 17.0 else 3
+                    )
 
-    # ── Block 5: enemy-desired trust management ───────────────────────────────
-    if state.g_StabbedFlag == 1:
-        inf_b = state.g_InfluenceMatrix_B
+                # Random ally selection for this power; only own_power updates slots.
+                # C: puVar17[-1]=prox[base], puVar17[0]=prox[base+1], puVar17[1]=prox[base+2]
+                # Trust is set for the PRIMARY target; slots hold the OTHER neighbors.
+                if prox is not None:
+                    base = a * 5
+                    roll = random.randrange(100)
+                    if roll < 25:
+                        # Primary trust target = prox[base]; slots = [base+1, base+2]
+                        ally_idx = int(prox[base])
+                        state.g_AllyTrustScore[a, ally_idx] = 1
+                        state.g_AllyTrustScore_Hi[a, ally_idx] = 0
+                        if a == own_power:
+                            state.g_BestAllySlot0 = int(prox[base + 1])
+                            state.g_BestAllySlot1 = int(prox[base + 2])
+                    elif roll < 50:
+                        # Primary trust target = prox[base+1]; slots = [base, base+2]
+                        ally_idx = int(prox[base + 1])
+                        state.g_AllyTrustScore[a, ally_idx] = 1
+                        state.g_AllyTrustScore_Hi[a, ally_idx] = 0
+                        if a == own_power:
+                            state.g_BestAllySlot0 = int(prox[base])
+                            state.g_BestAllySlot1 = int(prox[base + 2])
+                    elif roll < 75:
+                        # Primary trust target = prox[base+2]; slots = [base, base+1]
+                        ally_idx = int(prox[base + 2])
+                        state.g_AllyTrustScore[a, ally_idx] = 1
+                        state.g_AllyTrustScore_Hi[a, ally_idx] = 0
+                        if a == own_power:
+                            state.g_BestAllySlot0 = int(prox[base])
+                            state.g_BestAllySlot1 = int(prox[base + 1])
+                            state.g_TripleFrontMode2 = 1
+                    else:
+                        # Triple-front: no single primary; all three slots assigned.
+                        state.g_TripleFrontFlag = 1
+                        if a == own_power:
+                            state.g_BestAllySlot0 = int(prox[base])
+                            state.g_BestAllySlot1 = int(prox[base + 1])
+                            state.g_BestAllySlot2 = int(prox[base + 2])
+                            for attr in ('g_BestAllySlot0', 'g_BestAllySlot1', 'g_BestAllySlot2'):
+                                if getattr(state, attr) == own_power:
+                                    setattr(state, attr, -1)
 
-        for p in range(num_powers):
-            if p == own_power or state.g_EnemyFlag[p]:
-                continue
+            # g_HistoryCounter > 0 path: snapshot own-power trust row and send press.
+            # C: saves g_AllyTrustScore[own_power, p] to DAT_004d5480/4, clears low trust,
+            #    then calls SendAllyPressByPower(p) for each p.
+            # Deferred: press dispatch requires send_fn; handled by caller after _hostility.
 
-            trust_op = float(state.g_AllyTrustScore[own_power, p])
-            trust_po = float(state.g_AllyTrustScore[p, own_power])
+            # ── Near-end-game overrides (inside press_on + SPR/FAL block) ─────
+            if state.g_NearEndGameFactor > 5.0:
+                state.g_StabbedFlag = 1
+                enemy_desired = 1
+            if state.g_NearEndGameFactor > 3.0:
+                cal_board(state, own_power)
 
-            if trust_op == 0 and trust_po == 0:
-                state.g_BetrayalCounter[p] += 1
+        # ── Block 5: enemy-desired trust management ───────────────────────────
+        # C: gated by g_StabbedFlag (g_EnemyDesired) inside SPR||FAL.
+        if state.g_StabbedFlag == 1:
+            inf_b = state.g_InfluenceMatrix_B
 
-            if state.g_BetrayalCounter[p] >= 10 and phase == 'SPR':
-                state.g_BetrayalCounter[p] = 0
+            # Betrayal-counter loop.
+            # C: piVar18 iterates g_RelationScore[own_power, p] (row own, advancing by col).
+            #    piVar8 iterates g_AllyTrustScore[own_power, p] (same row).
+            for p in range(num_powers):
+                if p == own_power or int(state.g_EnemyFlag[p]) != 0:
+                    continue
+                trust_op_lo = int(state.g_AllyTrustScore[own_power, p])
+                trust_op_hi = int(state.g_AllyTrustScore_Hi[own_power, p])
+                # C: both g_EnemyFlag[p] words must be 0 (already filtered above).
+                if trust_op_lo == 0 and trust_op_hi == 0:
+                    state.g_BetrayalCounter[p] += 1
 
-            proximity = float(inf_b[own_power, p])
-            relation  = int(state.g_RelationScore[own_power, p])
-            if proximity > 14 or relation < 0:
-                state.g_BetrayalCounter[p] = 0
+                proximity = float(inf_b[own_power, p])
+                relation  = int(state.g_RelationScore[own_power, p])
+                if proximity > 14 or relation < 0:
+                    state.g_BetrayalCounter[p] = 0
 
-            # They consider us ally but we're hostile → change our minds
-            if trust_po > 0 and trust_op == 0 and proximity > 0.0 and relation >= 0:
-                state.g_AllyTrustScore[own_power, p] = trust_po
-                logger.debug("HOSTILITY: changed our minds about attacking power %d", p)
+                if int(state.g_BetrayalCounter[p]) >= 10 and phase == 'SPR':
+                    state.g_BetrayalCounter[p] = 0
 
-            # Active peace overture: neutral power with SCs, spring, no cease-fire
-            if (trust_op == 0 and int(state.sc_count[p]) > 2
-                    and phase == 'SPR'
-                    and state.g_CeaseFire[own_power, p] == 0):
-                state.g_AllyTrustScore[own_power, p] = 1.0
-                state.g_AllyTrustScore[p, own_power] = 1.0
+            # SendAllyPressByPower for all powers when history > 0 (inside enemy block).
+            # C: lines 618-622; deferred to caller (send_fn not available here).
+
+            # "Changed our minds" loop.
+            # C: piVar8 iterates g_AllyTrustScore[p, own_power] (column own_power);
+            #    advances by full row (stride 21*2=42 ints) per iteration.
+            for p in range(num_powers):
+                if p == own_power:
+                    continue
+                trust_po_lo = int(state.g_AllyTrustScore[p, own_power])
+                trust_po_hi = int(state.g_AllyTrustScore_Hi[p, own_power])
+                # C: trust[p,own] > 0 = trust_hi >= 0 AND (trust_hi > 0 OR trust_lo != 0)
+                if not (trust_po_hi >= 0 and (trust_po_hi > 0 or trust_po_lo != 0)):
+                    continue
+                trust_op_lo = int(state.g_AllyTrustScore[own_power, p])
+                trust_op_hi = int(state.g_AllyTrustScore_Hi[own_power, p])
+                proximity   = float(inf_b[own_power, p])
+                relation    = int(state.g_RelationScore[own_power, p])
+                if (trust_op_lo == 0 and trust_op_hi == 0
+                        and int(state.g_EnemyFlag[p]) == 0
+                        and proximity > 0.0 and relation >= 0):
+                    state.g_AllyTrustScore[own_power, p]    = trust_po_lo
+                    state.g_AllyTrustScore_Hi[own_power, p] = trust_po_hi
+                    logger.debug("HOSTILITY: changed our minds about attacking power %d", p)
+
+            # Peace overture loop.
+            # C: g_HistoryCounter==0 path goes directly to LAB_0042f95f; history>0 path
+            #    checks PCE in press history first (stubbed: always proceed).
+            for p in range(num_powers):
+                if p == own_power or int(state.g_EnemyFlag[p]) != 0:
+                    continue
+                sc = int(state.sc_count[p])
+                if sc <= 0:
+                    continue
+                # sc > 2 OR phase == SPR
+                if sc <= 2 and phase != 'SPR':
+                    continue
+                # phase == SPR OR g_NeutralFlag[own, p] == 0
+                # C: DAT_0062b7b0 = g_NeutralFlag (not g_CeaseFire)
+                if phase != 'SPR' and int(state.g_NeutralFlag[own_power, p]) != 0:
+                    continue
+                trust_op_lo = int(state.g_AllyTrustScore[own_power, p])
+                trust_op_hi = int(state.g_AllyTrustScore_Hi[own_power, p])
+                if trust_op_lo != 0 or trust_op_hi != 0:
+                    continue
+                # Both relation scores must be non-negative.
+                # C: (&DAT_00634e90)[iVar9] = g_RelationScore[own,p]; *piStack_68 = g_RelationScore[p,own]
+                if int(state.g_RelationScore[own_power, p]) < 0:
+                    continue
+                if int(state.g_RelationScore[p, own_power]) < 0:
+                    continue
+                # Random 15% gate OR betrayal counter < 2 (lo-word).
+                betrayal_lo = int(state.g_BetrayalCounter[p]) & 0xFFFFFFFF
+                rand_pass   = (random.randrange(100) < 15) or (betrayal_lo < 2)
+                if not rand_pass:
+                    continue
+                # History or deceit gate: history==0 OR DeceitLevel > 1.
+                if not (state.g_HistoryCounter == 0 or state.g_DeceitLevel > 1):
+                    continue
+
+                # Form peace: set bilateral trust; reset relation if not already at 50.
+                prev_relation = int(state.g_RelationScore[own_power, p])
+                state.g_AllyTrustScore[own_power, p]    = 1
+                state.g_AllyTrustScore_Hi[own_power, p] = 0
+                state.g_AllyTrustScore[p, own_power]    = 1
+                state.g_AllyTrustScore_Hi[p, own_power] = 0
+                if prev_relation != 50:
+                    state.g_RelationScore[own_power, p] = 0
+                    state.g_RelationScore[p, own_power] = 0
                 logger.debug("HOSTILITY: attempting peace with power %d", p)
 
 
@@ -596,6 +801,255 @@ def _cleanup_turn(state: InnerGameState) -> None:
         row_sum = float(np.sum(state.g_InfluenceMatrix[row]))
         if row_sum != 0.0:
             state.g_InfluenceMatrix[row] = (state.g_InfluenceMatrix[row] * 100.0) / row_sum
+
+
+def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
+    """FUN_00424850 — RankCandidatesForPower.
+
+    Called from BuildAndSendSUB (inner loop) as FUN_00424850(power_idx, '\\0').
+    Selects the best order candidates for *power_idx* from
+    g_CandidateRecordList via a 7-phase pipeline:
+
+      Phase 1  Find max score among this power's candidates.
+      Phase 2  Build sorted list (ascending adjusted score; offset = 2500 - max).
+      Phase 3  Pareto-dominance filter across all completed MC-trial dimensions
+               (penalty 100 if n_allies==0, else 50).  Pareto-selected
+               candidates accumulate an accepted frontier; dominated ones get
+               a rank number and update min/max_rank.
+      Phase 4  Probability scoring: each non-processed candidate's share of
+               "remaining probability space" based on SC counts vs. up to
+               three left-neighbours; write to rec['weight'] and update EMA
+               of rec['running_avg'].
+      Phase 5  Re-sort (same offset; order unchanged in practice).
+      Phase 6  Rank/select: promote candidates whose running_avg ≥ threshold
+               (call_count + 1) subject to rank/near-end-game guards.
+               Promoted → processed=1, score = −1 000 000 − rank,
+               output_score same, g_ScoreBaseline += 1.
+      Phase 7  Normalize output_score: redistribute remaining probability
+               budget (capped at 90) among non-promoted candidates.
+
+    Only the param_2=='\\0' path is implemented (used by BuildAndSendSUB).
+
+    Callees (C++, absorbed into Python list ops / math):
+      FUN_00410330  — allocate list/tree node (absorbed into local list)
+      FUN_00465870  — init empty token list (absorbed)
+      FUN_0040fb70  — free list internals (absorbed)
+      FUN_0040f260  — advance g_CandidateRecordList iterator (absorbed)
+      FUN_00419fa0  — sorted-list insert (absorbed into sort())
+      FUN_00412540  — advance accepted-frontier pointer (absorbed)
+      FUN_0040e680  — basic iterator advance (absorbed)
+      FUN_00414e10  — sorted-list destructor (absorbed)
+    """
+    # ── globals ───────────────────────────────────────────────────────────
+    # DAT_0062cc64 — number of completed MC trials at call time
+    n_trials: int = getattr(state, 'g_n_trials_completed', 0)
+    # DAT_0062e460[power] — unit count (non-zero = active)
+    unit_count_arr = state.g_UnitCount
+    # DAT_00b9fe88[power] — ProcessTurn call count
+    call_count_arr = getattr(state, 'g_PowerCallCount',
+                             np.zeros(7, dtype=np.int32))
+    near_end: float = state.g_NearEndGameFactor
+
+    sc_count_local: int = int(unit_count_arr[power_idx]) + 1   # local_90 init
+    alpha: float = (n_trials / (n_trials + 2)) if n_trials >= 0 else 0.0  # local_7c
+    threshold: float = float(int(call_count_arr[power_idx]) + 1)  # local_80 (param_2=='\0' path)
+
+    # ── Phase 1: find max score ──────────────────────────────────────────
+    SENTINEL = -(1 << 20)
+    max_score: int = SENTINEL
+    for rec in state.g_CandidateRecordList:
+        if rec.get('power_idx', rec.get('power', -1)) == power_idx:
+            s = int(rec.get('score', 0))
+            if max_score == SENTINEL or s > max_score:
+                max_score = s
+    if max_score == SENTINEL:
+        return  # no candidates for this power
+
+    score_offset: int = 0x9C4 - max_score   # local_78 = 2500 - max_score
+
+    # ── Phase 2: sorted list by adjusted score ───────────────────────────
+    power_recs = [
+        rec for rec in state.g_CandidateRecordList
+        if rec.get('power_idx', rec.get('power', -1)) == power_idx
+    ]
+    power_recs.sort(key=lambda r: int(r.get('score', 0)) + score_offset)
+
+    # ── Phase 3: Pareto-dominance filter ────────────────────────────────
+    # accepted_frontier holds the "not yet dominated" prefix of the sorted list.
+    # A candidate is dominated if any frontier member beats it on ALL
+    # trial dims by ≥ penalty AND their final-dim scores differ.
+    accepted_frontier: list = []
+    rank_counter: int = 0   # local_b8 (integer rank for non-Pareto items)
+
+    for cand in power_recs:
+        if cand.get('processed', 0):
+            continue
+
+        n_allies: int = int(cand.get('n_allies', 0))
+        penalty: int = 100 if n_allies == 0 else 50
+        trial_scores_c = cand.get('trial_scores', [])
+        final_dim_c: int = cand.get('final_dim_score', 0)
+
+        dominated = False
+        for prev in accepted_frontier:
+            trial_scores_p = prev.get('trial_scores', [])
+            final_dim_p: int = prev.get('final_dim_score', 0)
+            # Skip dim 0 if n_trials > 7 (start at 2); check dims 0..n_trials
+            start_dim = 2 if n_trials > 7 else 0
+            prev_dominates_all = True
+            for t in range(start_dim, n_trials + 1):
+                ps = trial_scores_p[t] if t < len(trial_scores_p) else 0
+                cs = trial_scores_c[t] if t < len(trial_scores_c) else 0
+                if ps < cs + penalty:
+                    prev_dominates_all = False
+                    break
+            if prev_dominates_all and final_dim_p != final_dim_c:
+                dominated = True
+                break
+
+        if not dominated:
+            cand['pareto_flag'] = 1
+            cand['running_avg'] = (
+                (1.0 - alpha) * rank_counter
+                + alpha * float(cand.get('running_avg', 0.0))
+            )
+            accepted_frontier.append(cand)
+        else:
+            cand['pareto_flag'] = 0
+            ri = rank_counter
+            if ri < int(cand.get('min_rank', 10001)):
+                cand['min_rank'] = ri
+            if int(cand.get('max_rank', 0)) < ri:
+                cand['max_rank'] = ri
+            rank_counter += 1
+
+    # ── Phase 4: probability scoring ────────────────────────────────────
+    # Walk non-processed records in sorted order; for each compute a
+    # "share of remaining territory" using up to 3 left-neighbours'
+    # SC counts via _safe_pow-based Elo-like formulas.
+    # local_90 accumulates (starts at sc_count_local).
+    non_proc = [r for r in power_recs if not r.get('processed', 0)]
+    running_pool: float = float(sc_count_local)  # local_90
+
+    for i, cand in enumerate(non_proc):
+        sc_i: float = float(max(int(cand.get('sc_count', 0)), 0))
+        share_a = 0.0   # local_b4
+        share_b = 0.0   # local_48 low word
+        share_c = 0.0   # local_68 low word
+
+        if sc_i > 0:
+            # Neighbour 1 (i-1): share_a = sc_j / (pow(sc_i-sc_j, sc_j) + sc_i + sc_j)
+            if i >= 1:
+                sc_j = float(max(int(non_proc[i - 1].get('sc_count', 0)), 0))
+                if sc_j > 0:
+                    diff_a = sc_i - sc_j
+                    powered_a = _safe_pow(diff_a, sc_j) if diff_a != 0 else 1.0
+                    denom_a = powered_a + sc_i + sc_j
+                    share_a = sc_j / denom_a if denom_a else 0.0
+
+            # Neighbour 2 (i-2): share_b = sc_k*0.666 / (pow(sc_i-sc_k,sc_k*0.666) + sc_i + sc_k)
+            if i >= 2:
+                sc_k = float(max(int(non_proc[i - 2].get('sc_count', 0)), 0))
+                if sc_k > 0:
+                    exp_b = sc_k * 0.666
+                    diff_b = sc_i - sc_k
+                    powered_b = _safe_pow(diff_b, exp_b) if diff_b != 0 else 1.0
+                    denom_b = powered_b + sc_i + sc_k
+                    share_b = exp_b / denom_b if denom_b else 0.0
+
+            # Neighbour 3 (i-3): share_c = sc_l*0.5 / (pow(sc_i-sc_l,sc_l*0.5) + sc_i + sc_l)
+            if i >= 3:
+                sc_l = float(max(int(non_proc[i - 3].get('sc_count', 0)), 0))
+                if sc_l > 0:
+                    exp_c = sc_l * 0.5
+                    diff_c = sc_i - sc_l
+                    powered_c = _safe_pow(diff_c, exp_c) if diff_c != 0 else 1.0
+                    denom_c = powered_c + sc_i + sc_l
+                    share_c = exp_c / denom_c if denom_c else 0.0
+
+        # fVar1 = (1.0 - share_b) * (100.0 - running_pool) * (1.0 - share_a) * (1.0 - share_c)
+        fVar1 = (1.0 - share_b) * (100.0 - running_pool) * (1.0 - share_a) * (1.0 - share_c)
+        cand['weight'] = fVar1          # ppiVar6[5][0x16]
+        running_pool += fVar1           # local_90 accumulates
+
+        # EMA update: running_avg = (1-alpha)*rank_position + alpha*old_avg
+        rank_pos = float(i)             # local_b8 at this point (count of processed so far)
+        cand['running_avg'] = (
+            (1.0 - alpha) * rank_pos
+            + alpha * float(cand.get('running_avg', 0.0))
+        )
+
+    # ── Phase 5: re-sort with same offset (already sorted; no-op) ───────
+
+    # ── Phase 6: rank/select ─────────────────────────────────────────────
+    rank_b: float = 0.0
+    near_end_count: float = 0.0
+
+    for cand in power_recs:
+        # Count near-end-game non-processed candidates with move orders
+        if int(cand.get('has_moves', 0)) and not cand.get('processed', 0) and near_end < 7.0:
+            near_end_count += 1.0
+
+        running_avg_f = float(cand.get('running_avg', 0.0))
+        rank_i = int(rank_b)
+        min_rank_v = int(cand.get('min_rank', 10001))
+        pareto_f = int(cand.get('pareto_flag', 0))
+
+        # Conditions that force "skip/demote" (goto LAB_00425626):
+        # (a) running_avg < threshold, OR
+        # (b) min_rank >= 6 AND rank >= 10, OR
+        # (c) has_moves AND near_end_count < 10, OR
+        # (d) already processed
+        skip = (
+            running_avg_f < threshold
+            or (min_rank_v >= 6 and rank_i >= 10)
+            or (bool(cand.get('has_moves', 0)) and near_end_count < 10.0)
+            or bool(cand.get('processed', 0))
+        )
+
+        if not skip:
+            # Promote: mark as selected, assign negative rank score
+            final_s = -1000000 - rank_i
+            cand['processed'] = 1
+            cand['weight'] = 0.0
+            cand['score'] = final_s
+            cand['output_score'] = float(final_s)
+            state.g_ScoreBaseline += 1
+        else:
+            # Demoted: clear pareto-selected weight, blend output_score
+            if pareto_f == 1:
+                cand['weight'] = 0.0
+                cand['output_score'] = 0.0
+            if n_trials >= 1:
+                w = float(cand.get('weight', 0.0))
+                os_old = float(cand.get('output_score', 0.0))
+                cand['output_score'] = (1.0 - alpha) * w + os_old * alpha
+            else:
+                cand['output_score'] = float(cand.get('weight', 0.0))
+            # Update rank bounds
+            if rank_i < int(cand.get('min_rank', 10001)):
+                cand['min_rank'] = rank_i
+            if int(cand.get('max_rank', 0)) < rank_i:
+                cand['max_rank'] = rank_i
+
+        rank_b += 1.0
+
+    # ── Phase 7: normalize output_score ─────────────────────────────────
+    # Sum output_score for non-processed candidates → remaining = 100 - sum.
+    # Cap remaining at 90.  Redistribute proportionally.
+    total_os: float = sum(
+        float(r.get('output_score', 0.0))
+        for r in power_recs if not r.get('processed', 0)
+    )
+    remaining = 100.0 - total_os
+    if remaining > 90.0:
+        remaining = 90.0
+    denom_n = 100.0 - remaining
+    if denom_n and remaining > 0.0:
+        for cand in power_recs:
+            if not cand.get('processed', 0):
+                os = float(cand.get('output_score', 0.0))
+                cand['output_score'] = os + remaining * os / denom_n
 
 
 def _init_position_for_orders(state: InnerGameState) -> None:
@@ -1258,9 +1712,15 @@ class AlbertClient:
         # 5e — DAT_00baed6d = 0  (deviation/retry sentinel cleared before GenerateOrders)
         self.state.g_baed6d = 0
 
-        # 5f — GenerateOrders (FUN_004466e0) + MC trial loop → best order set
-        # process_turn wraps GenerateOrders and the MC selection (BuildAndSendSUB inner loop)
-        best_orders = process_turn(self.state, num_trials=1000)
+        # 5f — GenerateOrders + ScoreOrderCandidates → per-power ProcessTurn calls
+        # process_turn = FUN_00453220: per-power MC trial engine.
+        # ScoreOrderCandidates (FUN_004559c0) iterates active powers and calls
+        # process_turn(state, p, trial_count) for each.  Approximated here by
+        # running generate_orders once then calling process_turn for own power.
+        from .monte_carlo import generate_orders
+        generate_orders(self.state, own_power_idx)
+        process_turn(self.state, own_power_idx, num_trials=1000)
+        best_orders = self.state.g_CandidateRecordList  # populated by evaluate_order_proposal
 
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
         if movement_phase:
@@ -1295,9 +1755,27 @@ class AlbertClient:
             _phase_handler(self.state, 3)
             self._build_and_send_sub(best_orders)
 
-            # Draw vote: DAT_00baed29/2a/2b/30 — any set → DRW; else → NOT DRW (sent every turn)
-            # g_draw_sent (DAT_00baed5d) records the decision.
-            draw_vote = compute_draw_vote(self.state, best_orders, self.power_name)
+            # Draw vote — FUN_0044c9d0 wrapper (PrepareDrawVoteSet):
+            #   Build friendly-powers set: own power + any power p where
+            #     curr_sc_cnt[p] > 0 AND g_AllyTrustScore[own, p] > 1
+            #   (C: StdMap_FindOrInsert keyed by power index; passed as param_1
+            #    to ComputeDrawVote where Map_Find(param_1, unit+0x18) checks
+            #    unit.power ∈ friendly_powers).
+            #   Result stored in DAT_00baed2b; any of the four draw flags set → DRW.
+            sc_count = getattr(self.state, 'sc_count',
+                               np.zeros(num_powers, dtype=np.int32))
+            friendly_powers: set = {own_power_idx}
+            for p in range(num_powers):
+                if p == own_power_idx:
+                    continue
+                if int(sc_count[p]) > 0:
+                    trust_hi = int(self.state.g_AllyTrustScore_Hi[own_power_idx, p])
+                    trust_lo = int(self.state.g_AllyTrustScore[own_power_idx, p])
+                    # C: trust > 1 ↔ Hi >= 0 AND (Hi > 0 OR Lo > 1)
+                    if trust_hi >= 0 and (trust_hi > 0 or trust_lo > 1):
+                        friendly_powers.add(p)
+
+            draw_vote = compute_draw_vote(self.state, friendly_powers)
             extra_draw_flags = getattr(self.state, 'g_draw_flags', [])
             if draw_vote or any(extra_draw_flags):
                 logger.info("Draw vote: proposing DRW")
@@ -1336,27 +1814,38 @@ class AlbertClient:
         """
         Port of BuildAndSendSUB (FUN_00457890).
 
-        Orchestrates the outer proposal-generation and order-submission loop:
+        In the C bot this is a multi-trial proposal-scoring loop over
+        g_BroadcastList; Monte Carlo (process_turn) plays that role in Python,
+        so only the surrounding press/submission scaffold is ported here.
 
-          1. DispatchScheduledPress  — flush any queued timed press messages.
-          2. Time-limit guard        — abort if MTL has already fired.
-          3. UpdateScoreState        — refresh stale ally order tables.
-          4. Build + submit orders   — BuildPowerOrderSeq → DispatchSingleOrder
-                                       → AssembleAndSendSUB → game.set_orders.
-          5. Press deal matching     — when g_HistoryCounter > 19, iterate
-                                       g_DealList and send ally press for deals
-                                       whose province set overlaps current orders
-                                       and where trust ≥ 3.
-          6. CancelPriorPress        — withdraw any stale prior-press token.
+        Structure (mirroring FUN_00457890 at each labelled site):
+          1. ScheduledPressDispatch     — pre-loop flush (line 252).
+          2. CheckTimeLimit             — abort if MTL already fired (line 291).
+          3. Order submission           — RegisterProposalOrders / ScoreOrderCandidates
+                                         collapsed to game.set_orders (MC already ran).
+          4. UpdateScoreState           — refresh ally order tables after commit
+                                         (line 395 inside inner loop, post-submission).
+          5. SendAllyPressByPower loop  — for each power when g_HistoryCounter > 0
+                                         (lines 659–666).
+          6. g_ProposalHistoryMap press — iterate received/sent proposals, check
+                                         province overlap and trust, send DM press
+                                         (lines 847–1271; STUB — awaits RECEIVE_PROPOSAL
+                                         / RESPOND / g_ProposalHistoryMap port).
+          7. CancelPriorPress           — withdraw stale prior-press token (line 693).
 
-        Research.md §4633 / §BuildAndSendSUB.
+        Callees still unported: ScoreOrderCandidates (FUN_004559c0),
+        RECEIVE_PROPOSAL, RESPOND, BuildHostilityRecord, SendAlliancePress,
+        FUN_00419300, FUN_00466ed0, FUN_00466f80, FUN_00465df0, GetSubList,
+        FUN_00465930, FUN_00465d90, FUN_00422a90, FUN_00465cf0, FUN_00410cf0,
+        FUN_00443ed0.
         """
         own_power_idx = getattr(self.state, 'albert_power_idx', 0)
+        n_powers = int(getattr(self.state, 'n_powers', 7))
 
-        # ── 1. DispatchScheduledPress (PrepareOrderGenState / FUN_004424e0) ──
+        # ── 1. ScheduledPressDispatch — pre-loop press flush (line 252) ──────
         dispatch_scheduled_press(self.state, self._send_dm)
 
-        # ── 2. Time-limit guard ──────────────────────────────────────────────
+        # ── 2. CheckTimeLimit (line 291) — MTL guard ─────────────────────────
         if check_time_limit(self.state):
             logger.warning("MTL expired before BuildAndSendSUB — skipping SUB")
             return
@@ -1365,10 +1854,10 @@ class AlbertClient:
             logger.warning("MC selection produced no orders — nothing submitted")
             return
 
-        # ── 3. UpdateScoreState — refresh stale ally order tables ────────────
-        update_score_state(self.state)
-
-        # ── 4. Build + submit orders ─────────────────────────────────────────
+        # ── 3. Order submission ───────────────────────────────────────────────
+        # C: RegisterProposalOrders + ScoreOrderCandidates per trial in inner
+        # loop.  Python: MC already selected best_orders; build and submit
+        # directly.
         best = best_orders[0]
         order_pairs = best.get('orders', [])   # [(prov, order_type), ...]
 
@@ -1376,23 +1865,45 @@ class AlbertClient:
         for prov, _order_type in order_pairs:
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
-                dispatch_single_order(
-                    self.state, own_power_idx, seq
-                )
+                dispatch_single_order(self.state, own_power_idx, seq)
 
         formatted = list(self.state.g_OrderList)
-        logger.info(f"SUB — {len(formatted)} orders for {self.power_name}: {formatted}")
+        logger.info("SUB — %d orders for %s: %s",
+                    len(formatted), self.power_name, formatted)
 
         if self.game is not None:
             self.game.set_orders(self.power_name, formatted)
 
-        # ── 5. Press deal matching (g_HistoryCounter > 19) ───────────────────
-        # Mirrors the g_DealList iteration in BuildAndSendSUB §4661:
-        # for each received deal where trust ≥ 3 and province set overlaps
-        # current submitted orders → send ally press confirmation.
+        # ── 3b. RankCandidatesForPower — inner-loop candidate selection ─────
+        # C: FUN_00424850(piVar10, '\0') called per-power in BuildAndSendSUB
+        # inner loop after ScoreOrderCandidates.  In Python, MC has already
+        # run; call once per power to rank g_CandidateRecordList entries.
+        for power_i in range(n_powers):
+            _rank_candidates_for_power(self.state, power_i)
+
+        # ── 4. UpdateScoreState — post-commit refresh (line 395) ─────────────
+        update_score_state(self.state)
+
+        # ── 5. SendAllyPressByPower loop (lines 659–666) ─────────────────────
+        # C: if puVar18[4] == DAT_00baed60 AND g_HistoryCounter > 0:
+        #      for i in range(n_powers): SendAllyPressByPower(i)
+        # The g_BroadcastList node condition collapses to "own proposal processed"
+        # which is always true here after order submission.
+        if self.state.g_HistoryCounter > 0:
+            for power_i in range(n_powers):
+                _send_ally_press_by_power(self.state, power_i, self._send_dm)
+
+        # ── 6. g_ProposalHistoryMap press deal matching (lines 847–1271) ─────
+        # STUB: full port awaits RECEIVE_PROPOSAL / RESPOND / g_ProposalHistoryMap.
+        # C iterates g_ProposalHistoryMap; for each entry:
+        #   received proposals (node[4] == own_power): trust ≥ 1, province
+        #     overlap ≥ 3 → SUB press via AppendList + SendAlliancePress.
+        #   sent proposals (node[6] == own_power): trust ≥ 2 for other power
+        #     → SUB press via SendAlliancePress.
+        # Placeholder: iterate g_DealList as a loose proxy (trust ≥ 3, overlap).
         if self.state.g_HistoryCounter > 19:
             submitted_provs = {prov for prov, _ in order_pairs}
-            for deal in list(self.state.g_DealList):
+            for deal in list(getattr(self.state, 'g_DealList', [])):
                 other = deal.get('power', -1)
                 if other < 0:
                     continue
@@ -1402,12 +1913,10 @@ class AlbertClient:
                 deal_provs = deal.get('province_set', set())
                 if deal_provs & submitted_provs:
                     self._send_dm(f"PRP ( PCE ( {own_power_idx} {other} ) )")
-                    logger.debug(
-                        "Deal match: sent ally press to power %d (trust=%d)",
-                        other, trust,
-                    )
+                    logger.debug("Deal match: sent ally press to power %d (trust=%d)",
+                                 other, trust)
 
-        # ── 6. CancelPriorPress — withdraw stale press token ─────────────────
+        # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)
 
     # ── Press handler ────────────────────────────────────────────────────────

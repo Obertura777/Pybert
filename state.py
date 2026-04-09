@@ -99,6 +99,12 @@ class InnerGameState:
         # DAT_00ba3770[province] — convoy source province score (0xffffffff = unset)
         self.g_ConvoySourceProv = np.zeros(256, dtype=np.float64)
 
+        # Albert+0x4CFC — sorted convoy fleet candidate list: list[tuple[int, int]] = (score, prov).
+        # Populated by ScoreConvoyFleet (FUN_00419790) in process_turn Phase 1g;
+        # drained by MoveCandidate (FUN_00411cf0) in Phase 2.  Sorted ascending by
+        # score (remaining fleet count); Phase 2 processes from the front (lowest score).
+        self.g_ConvoyFleetCandidates: list = []
+
         # Current game season token: 'SPR'|'SUM'|'FAL'|'AUT'|'WIN'
         self.g_season = 'SPR'
 
@@ -325,6 +331,14 @@ class InnerGameState:
         self.g_MasterOrderList: list = []
         # DAT_00ba2884:ba2880 — session start time (int64 Unix timestamp)
         self.g_SessionStartTime: float = 0.0
+        # DAT_00ba2858:ba285c — base wait threshold (seconds); GOF fires when
+        #   elapsed > g_base_wait_time + 25 s  (FUN_00443ed0)
+        self.g_base_wait_time: float = 0.0
+        # DAT_00bb65c4 — nonzero while the game engine is actively processing
+        #   (FUN_00443ed0 polls this before sending fallback GOF)
+        self.g_processing_active: int = 0
+        # DAT_00ba2860:ba2864 — elapsed time recorded by FUN_00443ed0 at GOF send
+        self.g_elapsed_press_time: float = 0.0
 
         # ── CancelPriorPress globals ─────────────────────────────────────────
         # DAT_004c6ce4 — prior press token to cancel (NOT message)
@@ -413,6 +427,11 @@ class InnerGameState:
         self.g_PowerProximityRank: np.ndarray | None = None
         # DAT_00b84948[pow*21+other] — second influence scratch matrix (zeroed each turn)
         self.g_InfluenceMatrix_B = np.zeros((7, 7), dtype=np.float64)
+        # DAT_004d53d8[power*2] — lo-word: 1 = PCE proposal sent to this power this turn
+        # DAT_004d53dc[power*2] — hi-word companion (always 0 after write)
+        # Both zeroed each turn in the per-power reset loop.
+        self.g_TurnOrderHist_Lo = np.zeros(7, dtype=np.int32)
+        self.g_TurnOrderHist_Hi = np.zeros(7, dtype=np.int32)
 
     def synchronize_from_game(self, game):
         """

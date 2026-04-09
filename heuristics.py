@@ -399,31 +399,28 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                         elif state.has_own_unit(power, province) and enemy_reach == 0:
                             state.g_ProvinceAccessFlag[power, province] = 1
 
-def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name: str) -> bool:
+def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
     """
     Port of ComputeDrawVote (FUN_004440e0).
 
-    Nash-stability check. Returns True (vote draw) only if all submitted units
-    are fully committed with no profitable unilateral deviations. Returns False
-    if any unit has >=2 uncommitted free-move targets.
+    Nash-stability check. Returns True (vote draw) only if all friendly-power
+    units are fully committed with no profitable unilateral deviations.
 
-    param_1 (submitted_orders) is the accumulated order list from BuildAndSendSUB.
+    Called via the FUN_0044c9d0 wrapper which builds `friendly_powers`:
+        own_power ∪ { p : curr_sc_cnt[p] > 0 AND trust(own,p) > 1 }
+    param_1 in the C = std::map<power_id, sentinel> (the friendly-powers set).
+    Step 2 does Map_Find(param_1, unit+0x18) where unit+0x18 = power field
+    (NOT province — doc comment was wrong; confirmed by iVar6+0x18 = power
+    throughout _build_gof_seq and _move_analysis).
+
     Internally mirrors local_108 (province metadata map) and local_e4 (reach map).
     """
-    # Build set of submitted provinces from best candidate orders
-    submitted_provinces: set = set()
-    if submitted_orders:
-        best = submitted_orders[0]
-        for prov, _ in best.get('orders', []):
-            submitted_provinces.add(prov)
-
-    if not submitted_provinces:
+    if not friendly_powers:
         return False
 
     # --- Step 1: Province metadata init (local_108) + reach-map init (local_e4) ---
     # local_108[prov]: [flag_a, supporter, flag_b, committed_votes,
     #                   free_candidates, no_order, _, _, _, resolved, ..., fully_committed]
-    # Python: dict per province with named fields.
     def _new_meta():
         return {
             'flag_a': 0,          # [0]  set when entry is pre-resolved (free_candidates<=1)
@@ -431,7 +428,7 @@ def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name
             'committed': 0,       # [2]  committed flag (no/one free target)
             'committed_votes': 0, # [3]  count of committed backers
             'free_candidates': 0, # [4]  total free-move candidate count
-            'no_order': 0,        # [5]  1 = unit here has no submitted order
+            'no_order': 0,        # [5]  1 = unit's power NOT in friendly_powers
             'resolved': 0,        # +9   forced-commitment resolved flag
             'fully_committed': 0, # +0x19 fully-committed flag (required for draw)
         }
@@ -444,13 +441,17 @@ def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name
         for adj in state.adj_matrix.get(prov, []):
             reach_map.setdefault(adj, False)
 
-    # --- Step 2: Unit-to-order correlation ---
-    for prov in list(state.unit_info.keys()):
+    # --- Step 2: Unit-to-power-set correlation ---
+    # C: Map_Find(param_1, unit+0x18) where unit+0x18 = unit.power (power field).
+    # If unit.power NOT in friendly_powers → mark province as no_order=1 (non-friendly).
+    # If unit.power IN friendly_powers → mark province as reachable (local_e4=1).
+    for prov, unit_data in state.unit_info.items():
         province_meta.setdefault(prov, _new_meta())
-        if prov not in submitted_provinces:
-            province_meta[prov]['no_order'] = 1   # unsubmitted unit
+        unit_power = unit_data.get('power', -1)
+        if unit_power not in friendly_powers:
+            province_meta[prov]['no_order'] = 1   # non-friendly unit
         else:
-            reach_map[prov] = True                # has a submitted order
+            reach_map[prov] = True                # friendly unit: province is reachable
 
     # --- Step 3: Adjacency flood-fill from submitted-order provinces ---
     # Expand reach to adjacent provinces that have no submitted order.
@@ -471,26 +472,21 @@ def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name
                     changed = True
 
     # --- Step 4: First draw-vote candidate check ---
+    # C step 4: if unit.power NOT in friendly_powers and no_order==1 → don't draw.
+    # "power_lookup NOT in param_1" = unit.power not in friendly_powers.
     vote = True
-    for prov, reachable in reach_map.items():
-        if not state.has_unit(prov):
-            continue
+    for prov in list(state.unit_info.keys()):
         meta = province_meta.get(prov, {})
-        # Check if this unit's power has any submitted orders
         unit_power = state.unit_info.get(prov, {}).get('power', -1)
-        power_has_orders = any(
-            state.unit_info.get(sp, {}).get('power') == unit_power
-            for sp in submitted_provinces
-        )
-        if not power_has_orders and meta.get('no_order', 0) == 1:
+        if unit_power not in friendly_powers and meta.get('no_order', 0) == 1:
             vote = False
 
     if not vote:
         return False
 
     # --- Supporter assignment pre-pass ---
-    # For each unsubmitted province, count free-move candidates among its neighbours
-    # and assign itself as supporter to those neighbours.
+    # For each non-friendly-power province (no_order=1), count free-move candidates
+    # among its neighbours and assign itself as supporter to those neighbours.
     prev_no_order_prov = -1
     for prov in sorted(province_meta.keys()):
         meta = province_meta.get(prov, {})
@@ -506,9 +502,9 @@ def compute_draw_vote(state: InnerGameState, submitted_orders: list, _power_name
             if adj_meta.get('no_order', 0) == 1:
                 adj_meta['supporter'] = prov
 
-    # Pre-resolution: for submitted units with free_candidates <= 1, mark resolved.
-    for prov in state.unit_info:
-        if prov not in submitted_provinces:
+    # Pre-resolution: for friendly-power units with free_candidates <= 1, mark resolved.
+    for prov, unit_data in state.unit_info.items():
+        if unit_data.get('power', -1) not in friendly_powers:
             continue
         meta = province_meta.get(prov, _new_meta())
         if meta['free_candidates'] > 1:
