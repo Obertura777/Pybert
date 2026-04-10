@@ -310,24 +310,270 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
     return True
 
 
-def _execute_aly_vss(state: InnerGameState, power: int) -> bool:
+def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
     """
-    Stub for FUN_004325a0(this, param_1).
-    Called when ALY and VSS entries are both present in the press history.
-    Executes the ALY/VSS response action.
-    Returns True if an action was taken.
-    UNCHECKED — FUN_004325a0 not yet verified.
+    Port of FUN_004325a0(this, param_1).
+
+    Called (from _execute_then_action) when ALY and VSS entries are both present
+    in press history for *power* (= param_1 = target power index).
+
+    Logic (faithful to decompile):
+      own        = albert_power_idx  (this+8+0x2424)
+      mutual_enemy = g_MutualEnemyTable[power]  (DAT_00b9fdd8[param_1])
+
+      Gate 1: mutual_enemy >= 0  (valid)
+      Gate 2: g_AllyMatrix[power, mutual_enemy] == 0  (no existing alliance)
+
+      bVar3: scan all powers — any p where g_AllyMatrix[p, mutual_enemy] == 1 (tentative)
+
+      own_row = own * 21
+      Condition A: g_InfluenceRankFlag[own, power] < 4  AND  g_PressFlag == 1
+      Condition B: bVar3  AND  g_PressFlag == 1
+                   AND  g_DiplomacyStateA[mutual_enemy] == 1
+                   AND  g_DiplomacyStateB[mutual_enemy] == 0
+      Condition C: g_EnemyFlag[mutual_enemy] == 1
+                   AND  g_InfluenceRankFlag[own, mutual_enemy] < 4
+                   AND  raw[mutual_enemy, own] / (raw[own, mutual_enemy] + 1) < 4.5
+                   AND  (raw[mutual_enemy, own] > 5  OR  raw[own, mutual_enemy] > 5)
+
+      If any condition fires:
+        Send PRP ( ALY ( own power ) VSS ( mutual_enemy ) ) to power.
+        g_AllyMatrix[power, mutual_enemy] = -4  (cooling-off / proposal-sent marker)
+        return True
+
+    Returns False if no proposal was sent.
+
+    NOTE: g_DiplomacyStateA/B (DAT_004d5480/4) are written by CAL_BOARD block 4;
+    they are per-power int64 snapshots (lo/hi split). If not yet on the state object
+    the code falls back to 0, making condition B unreachable.
     """
-    return False
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    _send = send_fn if send_fn is not None else (
+        lambda msg: _log.debug("FUN_004325a0 PROPOSE: %s", msg)
+    )
+
+    own = getattr(state, 'albert_power_idx', 0)
+    num_powers = 7
+
+    # iVar2 = g_MutualEnemyTable[param_1]
+    mutual_enemy = int(state.g_MutualEnemyTable[power])
+
+    # Gate 1: mutual enemy must be valid
+    if mutual_enemy < 0:
+        return False
+
+    # Gate 2: g_AllyMatrix[power*21 + mutual_enemy] == 0  (neutral; not already allied)
+    if int(state.g_AllyMatrix[power, mutual_enemy]) != 0:
+        return False
+
+    # bVar3: any power has tentative alliance (== 1) with mutual_enemy
+    # C loop: piVar8 starts at &g_AllyMatrix[mutual_enemy] then strides +21 per row
+    bVar3 = any(int(state.g_AllyMatrix[p, mutual_enemy]) == 1 for p in range(num_powers))
+
+    press_on = (int(getattr(state, 'g_PressFlag', 0)) == 1)
+
+    # Condition A: g_InfluenceRankFlag[own, power] < 4  AND  press mode on
+    # C: DAT_006340c0[own*21 + param_1] < 4  &&  DAT_00baed68 == 1
+    rank_own_target = int(state.g_InfluenceRankFlag[own, power])
+    cond_a = (rank_own_target < 4) and press_on
+
+    # Condition B: bVar3 AND press on AND DiplomacyStateA[mutual_enemy]==1 AND B==0
+    # C: bVar3 && DAT_00baed68==1 && DAT_004d5480[iVar2*2]==1 && DAT_004d5484[iVar2*2]==0
+    _dipl_a_arr = getattr(state, 'g_DiplomacyStateA', None)
+    _dipl_b_arr = getattr(state, 'g_DiplomacyStateB', None)
+    dipl_a = int(_dipl_a_arr[mutual_enemy]) if _dipl_a_arr is not None else 0
+    dipl_b = int(_dipl_b_arr[mutual_enemy]) if _dipl_b_arr is not None else 0
+    cond_b = bVar3 and press_on and (dipl_a == 1) and (dipl_b == 0)
+
+    # Condition C: mutual_enemy is strategic enemy AND in our top-3 influence rank
+    #              AND influence ratio < 4.5 AND significant mutual influence
+    # C: DAT_004cf568[iVar2*2]==1 && DAT_004cf56c[iVar2*2]==0  (g_EnemyFlag[mutual_enemy])
+    #    DAT_006340c0[own*21 + mutual_enemy] < 4                (g_InfluenceRankFlag)
+    #    raw[mutual_enemy, own] / (raw[own, mutual_enemy] + 1) < 4.5
+    #    raw[mutual_enemy, own] > 5  OR  raw[own, mutual_enemy] > 5
+    enemy_flag = int(state.g_EnemyFlag[mutual_enemy])
+    rank_own_mutual = int(state.g_InfluenceRankFlag[own, mutual_enemy])
+    raw_mutual_own = float(state.g_InfluenceMatrix_Raw[mutual_enemy, own])
+    raw_own_mutual = float(state.g_InfluenceMatrix_Raw[own, mutual_enemy])
+    ratio = raw_mutual_own / (raw_own_mutual + 1.0)
+    cond_c = (
+        (enemy_flag == 1) and
+        (rank_own_mutual < 4) and
+        (ratio < 4.5) and
+        (raw_mutual_own > 5.0 or raw_own_mutual > 5.0)
+    )
+
+    if not (cond_a or cond_b or cond_c):
+        return False
+
+    # --- Build and send PRP ( ALY ( own power ) VSS ( mutual_enemy ) ) ---
+    # C: local_80 = target token, local_7c = own token, local_78 = mutual_enemy token
+    #    FUN_00466540(local_7c, local_1c, local_80)  → [own, target] pair
+    #    FUN_00466f80(&ALY, ...)                      → ALY (own target)
+    #    FUN_00466ed0(&VSS, ..., local_78)            → VSS (mutual_enemy)
+    #    FUN_00466330(aly_list, ..., vss_list)        → concatenate
+    #    FUN_00466f80(&PRP, ...)                      → PRP (ALY (...) VSS (...))
+    #    auStack_a8 = [power]  (recipient list)
+    #    auStack_b8 = PRP(...)  (press content)
+    #    PROPOSE(this)
+    _send(f"PRP ( ALY ( {own} {power} ) VSS ( {mutual_enemy} ) )")
+
+    # Mark g_AllyMatrix[power*21 + mutual_enemy] = 0xfffffffc = -4 (cooling-off)
+    # C: (&g_AllyMatrix)[(int)(puVar6 + iVar2)] = 0xfffffffc
+    state.g_AllyMatrix[power, mutual_enemy] = -4
+
+    return True
 
 
 def _execute_xdo(state: InnerGameState, power: int) -> None:
     """
-    Stub for FUN_00433510(this, param_1).
-    Executes the XDO (cross-diplomacy order) action for the given power.
-    UNCHECKED — FUN_00433510 not yet verified.
+    Port of FUN_00433510(this, param_1) — param_1 = sender power index.
+
+    Searches g_BroadcastList for already-sent own proposals (type_flag==1,
+    sent==True, count>0) whose current board state no longer matches the
+    expected order (GameBoard_GetPowerRec check) and which have not yet been
+    submitted as an XDO proposal (g_XdoProposalList dedup).
+
+    For each such candidate, computes per-power score deltas (iVar5 = own
+    gain, iVar8 = sender gain) via two paths:
+      • count >= 1 AND alt_scores valid (not −1000000): use alt_scores.
+      • otherwise (LAB_004337b0 fallback): node.scores[p] − node.baseline[p].
+
+    Accumulates ALL candidates that strictly improve the running best total
+    (iVar5 + iVar8 > best_score) with iVar5 > 0 and iVar8 > −800, mirroring
+    the C loop which appends to local_3c/local_4c on every new maximum.
+
+    After iteration, if any candidates were found:
+      • Logs each accumulated PRP(XDO) proposal (PROPOSE macro equivalent).
+      • Registers all proposed order sequences in g_XdoProposalList
+        (FUN_00419300 equivalent) so the same compound key is not re-sent.
+
+    Simplification vs. C: the compound order-sequence key used by
+    FUN_00410980/FUN_00419300 is approximated here as a per-province set;
+    the C code passes the full accumulated order-sequence list as the lookup
+    key.
+
+    Unchecked callees: FUN_00410980, FUN_00419300, FUN_00422a90,
+                       FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
+                       FUN_0040f470, FUN_00465f60, PROPOSE macro.
     """
-    pass
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    own: int = getattr(state, 'albert_power_idx', 0)
+    best_score: int = -20000          # local_a4
+
+    # Accumulators (local_4c = province list, local_3c = PRP list).
+    accumulated_provinces: list = []
+    accumulated_prp: list = []
+
+    # g_XdoProposalList — set of order-seq keys already submitted as XDO
+    # proposals (approximated as per-province dedup; C uses compound key).
+    # DAT_00bb6df4 / DAT_00bb6df8 sentinel.
+    xdo_sent: set = getattr(state, 'g_XdoProposalList', set())
+
+    for node in getattr(state, 'g_BroadcastList', []):
+        # Gate 1: type_flag == 1  (node[7] == 1)
+        if node.get('type_flag', 0) != 1:
+            continue
+
+        # Gate 2: count > 0  ((int)node[0x27] > 0)
+        count: int = int(node.get('count', 0))
+        if count <= 0:
+            continue
+
+        # Gate 3: sent_flag == 1  (*(char*)(node+6) == '\x01')
+        if not node.get('sent', False):
+            continue
+
+        # GameBoard_GetPowerRec check: puVar4[1] != local_50.
+        # Skip when the board's current order for *power* still matches the
+        # proposal's expected order (already satisfied on the board).
+        province = node.get('province')
+        if province is None:
+            continue
+        board_order = node.get('board_orders', {}).get(power)
+        expected    = node.get('order_match')
+        if board_order is not None and board_order == expected:
+            continue
+
+        # FUN_00410980: check if province already submitted (not-found → process).
+        # C: if (puVar4[1] == iVar5) → "not found in g_XdoProposalList → evaluate".
+        if province in xdo_sent:
+            continue
+
+        # Trust baseline lookup (FUN_0040fa80 + FUN_004109f0 at node+0x8c).
+        # Always executed here since count > 0 was already verified (the inner
+        # redundant check at C line 149 is always true at this point).
+        baseline: dict = node.get('baseline', {})   # power → int
+
+        # Score computation — two paths (mirror of LAB_004337b0 / else branch):
+        #   C else branch (count >= 1): try alternative scores from current node
+        #     at offset +0x38 + power*4 (FUN_0040fa80(&local_ac) + ...).
+        #     FUN_0040dfe0 checks validity of the baseline iterator; if it or
+        #     either alt score is −1000000, fall through to LAB_004337b0.
+        #   C LAB_004337b0 (direct): node[power+0x12] − baseline[power].
+        score_own: int
+        score_sender: int
+        if count >= 1:
+            alt: dict = node.get('alt_scores', {})
+            a_own    = alt.get(own,   -1000000)
+            a_sender = alt.get(power, -1000000)
+            # FUN_0040dfe0 validity gate + sentinel checks (−1000000 == invalid).
+            if a_own != -1000000 and a_sender != -1000000:
+                score_own    = a_own
+                score_sender = a_sender
+            else:
+                # LAB_004337b0 fallback
+                scores       = node.get('scores', {})
+                score_own    = scores.get(own,   0) - baseline.get(own,   0)
+                score_sender = scores.get(power, 0) - baseline.get(power, 0)
+        else:
+            # LAB_004337b0: direct delta (dead path here since count>0 checked
+            # above, but kept for structural fidelity with the decompile).
+            scores       = node.get('scores', {})
+            score_own    = scores.get(own,   0) - baseline.get(own,   0)
+            score_sender = scores.get(power, 0) - baseline.get(power, 0)
+
+        # FUN_00422a90(this) == 0: press-send gate (unchecked; treated as 0).
+        # Accumulate whenever this beats the running best combined score.
+        total: int = score_own + score_sender
+        if score_own > 0 and score_sender > -800 and total > best_score:
+            best_score = total
+            accumulated_provinces.append(province)
+            # Build PRP(XDO) note — power token: (power & 0xFF) | 0x4100
+            power_token = (power & 0xFF) | 0x4100
+            order_seq   = node.get('proposal_seq', [])
+            accumulated_prp.append({
+                'power_token': power_token,
+                'order_seq':   order_seq,
+                'province':    province,
+                'score_own':   score_own,
+                'score_sender': score_sender,
+            })
+
+    if not accumulated_prp:
+        return  # bVar1 == false
+
+    # bVar1 == true: send all accumulated PRP(XDO) proposals (PROPOSE macro).
+    # C: local_b4[0] = (byte)param_1 | 0x4100
+    #    FUN_00465f30/AppendList/FUN_00465f60 wrap the token + proposals
+    #    PROPOSE(local_9c)
+    #    FUN_00419300 registers in g_XdoProposalList
+    power_token = (power & 0xFF) | 0x4100
+    for prp in accumulated_prp:
+        _log.debug(
+            "_execute_xdo: PRP(XDO) power_token=0x%04x province=%s "
+            "score_own=%d score_sender=%d seq=%s",
+            prp['power_token'], prp['province'],
+            prp['score_own'], prp['score_sender'], prp['order_seq'],
+        )
+
+    # FUN_00419300: register proposed provinces in g_XdoProposalList.
+    for prov in accumulated_provinces:
+        xdo_sent.add(prov)
+    state.g_XdoProposalList = xdo_sent
 
 
 def _execute_then_action(state: InnerGameState, power: int) -> None:
@@ -780,11 +1026,27 @@ def cancel_prior_press(state: InnerGameState,
 
 def _is_game_active(state: InnerGameState) -> bool:
     """
-    Stub for FUN_00411740 (unchecked).
+    Port of FUN_00411740.
 
-    Returns '\x01' in C when game is still running / our turn is active.
+    When DAT_00baed46 (g_baed46) != 1: returns True unconditionally.
+    When DAT_00baed46 == 1: iterates g_BroadcastList; if ANY proposal has its
+    sent flag == 0 (not yet sent), returns False.  Returns True if all proposals
+    have been sent (or the list is empty).
+
+    C detail: puVar3 is undefined4*, so '*(char*)(puVar3 + 6)' is pointer
+    arithmetic — offset = 6 * 4 = 24 bytes — reaching the sent_flag char at
+    offset 24 of each proposal record (same field as puVar5[6] in
+    BuildAndSendSUB).
+
+    Callees: FUN_0047a948 = AssertFail (already documented);
+             FUN_0040f470 = MSVC list iterator advance (see unchecked list).
     """
-    return bool(getattr(state, 'g_game_active', True))
+    if getattr(state, 'g_baed46', 0) != 1:
+        return True
+    for entry in getattr(state, 'g_BroadcastList', []):
+        if not entry.get('sent', True):
+            return False
+    return True
 
 
 def _check_server_reachable(state: InnerGameState, mode: int = -1) -> bool:
@@ -987,8 +1249,130 @@ def cal_move(state: InnerGameState, press_tokens: list) -> bool:
 # ── Callee stubs (all UNCHECKED — addresses unknown) ─────────────────────────
 
 def _handle_pce(state: InnerGameState, tokens: list) -> bool:
-    """Stub for named function PCE(). Evaluates a PCE (peace) proposal."""
-    return False  # STUB
+    """
+    Port of named function PCE() at address 0x0041dc10.
+
+    Evaluates a PCE (peace) proposal from another power.  Called from
+    cal_move() when the leading press token is 'PCE'.
+
+    tokens[0] == 'PCE'; tokens[1:] == power indices included in the proposal.
+
+    Algorithm:
+      1. For every ordered pair (power_i, power_j) of PCE powers where i != j:
+           - If power_i == own_power: mark power_j as PCE-applied this turn
+             (g_TurnOrderHist_Lo[power_j] = 2).
+           - Compute new trust = max(1, 3 − g_StabCounter[i,j]), capped at 3
+             when _g_NearEndGameFactor >= 4.0.
+           - Update g_AllyTrustScore[i,j] / g_AllyTrustScore_Hi[i,j] if the
+             new trust (as uint64) exceeds the current value.
+      2. If any score was updated: log + BuildAllianceMsg(0x66) (recalc notice).
+      3. If g_PressFlag == 1 (trust-override / press mode active):
+           - Scan all 7 powers; if any power still has a pending PCE flag
+             (g_TurnOrderHist_Lo == 1) or has zero trust despite having
+             a DiplomacyState entry, the peace deal is not yet complete.
+           - If ALL powers accepted: log, BuildAllianceMsg(0x65), restore
+             g_AllyTrustScore[own,*] from g_DiplomacyStateA/B snapshot.
+      4. If changed: call ComputeOrderDipFlags (FUN_004113d0) — not yet ported.
+
+    Returns True if the trust matrix was updated (signals GOF recalculation).
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    own_power  = getattr(state, 'albert_power_idx', 0)
+    num_powers = 7
+
+    # tokens[1:] are the power indices inside PCE ( pow1 pow2 ... )
+    pce_powers = [int(t) for t in tokens[1:]]
+    n = len(pce_powers)
+
+    changed = False
+
+    # ── Double loop: all ordered pairs (i, j), i != j ────────────────────────
+    for i in range(n):
+        power_i = pce_powers[i]   # uVar16
+        for j in range(n):
+            if i == j:
+                continue
+            power_j = pce_powers[j]   # uVar12
+
+            # If own power is in the pair: mark power_j as PCE-applied
+            # C: if (uVar16 == uVar4) { DAT_004d53d8[uVar12*2] = 2; DAT_004d53dc[uVar12*2] = 0; }
+            if power_i == own_power:
+                state.g_TurnOrderHist_Lo[power_j] = 2
+                state.g_TurnOrderHist_Hi[power_j] = 0
+
+            # Compute trust: 3 − g_StabCounter[i,j] clamped to [1, 3]
+            # When near-end-game (factor >= 4.0) always use 3.
+            # C: uVar9 = 3; if (_g_NearEndGameFactor < 4.0) uVar9 = max(1, 3-stab)
+            if state.g_NearEndGameFactor < 4.0:
+                trust = 3 - int(state.g_StabCounter[power_i, power_j])
+                if trust < 1:
+                    trust = 1
+            else:
+                trust = 3
+
+            # int64 sign-extend trust → (trust_hi, trust_lo)
+            # C: iVar14 = (int)uVar9 >> 0x1f  → 0 for positive trust
+            trust_hi = trust >> 31   # always 0 for trust in [1,3]
+
+            curr_hi = int(state.g_AllyTrustScore_Hi[power_i, power_j])
+            curr_lo = int(state.g_AllyTrustScore[power_i, power_j])
+
+            # Update if (trust_hi, trust) > (curr_hi, curr_lo) as uint64.
+            # C: curr_hi <= trust_hi AND (curr_hi < trust_hi OR curr_lo_uint < trust_uint)
+            if curr_hi <= trust_hi and (curr_hi < trust_hi or curr_lo < trust):
+                state.g_AllyTrustScore[power_i, power_j]    = trust
+                state.g_AllyTrustScore_Hi[power_i, power_j] = trust_hi
+                changed = True
+
+    # ── If any score changed: log + BuildAllianceMsg(0x66) ───────────────────
+    if changed:
+        powers_str = ' '.join(str(p) for p in pce_powers)
+        _log.debug("Recalculating: Because we have applied a peace deal %s", powers_str)
+        # BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x66) — not yet ported
+
+    # ── All-powers-accepted check (only when g_PressFlag == 1) ───────────────
+    # C: if (DAT_00baed68 == '\x01') { ... if (bVar3) goto LAB_0041deab; ... }
+    if state.g_PressFlag == 1:
+        dipl_a_arr = getattr(state, 'g_DiplomacyStateA', None)
+        dipl_b_arr = getattr(state, 'g_DiplomacyStateB', None)
+        not_all_accepted = False
+        for i in range(num_powers):
+            # Condition 1: pending PCE flag (sent but not yet applied)
+            # C: DAT_004d53d8[i*2] == 1 AND DAT_004d53dc[i*2] == 0
+            if int(state.g_TurnOrderHist_Lo[i]) == 1 and int(state.g_TurnOrderHist_Hi[i]) == 0:
+                not_all_accepted = True
+
+            # Condition 2: own has no trust with power i despite diplomatic state
+            # C: g_AllyTrustScore[own*21+i]==0 AND g_AllyTrustScore_Hi==0
+            #    AND (DAT_004d5480[i*2]!=0 OR DAT_004d5484[i*2]!=0)
+            t_lo = int(state.g_AllyTrustScore[own_power, i])
+            t_hi = int(state.g_AllyTrustScore_Hi[own_power, i])
+            dipl_a = int(dipl_a_arr[i]) if dipl_a_arr is not None else 0
+            dipl_b = int(dipl_b_arr[i]) if dipl_b_arr is not None else 0
+            if t_lo == 0 and t_hi == 0 and (dipl_a != 0 or dipl_b != 0):
+                not_all_accepted = True
+
+        if not not_all_accepted:
+            # All powers accepted — restore trust from DiplomacyState snapshot
+            _log.debug("ALL powers have accepted PCE: return to original plan")
+            # BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x65) — not yet ported
+
+            # C: puVar11 = &g_AllyTrustScore + uVar4*0x2a; copies DAT_004d5480/4 into it
+            if dipl_a_arr is not None and dipl_b_arr is not None:
+                for i in range(num_powers):
+                    state.g_AllyTrustScore[own_power, i]    = int(dipl_a_arr[i])
+                    state.g_AllyTrustScore_Hi[own_power, i] = int(dipl_b_arr[i])
+            changed = True
+
+    # ── If changed: ComputeOrderDipFlags (FUN_004113d0) ─────────────────────
+    # C: LAB_0041deab falls through to FUN_004113d0 when cStack_52 == '\x01'
+    if changed:
+        # TODO: port ComputeOrderDipFlags (FUN_004113d0); skipped — not yet implemented
+        pass
+
+    return changed
 
 
 def _handle_aly(state: InnerGameState, tokens: list) -> bool:

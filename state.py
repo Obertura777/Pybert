@@ -307,6 +307,9 @@ class InnerGameState:
         # ── BuildAndSendSUB globals ──────────────────────────────────────────
         # DAT_00bb65f0 — outer broadcast proposal list
         self.g_BroadcastList: list = []
+        # DAT_00bb6df4 — XDO proposal dedup set (compound order-seq keys;
+        # approximated here as per-province set; C uses FUN_00410980/FUN_00419300)
+        self.g_XdoProposalList: set = set()
         # DAT_004c6bbc — MC trial cap per proposal (difficulty=100 → 30)
         self.g_PressProposalsCap: int = 30
         # DAT_00b95368/58/e0[trial*4] — per-trial score tracking arrays
