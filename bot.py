@@ -25,7 +25,7 @@ from .communications import (
 )
 from .heuristics import (
     cal_board,
-    compute_draw_vote, detect_stabs_and_hostility,
+    compute_draw_vote,
     post_process_orders, compute_press, compute_influence_matrix,
     _safe_pow,
 )
@@ -303,52 +303,207 @@ def _compute_press(state: InnerGameState) -> None:
     compute_press(state)
 
 
-def _stabbed(state: InnerGameState) -> None:
-    """STABBED (FUN_0042c730). Stab detection in move phase.
-    Year-1 fall/retreat — detect if ally betrayed us. Also writes g_OpeningStickyMode."""
-    own_power = getattr(state, 'albert_power_idx', 0)
-    num_powers = 7
+def _stab_enemy_slot_remove(slots, target):
+    """Remove target from the 3-slot g_EnemySlot queue.
 
-    # Phase 0: Init pass
+    Slot[0] removal left-shifts remaining entries (C lines 418-426 / 430-436).
+    Slot[1] or slot[2] removal just clears that slot (C lines 437-455).
+    """
+    if slots[0] == target:
+        slots[0] = slots[1] if slots[1] != -1 else -1
+        if slots[1] != -1:
+            slots[1] = slots[2] if slots[2] != -1 else -1
+            slots[2] = -1
+    elif slots[1] == target:
+        slots[1] = -1
+    elif slots[2] == target:
+        slots[2] = -1
+
+
+def _stab_clear_ally_list(state, attr, power_idx):
+    """Clear g_AllyPromiseList[power_idx] or g_AllyCounterList[power_idx].
+
+    Supports dict-of-sets (preferred), list-of-sets, and legacy np.ndarray.
+    """
+    lst = getattr(state, attr, None)
+    if lst is None:
+        return
+    if isinstance(lst, dict):
+        lst[power_idx] = set()
+    elif isinstance(lst, list) and 0 <= power_idx < len(lst):
+        lst[power_idx] = set() if isinstance(lst[power_idx], set) else 0
+    elif hasattr(lst, '__setitem__'):
+        try:
+            lst[power_idx] = 0
+        except (IndexError, ValueError):
+            pass
+
+
+def _stabbed(state: InnerGameState) -> None:
+    """STABBED (FUN_0042c730). Stab detection for the move-order phase (Year-1).
+
+    Double loop (outer=row=victim, inner=col=stabber). For each pair:
+
+    Phase 0 — zero-init pass (identical to DEVIATE_MOVE):
+      g_StabFlag, g_NeutralFlag, g_CeaseFire, g_PeaceSignal always;
+      g_SomeCoopScore (DAT_0062c580) if SPR;
+      g_CoopFlag (DAT_0062be98) if FAL.
+
+    Phase 1 — unit-list proposed-order check (Albert+0x2450/54):
+      For each unit of power col (not row): check if the unit's province has a
+      per-province alliance record (Albert+prov*0x24) whose ally field == row.
+      Python proxy: g_AllyDesignation_A/B[prov] == row.
+      Sets stab_flag for this (row,col) pair.
+
+    Phase 2 — submitted-order stab check (Albert+0x248c/90):
+      For each submitted order by col (not row):
+        MTO/CTO (type 2/6): dest must appear in g_AllyCounterList[col] (when
+          col attacked row=own_power) or g_AllyPromiseList[row] (when col=own
+          attacked row).
+        SUP-MTO (type 4): same check using support-target province.
+      If destination not found in expected list → stab_flag set.
+
+    On stab (stab_flag==True):
+      g_StabFlag[row, col] = 1.
+      If row==own_power (victim): log + set g_StabbedFlag + clear stabber's
+        ally lists + update g_EnemySlot (removal) + g_OpeningStickyMode.
+      If col==own_power (stabber): clear victim's ally lists.
+      Always: bilateral g_SomeCoopScore or g_CoopFlag; bilateral trust reset.
+    """
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    num_powers = 7
+    season = state.g_season
+
+    # ── Phase 0: Init pass ────────────────────────────────────────────────────
+    # Arrays: int[pow*21+other], stride 0x54=21*4 per row, 4 per col.
+    # In Python they are (7,7); fill(0) is equivalent.
     state.g_StabFlag.fill(0)
     state.g_NeutralFlag.fill(0)
     state.g_CeaseFire.fill(0)
     state.g_PeaceSignal.fill(0)
-    if state.g_season == 'SPR':
-        state.g_CoopScoreFlag_A.fill(0)
-    elif state.g_season == 'FAL':
-        state.g_CoopScoreFlag_B.fill(0)
+    # DAT_0062c580 = g_SomeCoopScore, cleared when season == SPR
+    if season == 'SPR':
+        state.g_SomeCoopScore.fill(0)
+    # DAT_0062be98 = g_CoopFlag, cleared when season == FAL
+    elif season == 'FAL':
+        state.g_CoopFlag.fill(0)
 
-    # Core logic comparison vs expected orders deferred to heuristics fallback
-    detect_stabs_and_hostility(state, own_power)
+    # ── Phase 1: unit-list province-designation check (Albert+0x2450/54) ─────
+    # C: for each unit node (iVar15) where unit.power==col and col!=row:
+    #   byte  at Albert+3+prov*0x24        → nonzero = has ally designation
+    #   ushort at Albert+0x20+prov*0x24    → hi='A', lo=designated ally power
+    #   if hi!='A': lo = 0x14 (invalid)
+    #   if lo == row: uStack_92 |= 1
+    # Python proxy: g_AllyDesignation_A[prov]==row or g_AllyDesignation_B[prov]==row.
+    stab_unit = np.zeros((num_powers, num_powers), dtype=bool)
+    for prov, unit in state.unit_info.items():
+        col = int(unit['power'])
+        prov_id = int(prov) if not isinstance(prov, int) else prov
+        if prov_id >= 256:
+            continue
+        desig_a = int(state.g_AllyDesignation_A[prov_id])
+        desig_b = int(state.g_AllyDesignation_B[prov_id])
+        for row in range(num_powers):
+            if row == col:
+                continue
+            if desig_a == row or desig_b == row:
+                stab_unit[row, col] = True
 
-    # Apply stab consequences (victim perspective)
-    for col in range(num_powers):
-        if state.g_StabFlag[col, own_power] == 1:
-            logger.info(f"We have been stabbed by ({col}) during the turn")
-            state.g_StabbedFlag = 1
-            state.g_AllyPromiseList = getattr(state, 'g_AllyPromiseList', np.zeros(num_powers))
-            state.g_AllyCounterList = getattr(state, 'g_AllyCounterList', np.zeros(num_powers))
-            state.g_AllyPromiseList[col] = 0
-            state.g_AllyCounterList[col] = 0
-            
-            if state.g_season in ('SUM', 'FAL'):
-                state.g_CoopScoreFlag_A[col, own_power] = 1
-            else:
-                state.g_CoopScoreFlag_B[col, own_power] = 1
+    # ── Phase 2: submitted-order stab check (Albert+0x248c/90) ───────────────
+    # g_AllyCounterList[col]: set of expected dest provinces for col's moves
+    #   (checked when col != own, row == own; C: DAT_00bb7028/2c per power)
+    # g_AllyPromiseList[row]: set of expected dest provinces for own's moves
+    #   into row's territory (C: DAT_00bb6f28/2c per power)
+    # Submitted orders in g_SubmittedOrderList lack order_type; treated as MTO.
+    ally_counter = getattr(state, 'g_AllyCounterList', None)
+    ally_promise = getattr(state, 'g_AllyPromiseList', None)
 
-            state.g_AllyTrustScore[col, own_power] = 0
-            state.g_AllyTrustScore[own_power, col] = 0
-            
-            # g_EnemySlot priority queue push-front LRU
-            slots = [s for s in getattr(state, 'g_EnemySlot', [-1]*3) if s != col and s != -1]
-            slots.insert(0, col)
-            while len(slots) < 3:
-                slots.append(-1)
-            state.g_EnemySlot = slots[:3]
+    def _in_list(lst, power, dest):
+        if lst is None:
+            return False
+        if isinstance(lst, dict):
+            return dest in lst.get(power, set())
+        if isinstance(lst, (list, np.ndarray)):
+            try:
+                entry = lst[power]
+                if isinstance(entry, set):
+                    return dest in entry
+            except (IndexError, KeyError):
+                pass
+        return False
 
-            if getattr(state, 'g_OpeningStickyMode', 0) == 1 and getattr(state, 'g_OpeningEnemy', -1) != col:
-                state.g_OpeningStickyMode = 0
+    stab_order = np.zeros((num_powers, num_powers), dtype=bool)
+    for order in getattr(state, 'g_SubmittedOrderList', []):
+        col = int(order.get('power', -1))
+        if not (0 <= col < num_powers):
+            continue
+        dest = int(order.get('dst_prov', -1))
+        if dest < 0:
+            continue
+        # Treat all submitted orders as MTO-type (order_type not in Python state).
+        # Case A: attacker (col) hits own_power (row==own_power)
+        if col != own_power:
+            row = own_power
+            if not _in_list(ally_counter, col, dest):
+                stab_order[row, col] = True
+        # Case B: own_power (col) moves into other power's (row) territory
+        elif col == own_power:
+            for row in range(num_powers):
+                if row == col:
+                    continue
+                if not _in_list(ally_promise, row, dest):
+                    stab_order[row, col] = True
+
+    # ── Phase 3: apply stab consequences ─────────────────────────────────────
+    slots = list(map(int, state.g_EnemySlot))
+    for row in range(num_powers):
+        for col in range(num_powers):
+            if row == col:
+                continue
+            if not (stab_unit[row, col] or stab_order[row, col]):
+                continue
+
+            state.g_StabFlag[row, col] = 1
+
+            # Victim == own_power (C lines 270-367)
+            if row == own_power:
+                logger.info("We have been stabbed by (%d) during the turn", col)
+                state.g_StabbedFlag = 1
+                logger.info("Enemy desired because of stab")
+                _stab_clear_ally_list(state, 'g_AllyPromiseList', col)
+                _stab_clear_ally_list(state, 'g_AllyCounterList', col)
+
+            # Stabber == own_power (C lines 368-398)
+            if col == own_power:
+                _stab_clear_ally_list(state, 'g_AllyPromiseList', row)
+                _stab_clear_ally_list(state, 'g_AllyCounterList', row)
+
+            # Season-dependent bilateral CoopScore flags (C lines 399-413)
+            if season in ('SUM', 'FAL'):
+                state.g_SomeCoopScore[row, col] = 1
+                state.g_SomeCoopScore[col, row] = 1
+            else:  # AUT, WIN, SPR
+                state.g_CoopFlag[row, col] = 1
+                state.g_CoopFlag[col, row] = 1
+
+            # Bilateral trust reset (C lines 409-413)
+            state.g_AllyTrustScore[row, col] = 0
+            state.g_AllyTrustScore_Hi[row, col] = 0
+            state.g_AllyTrustScore[col, row] = 0
+            state.g_AllyTrustScore_Hi[col, row] = 0
+
+            # g_EnemySlot removal — victim==own: remove stabber;
+            # stabber==own: remove victim (C lines 414-455).
+            # Slot[0] removal left-shifts; slot[1]/[2] just cleared.
+            if row == own_power:
+                _stab_enemy_slot_remove(slots, col)
+                # g_OpeningStickyMode (C lines 415-417)
+                if state.g_OpeningStickyMode == 1 and col != state.g_OpeningEnemy:
+                    state.g_OpeningStickyMode = 0
+            if col == own_power:
+                _stab_enemy_slot_remove(slots, row)
+
+    state.g_EnemySlot = np.array(slots[:3], dtype=np.int32)
 
 
 def _deviate_move(state: InnerGameState) -> None:
@@ -1405,12 +1560,12 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
         #   5. If this+0x2488 == 0: append REM (remove phase); else append BLD (build phase)
         #   6. FUN_00466c40 wraps all → ( ( POWER FLT/AMY PROV ) BLD/REM )  ← standard DAIDE ✓
         # this+0x2488 = 0 → remove phase; != 0 → build phase.
-        # g_build_order_list stub: caller must populate; see Q-GOF-1 in OpenQuestions.md.
-        for order in getattr(state, 'g_build_order_list', []):
+        # g_build_order_list: populated by WIN handler; cleared by ResetPerTrialState.
+        for order in state.g_build_order_list:
             seq.append(f'( {order} )')
         # WVE: C calls FUN_00466540(own_power_tok, ..., WVE) → [own_power, WVE].
         # AppendSeq wraps to ( own_power WVE ). Per DAIDE spec: "power WVE".
-        waive_count: int = int(getattr(state, 'g_waive_count', 0))
+        waive_count: int = state.g_waive_count
         for _ in range(waive_count):
             seq.append(f'( {power_name} WVE )')  # DAT_004c76a0=WVE; power from this+0x2424
 
@@ -1712,15 +1867,40 @@ class AlbertClient:
         # 5e — DAT_00baed6d = 0  (deviation/retry sentinel cleared before GenerateOrders)
         self.state.g_baed6d = 0
 
-        # 5f — GenerateOrders + ScoreOrderCandidates → per-power ProcessTurn calls
-        # process_turn = FUN_00453220: per-power MC trial engine.
-        # ScoreOrderCandidates (FUN_004559c0) iterates active powers and calls
-        # process_turn(state, p, trial_count) for each.  Approximated here by
-        # running generate_orders once then calling process_turn for own power.
+        # 5f — GenerateOrders + ScoreOrderCandidates (FUN_004559c0)
+        # ScoreOrderCandidates:
+        #   Step 1: clear g_CandidateList2 (per-power secondary lists) → reset
+        #            g_CandidateRecordList so each scoring pass starts fresh.
+        #   Step 2: reset proposal records in g_CandidateRecordList for new round.
+        #   Step 3: call ProcessTurn for each power where
+        #             unit_count[p] > 0 AND general_orders_present[p] != 0.
+        #            trial_count = (unit_count[p] * g_TrialScale + 10) // 10;
+        #            if g_PressProposalsCap == 0 AND p != own_power: trial_count = 1.
+        #   Steps 4–5: proposal matching / scoring (DAIDE token comparison) — absorbed
+        #              into the MC candidate scoring: each ProcessTurn call populates
+        #              g_CandidateRecordList entries with scored order sets.
         from .monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
-        process_turn(self.state, own_power_idx, num_trials=1000)
-        best_orders = self.state.g_CandidateRecordList  # populated by evaluate_order_proposal
+
+        # Step 1 — clear candidate list before scoring pass
+        self.state.g_CandidateRecordList = []
+
+        # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_UnitCount)
+        # g_TrialScale = DAT_004c6bb8 = difficulty*2+60 (default difficulty=100 → 260)
+        # g_PressProposalsCap = DAT_004c6bbc = (difficulty*3)//10 capped at 30
+        trial_scale: int = getattr(self.state, 'g_TrialScale', 260)
+        press_cap: int = getattr(self.state, 'g_PressProposalsCap', 30)
+        unit_count = getattr(self.state, 'g_UnitCount', np.zeros(num_powers, dtype=np.int32))
+        general_orders_present = getattr(
+            self.state, 'g_GeneralOrdersPresent', np.zeros(num_powers, dtype=np.int32))
+        for p in range(num_powers):
+            if int(unit_count[p]) > 0 and int(general_orders_present[p]) != 0:
+                if press_cap == 0 and p != own_power_idx:
+                    n_trials = 1
+                else:
+                    n_trials = (int(unit_count[p]) * trial_scale + 10) // 10
+                process_turn(self.state, p, num_trials=n_trials)
+        best_orders = self.state.g_CandidateRecordList  # populated by process_turn
 
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
         if movement_phase:

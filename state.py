@@ -99,11 +99,30 @@ class InnerGameState:
         # DAT_00ba3770[province] — convoy source province score (0xffffffff = unset)
         self.g_ConvoySourceProv = np.zeros(256, dtype=np.float64)
 
+        # DAT_00ba3b70[province] — per-province score flag; set to 1 by RegisterConvoyFleet
+        # for adjacent provinces meeting the army-adj + target criteria; reset per trial.
+        self.g_ProvinceScoreTrial = np.zeros(256, dtype=np.int32)
+        # DAT_00ba3f70[province] — count of own AMY-adjacent provinces; populated per trial
+        # in Phase 1b unit scan; reset to 0 at the start of each trial.
+        self.g_ArmyAdjCount = np.zeros(256, dtype=np.int32)
+        # Per-trial set of fleet provinces already processed by RegisterConvoyFleet.
+        # Mirrors the char flag at this->ptr_at_8 + fleet * 0x24 + 4 in the C++ original.
+        self.g_ConvoyFleetRegistered: set = set()
+
         # Albert+0x4CFC — sorted convoy fleet candidate list: list[tuple[int, int]] = (score, prov).
         # Populated by ScoreConvoyFleet (FUN_00419790) in process_turn Phase 1g;
         # drained by MoveCandidate (FUN_00411cf0) in Phase 2.  Sorted ascending by
         # score (remaining fleet count); Phase 2 processes from the front (lowest score).
         self.g_ConvoyFleetCandidates: list = []
+
+        # DAT_00bb65a0 / DAT_00bb65a4 — convoy destination list.
+        # Populated by ConvoyList_Insert (FUN_0041c340) in BuildOrder_MTO/BuildConvoyOrders;
+        # cleared at the start of each trial.  Each entry is a dst province index.
+        self.g_ConvoyDstList: list = []
+
+        # Companion map dst_province → src_province written by ConvoyList_Insert
+        # (the node field set via *ppiVar5 = src immediately after insert).
+        self.g_ConvoyDstToSrc: dict = {}
 
         # Current game season token: 'SPR'|'SUM'|'FAL'|'AUT'|'WIN'
         self.g_season = 'SPR'
@@ -120,6 +139,13 @@ class InnerGameState:
         # consumed by EnumerateConvoyReach (BFS expansion gating).
         # Populated by the order-candidate pipeline before EnumerateConvoyReach runs.
         self.g_BuildCandidateList: set = set()
+
+        # this+0x2478 — build-candidate list for WIN phase; populated by WIN handler,
+        # cleared by ResetPerTrialState at the start of each MC trial.
+        # Each entry is a DAIDE order string (e.g. '( ENG FLT LON ) BLD').
+        self.g_build_order_list: list = []
+        # this+0x2480 — waive count for WIN phase; cleared by ResetPerTrialState.
+        self.g_waive_count: int = 0
 
         # DAT_00baed68 — press-mode flag; 1 = ComputePress runs this turn, 0 = off
         self.g_PressFlag: int = 0

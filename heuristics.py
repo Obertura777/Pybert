@@ -663,7 +663,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     generation.  Computes:
       - _g_NearEndGameFactor
       - g_PowerExpScore  (super-exponential power score)
-      - g_SCPercent      (SC percentage per power)
+      - g_SCPercent      (SC percentage per power, relative to win_threshold)
       - g_EnemyCount     (genuine enemy count per power)
       - g_RankMatrix / g_AllyPrefRanking  (influence ranking)
       - g_EnemyFlag      (designated enemies for this turn)
@@ -673,39 +673,55 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     """
     num_powers = 7
     win_threshold = int(state.win_threshold)
-    total_sc = int(np.sum(state.sc_count))
-    if total_sc == 0:
-        total_sc = 1  # guard against divide-by-zero at game start
+    if win_threshold == 0:
+        win_threshold = 1  # guard against divide-by-zero
 
-    # ── Phase 1: exponential score + NearEndGameFactor ───────────────────────
-    # g_PowerExpScore[k] = pow(sc_k, sc_k) * 100 + 1
+    trust_hi_mat = getattr(state, 'g_AllyTrustScore_Hi', np.zeros((7, 7), dtype=np.int64))
+
+    # ── Phase 1a: per-power exponential score (Loop A in decompile) ──────────
+    # g_PowerExpScore[k] = pow(min(sc_k, win_threshold), min(sc_k, win_threshold)) * 100 + 1
+    for k in range(num_powers):
+        sc = max(0, min(int(state.sc_count[k]), win_threshold))
+        state.g_PowerExpScore[k] = (sc ** sc) * 100.0 + 1.0 if sc > 0 else 1.0
+
+    # ── Phase 1b: NearEndGameFactor + g_SCPercent (Loop B in decompile) ──────
+    # g_SCPercent[k] = sc[k] * 100 / win_threshold  (divisor = win threshold, NOT total SCs)
+    # g_WarModeFlag reset to 0 before this loop (decompile line 121)
+    state.g_WarModeFlag = 0
     near_end = 1.0
+
+    own_sc = int(state.sc_count[own_power])
+    # g_OneScFromWin checked before second loop (decompile line 118)
+    state.g_OneScFromWin = 1 if (win_threshold - own_sc == 1) else 0
+
     for k in range(num_powers):
         sc = int(state.sc_count[k])
-        exp_score = (sc ** sc) * 100.0 + 1.0 if sc > 0 else 1.0
-        state.g_PowerExpScore[k] = exp_score
-
-        pct = sc * 100.0 / total_sc
+        pct = sc * 100.0 / win_threshold
         state.g_SCPercent[k] = pct
         if pct > 80.0:
             state.g_WarModeFlag = 1
 
-        # NearEndGameFactor = max_k(sc[k] - win_threshold + 9)
+        # NearEndGameFactor: running max of (sc[k] - win_threshold + 9)
         factor = float(sc - win_threshold + 9)
         if factor > near_end:
             near_end = factor
 
-    # Clamp: if own SC ≤ 1 or ≤ 2 with factor < 5 → override
-    own_sc = int(state.sc_count[own_power])
-    if own_sc <= 1 or (own_sc <= 2 and near_end < 7.0):
-        if own_sc <= 2 and near_end < 5.0:
-            near_end = 5.0
-        else:
-            near_end = 8.0
-    state.g_NearEndGameFactor = near_end
+        # Zero g_EnemyFlag in this loop (decompile lines 126-127)
+        state.g_EnemyFlag[k] = 0
 
-    # One-SC-from-win flag
-    state.g_OneScFromWin = 1 if (win_threshold - own_sc == 1) else 0
+    # ── Phase 1c: NearEndGameFactor clamping ──────────────────────────────────
+    # C logic (decompile lines 314-388):
+    #   if (own_sc > 1 OR near_end >= 7.0):      ← outer TRUE → keep or set 5.0
+    #       if (own_sc > 2 OR near_end >= 5.0):  ← inner TRUE → keep
+    #       else:                                 ← inner FALSE → 5.0 (close to elimination)
+    #   else:                                     ← outer FALSE → 8.0 (about to be eliminated)
+    if own_sc > 1 or near_end >= 7.0:
+        if not (own_sc > 2 or near_end >= 5.0):
+            near_end = 5.0  # close to elimination
+        # else: keep computed near_end
+    else:
+        near_end = 8.0  # about to be eliminated
+    state.g_NearEndGameFactor = near_end
 
     # ── Phase 2: g_EnemyCount + g_RankMatrix init ────────────────────────────
     state.g_EnemyCount.fill(0)
@@ -717,14 +733,13 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         for col in range(num_powers):
             if row == col:
                 continue
-            trust_lo = float(state.g_AllyTrustScore[row, col])
-            trust_hi = float(getattr(state, 'g_AllyTrustScore_Hi',
-                                     np.zeros((7, 7)))[row, col])
+            trust_lo = int(state.g_AllyTrustScore[row, col])
+            trust_hi = int(trust_hi_mat[row, col])
             influence = float(state.g_InfluenceMatrix[row, col])
             col_sc = int(state.sc_count[col])
             if (trust_hi < 1
                     and (trust_hi < 0 or trust_lo < 2)
-                    and influence > 0
+                    and influence > 0.0
                     and col_sc > 2):
                 state.g_EnemyCount[row] += 1
 
@@ -732,72 +747,277 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     own_influence_row = state.g_InfluenceMatrix[own_power].copy()
     own_influence_row[own_power] = -1.0  # exclude self
     top3 = sorted(range(num_powers), key=lambda k: own_influence_row[k], reverse=True)[:3]
+    top_enemy_1 = top3[0] if len(top3) > 0 else own_power
+    top_enemy_2 = top3[1] if len(top3) > 1 else own_power
+    top_enemy_3 = top3[2] if len(top3) > 2 else own_power
 
-    # ── Phase 4: g_EnemyFlag selection ───────────────────────────────────────
-    state.g_EnemyFlag.fill(0)
+    # ── Phase 4: find leading non-own power → local_fc / local_128 ───────────
+    # local_fc  = int(g_SCPercent[leading_power]) — int-cast, like C FloatToInt64
+    # local_128 = index of the non-own power with the highest SC%
+    # (decompile lines 729-820; tie-breaking omitted — C uses trust/history)
+    local_fc: int = -1
+    local_128: int = own_power  # sentinel (own_power used when no rival found)
+    for k in range(num_powers):
+        if k == own_power:
+            continue
+        pct_int = int(state.g_SCPercent[k])   # FloatToInt64 truncates toward 0
+        if pct_int > local_fc:
+            local_fc = pct_int
+            local_128 = k
+
+    own_pct = float(state.g_SCPercent[own_power])
+
+    # ── Phase 4a: draw / static-map request flags ─────────────────────────────
+    # Decompile lines 821-876:
+    #   local_fc >= 0x50(80) AND g_SCPercent[leading] > own_pct + 15  → draw
+    #   local_fc >= 0x3c(60) AND g_SCPercent[leading] > own_pct + 25  → draw
+    state.g_RequestDrawFlag = 0
+    if local_128 != own_power:
+        lead_pct = float(state.g_SCPercent[local_128])
+        if local_fc >= 80 and lead_pct > own_pct + 15.0:
+            state.g_RequestDrawFlag = 1
+        elif local_fc >= 60 and lead_pct > own_pct + 25.0:
+            state.g_RequestDrawFlag = 1
+    if state.g_StaticMapFlag:
+        state.g_RequestDrawFlag = 1
+
+    # ── Phase 4b: near-victory enemy designation (local_fc > 0x3b = 59) ──────
+    # Decompile lines 878-1090
     state.g_LeadingFlag = 0
     state.g_OtherPowerLeadFlag = 0
     state.g_NearVictoryPower = -1
 
-    # SC percentage lead of most dangerous power (excluding own)
-    own_pct = float(state.g_SCPercent[own_power])
-    max_pct = max((float(state.g_SCPercent[k]) for k in range(num_powers)
-                   if k != own_power), default=0.0)
-    lead = max_pct - own_pct
-    leading_power = int(np.argmax([state.g_SCPercent[k] if k != own_power else 0.0
-                                   for k in range(num_powers)]))
+    bVar26 = False  # keep-alliance override
+    if local_fc > 59 and local_128 != own_power:
+        lead_pct = float(state.g_SCPercent[local_128])
+        # Keep-alliance condition (bVar26):
+        #   trust_hi >= 0 AND (trust_hi > 0 OR trust_lo > 11)
+        #   AND g_PowerExpScore[own] - g_PowerExpScore[leading] * 1.7 + 69 > 0
+        #   AND g_InfluenceRankFlag[own][leading] in {1, 2}
+        trust_hi_val = int(trust_hi_mat[own_power, local_128])
+        trust_lo_val = int(state.g_AllyTrustScore[own_power, local_128])
+        rank_flag = int(state.g_InfluenceRankFlag[own_power, local_128])
+        exp_own = float(state.g_PowerExpScore[own_power])
+        exp_lead = float(state.g_PowerExpScore[local_128])
+        if (trust_hi_val >= 0
+                and (trust_hi_val > 0 or trust_lo_val > 11)
+                and (exp_own - exp_lead * 1.7 + 69.0) > 0.0
+                and rank_flag in (1, 2)):
+            bVar26 = True
 
-    if max_pct >= 60.0 and lead > 15.0:
-        # Another power is threatening solo victory
-        state.g_OtherPowerLeadFlag = 1
-        state.g_NearVictoryPower = leading_power
-        # Set all as enemy except own power
-        for k in range(num_powers):
-            if k != own_power:
-                state.g_EnemyFlag[k] = 1
-    elif state.g_StabbedFlag == 1:
-        # Forced enemy: use top-3 by influence
-        for k in top3:
-            if int(state.sc_count[k]) > 0:
-                state.g_EnemyFlag[k] = 1
-                break
-    else:
-        # Peacetime: select top feared power as enemy
-        for k in top3:
-            trust = float(state.g_AllyTrustScore[own_power, k])
-            if trust <= 0 and k != own_power:
-                state.g_EnemyFlag[k] = 1
-                break
+        # Declare near-victory only if leading is actually ahead and no keep-alliance
+        if lead_pct > own_pct and not bVar26:
+            state.g_OtherPowerLeadFlag = 1
+            state.g_NearVictoryPower = local_128
+            # Set leading power as enemy; zero trust toward them
+            state.g_EnemyFlag[local_128] = 1
+            state.g_AllyTrustScore[own_power, local_128] = 0
+            if hasattr(trust_hi_mat, '__setitem__'):
+                trust_hi_mat[own_power, local_128] = 0
+            # When local_fc >= 80: additionally zero trust *from* local_128 to all
+            if local_fc >= 80:
+                for p in range(num_powers):
+                    if p != local_128:
+                        state.g_AllyTrustScore[local_128, p] = 0
+                        if hasattr(trust_hi_mat, '__setitem__'):
+                            trust_hi_mat[local_128, p] = 0
+            bVar26 = True  # signal "near-victory enemy selected"
 
-    # Leading-flag: own power has >75% of own-row influence and >2% SC gap
-    own_row_sum = float(np.sum(state.g_InfluenceMatrix[own_power]))
-    own_row_own = float(state.g_InfluenceMatrix[own_power, own_power])
-    if own_row_sum > 0 and (own_row_own / own_row_sum) > 0.75 and own_pct > (max_pct + 2.0):
-        state.g_LeadingFlag = 1
-        state.g_EnemyFlag.fill(0)
-        for k in range(num_powers):
-            if k != own_power:
-                state.g_EnemyFlag[k] = 1
+    # ── LAB_0042ac27: post-enemy-selection routing ────────────────────────────
+    # When g_OtherPowerLeadFlag==1: run near-victory weak-elim then JUMP TO END
+    # (skips gang-up, distressed-ally, weak-elim, dominance, alliance-agreement)
+    # When g_OtherPowerLeadFlag==0: run all remaining passes
 
-    # ── Phase 5: draw / static-map flags ─────────────────────────────────────
-    # Request draw when own SC ≥ 60% and well ahead, or map is static
-    own_total_pct = (own_sc * 100) // total_sc if total_sc > 0 else 0
-    if own_total_pct >= 60 and lead < 0:        # we are ahead
-        state.g_RequestDrawFlag = 1
-    elif getattr(state, 'g_StaticMapFlag', 0):
-        state.g_RequestDrawFlag = 1
-    else:
-        state.g_RequestDrawFlag = 0
+    if state.g_OtherPowerLeadFlag:
+        # ── Near-victory post-pass (decompile lines 1815–1924) ───────────────
+        # When local_fc > 75 OR leading_pct <= own_pct OR own_pct > 20:
+        #   If local_fc < 86 AND own_pct < leading_pct AND own_pct > 20:
+        #     mark powers with sc < 2 as enemy ("1 SC even though power close to victory")
+        # Else (local_fc <= 75 AND leading_pct > own_pct):
+        #   mark powers with sc < 2 OR weak influence as enemy
+        if local_128 != own_power:
+            lead_pct = float(state.g_SCPercent[local_128])
+            if local_fc > 75 or lead_pct <= own_pct or own_pct > 20.0:
+                if local_fc < 86 and lead_pct > own_pct and own_pct > 20.0:
+                    for p in range(num_powers):
+                        if int(state.sc_count[p]) < 2:
+                            state.g_EnemyFlag[p] = 1
+                            state.g_AllyTrustScore[own_power, p] = 0
+                            if hasattr(trust_hi_mat, '__setitem__'):
+                                trust_hi_mat[own_power, p] = 0
+            else:
+                # local_fc <= 75 AND leading_pct > own_pct
+                for p in range(num_powers):
+                    sc_p = int(state.sc_count[p])
+                    infl_own_p = float(state.g_InfluenceMatrix[own_power, p])
+                    infl_p_own = float(state.g_InfluenceMatrix[p, own_power])
+                    infl_raw_own_p = float(getattr(state, 'g_InfluenceMatrix_Raw',
+                                                    state.g_InfluenceMatrix)[own_power, p])
+                    infl_raw_p_p = float(getattr(state, 'g_InfluenceMatrix_Raw',
+                                                  state.g_InfluenceMatrix)[p, p])
+                    if (sc_p < 2
+                            or (infl_own_p > 0.0 and p != own_power
+                                and infl_raw_own_p / (infl_raw_p_p + 1.0) > 4.5
+                                and infl_p_own > 10.0)):
+                        state.g_EnemyFlag[p] = 1
+                        state.g_AllyTrustScore[own_power, p] = 0
+                        if hasattr(trust_hi_mat, '__setitem__'):
+                            trust_hi_mat[own_power, p] = 0
+        # goto LAB_0042bff2 — skip all remaining passes
+        return  # early exit; function writes are complete
 
-    # ── Phase 6: alliance-agreement → enemy (honor ally's enemies) ───────────
+    # ── Phase 4c: normal enemy selection (LAB_00429317 branch) ───────────────
+    # Simplified port; full decision tree has ~600 C lines.
+    # Key paths implemented: opening-sticky, both-top-2-at-war, peacetime.
+    if not bVar26:
+        g_stabbed = int(getattr(state, 'g_StabbedFlag', 0))
+        g_opening_sticky = int(getattr(state, 'g_OpeningStickyMode', 0))
+        g_deceit = int(getattr(state, 'g_DeceitLevel', 0))
+        g_opening_enemy = int(getattr(state, 'g_OpeningEnemy', -1))
+
+        enemy_selected = False
+
+        # Opening-sticky mode: keep fighting the designated opening enemy
+        if g_opening_sticky == 1 and g_deceit < 3 and 0 <= g_opening_enemy < num_powers:
+            state.g_EnemyFlag[g_opening_enemy] = 1
+            state.g_AllyTrustScore[own_power, g_opening_enemy] = 0
+            if hasattr(trust_hi_mat, '__setitem__'):
+                trust_hi_mat[own_power, g_opening_enemy] = 0
+            enemy_selected = True
+
+        # Both top-2 are at war with us (zero trust both ways) → pick by trust/history
+        if not enemy_selected and g_stabbed:
+            t_hi_1 = int(trust_hi_mat[own_power, top_enemy_1])
+            t_lo_1 = int(state.g_AllyTrustScore[own_power, top_enemy_1])
+            t_hi_2 = int(trust_hi_mat[own_power, top_enemy_2])
+            t_lo_2 = int(state.g_AllyTrustScore[own_power, top_enemy_2])
+            both_zero = (t_hi_1 == 0 and t_lo_1 == 0 and t_hi_2 == 0 and t_lo_2 == 0)
+            if both_zero:
+                # At war with top 2: pick the one we trust less (lower history score)
+                state.g_EnemyFlag[top_enemy_1] = 1
+                enemy_selected = True
+            elif t_lo_1 == 0 and t_hi_1 == 0:
+                state.g_EnemyFlag[top_enemy_1] = 1
+                enemy_selected = True
+            elif t_lo_2 == 0 and t_hi_2 == 0:
+                state.g_EnemyFlag[top_enemy_2] = 1
+                enemy_selected = True
+
+        # Peacetime: select top feared power with lowest/zero trust
+        if not enemy_selected:
+            for k in (top_enemy_1, top_enemy_2, top_enemy_3):
+                if k == own_power:
+                    continue
+                t_hi = int(trust_hi_mat[own_power, k])
+                t_lo = int(state.g_AllyTrustScore[own_power, k])
+                if t_hi < 1 and (t_hi < 0 or t_lo < 2):
+                    state.g_EnemyFlag[k] = 1
+                    break
+
+    # ── LAB_0042b203: distressed-ally rescue (decompile lines 2077–2166) ──────
+    # For each ally with g_AllyDistressFlag==1 that is not already an enemy:
+    # If own trust toward top-1 or top-2 feared > 30 (in Hi word), look up
+    # g_PowerProximityRank[ally][0] and [1]; if in own top-2/3 feared AND
+    # g_RankMatrix[own][rank_neighbor] < 3 → set that neighbor as enemy.
+    # NOTE: g_PowerProximityRank stride=0x14(20 bytes per power, 5 int32s per row).
+    # Simplified: use own top3 as proxy for proximity rank.
+    trust_threshold_hi = (
+        int(trust_hi_mat[own_power, top_enemy_1]) > 30
+        or int(trust_hi_mat[own_power, top_enemy_2]) > 30
+    )
+    for ally in range(num_powers):
+        if (int(state.g_AllyDistressFlag[ally]) != 1
+                or state.g_EnemyFlag[ally] != 0
+                or not trust_threshold_hi):
+            continue
+        # Use g_PowerProximityRank[ally] — proxy via own top3 if unavailable
+        prox_rank = getattr(state, 'g_PowerProximityRank', None)
+        candidates = []
+        if prox_rank is not None:
+            # Access g_PowerProximityRank[ally][0] and [1] (stride 5 int32s per power)
+            candidates = [int(prox_rank[ally, 0]), int(prox_rank[ally, 1])]
+        else:
+            candidates = [top_enemy_1, top_enemy_2]
+        for neighbor in candidates:
+            if not (0 <= neighbor < num_powers) or neighbor == own_power:
+                continue
+            if (neighbor in (top_enemy_2, top_enemy_3)  # in own top-2/3 feared
+                    and int(state.g_RankMatrix[own_power, neighbor]) < 3):
+                state.g_EnemyFlag[neighbor] = 1
+                state.g_AllyTrustScore[own_power, neighbor] = 0
+                if hasattr(trust_hi_mat, '__setitem__'):
+                    trust_hi_mat[own_power, neighbor] = 0
+
+    # ── Weak-elimination + SC-grab pass (decompile lines 2168–2283) ──────────
+    g_deceit = int(getattr(state, 'g_DeceitLevel', 0))
+    g_infl_raw = getattr(state, 'g_InfluenceMatrix_Raw', state.g_InfluenceMatrix)
+    for p in range(num_powers):
+        sc_p = int(state.sc_count[p])
+        infl_own_p = float(state.g_InfluenceMatrix[own_power, p])
+        infl_p_own = float(state.g_InfluenceMatrix[p, own_power])
+        raw_own_p  = float(g_infl_raw[own_power, p])
+        raw_p_own  = float(g_infl_raw[p, own_power])
+
+        # Weak-elimination: g_DeceitLevel > 2 AND (sc < 3 OR high influence dominance)
+        if g_deceit > 2 and (
+                sc_p < 3 or (
+                    infl_own_p > 0.0 and p != own_power
+                    and raw_own_p / (raw_p_own + 1.0) > 4.5
+                    and infl_p_own > 10.0
+                )):
+            state.g_EnemyFlag[p] = 1
+            state.g_AllyTrustScore[own_power, p] = 0
+            if hasattr(trust_hi_mat, '__setitem__'):
+                trust_hi_mat[own_power, p] = 0
+
+        # SC-grab: own_sc < 4 AND vulnerable unguarded SC (proxy via g_AllyRankingAux)
+        # Full condition uses g_AllyRankingAux[own][p-21], [p], [p+21] strides.
+        # Stubbed: not yet implemented (g_AllyRankingAux structure unclear).
+
+    # ── Dominance sweep (decompile lines 2284–2328) ───────────────────────────
+    # MUST come after all per-power passes above.
+    # DAT_00baed6a = 0 first (reset), then check condition.
+    # Condition: g_SCPercent[own] > 75.0 AND own_pct - g_SCPercent[local_128] >= 2.0
+    # (Note: uses local_128 not max_pct; uses >= not >)
+    state.g_LeadingFlag = 0
+    if local_128 != own_power:
+        lead_pct_dominate = float(state.g_SCPercent[local_128])
+        if own_pct > 75.0 and (own_pct - lead_pct_dominate) >= 2.0:
+            state.g_LeadingFlag = 1
+            for k in range(num_powers):
+                if k != own_power:
+                    state.g_EnemyFlag[k] = 1
+                    state.g_AllyTrustScore[own_power, k] = 0
+                    if hasattr(trust_hi_mat, '__setitem__'):
+                        trust_hi_mat[own_power, k] = 0
+
+    # ── Alliance-agreement → enemy (decompile lines 2329–2403) ──────────────
+    # Honor ally's declared enemies; conditions (decompile lines 2356–2363):
+    #   g_EnemyFlag[pow_b] == 0 (not yet enemy)
+    #   auStack_dc[pow_a + 1] == 0  (pow_a has no prior alliance enforcement)
+    #   g_AllyMatrix[own][pow_b] == 1  (own allied with pow_b)
+    #   DAT_004c6bc4 != pow_b  (pow_b is not opening best ally)
+    #   g_AllyTrustScore_Hi[own][pow_b] < 1 AND (Hi<0 OR Lo<2)  (low trust)
+    opening_best_ally = int(getattr(state, 'g_OpeningBestAlly',
+                                    getattr(state, 'DAT_004c6bc4', -1)))
+    # Track which pow_a rows have already set an enemy (auStack_dc equivalent)
+    pow_a_enforced = [False] * num_powers
     for pow_a in range(num_powers):
         for pow_b in range(num_powers):
-            if (int(state.g_AllyMatrix[pow_a, pow_b]) == 1
-                    and state.g_EnemyFlag[pow_b] == 0
+            if pow_a_enforced[pow_a]:
+                continue
+            t_hi_b = int(trust_hi_mat[own_power, pow_b])
+            t_lo_b = int(state.g_AllyTrustScore[own_power, pow_b])
+            if (state.g_EnemyFlag[pow_b] == 0
+                    and int(state.g_AllyMatrix[pow_a, pow_b]) == 1
                     and int(state.g_AllyMatrix[own_power, pow_b]) == 1
-                    and float(state.g_AllyTrustScore[own_power, pow_b]) < 1):
+                    and pow_b != opening_best_ally
+                    and t_hi_b < 1 and (t_hi_b < 0 or t_lo_b < 2)):
                 state.g_EnemyFlag[pow_b] = 1
                 state.g_AllyTrustScore[own_power, pow_b] = 0
+                if hasattr(trust_hi_mat, '__setitem__'):
+                    trust_hi_mat[own_power, pow_b] = 0
+                pow_a_enforced[pow_a] = True
 
 
 # ── ComputeInfluenceMatrix / NormalizeInfluenceMatrix ────────────────────────

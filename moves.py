@@ -572,6 +572,29 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                         'to_power':        unit2_power,
                     })
 
+def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int) -> None:
+    """
+    Port of RegisterConvoyFleet.
+
+    For fleet province `fleet_prov`, iterates all fleet-adjacent provinces.
+    For each adjacent province `adj` where g_ArmyAdjCount[adj] > 0 AND
+    g_ProvinceAccessFlag[power_idx, adj] > 0, marks g_ProvinceScoreTrial[adj] = 1.
+
+    The C++ guard (offset +4 in province record) prevents double-processing the
+    same province within a trial; in Python we use g_ConvoyFleetRegistered (a set
+    reset per trial alongside g_ArmyAdjCount / g_ProvinceScoreTrial).
+
+    AdjacencyList_FilterByUnitType(..., FLT) would return only fleet-navigable
+    neighbours; the Python adj_matrix merges all adjacency types, so we use it
+    as-is (no separate fleet_adj_matrix exists yet).
+    """
+    if fleet_prov in state.g_ConvoyFleetRegistered:
+        return
+    for adj in state.get_unit_adjacencies(fleet_prov):
+        if state.g_ArmyAdjCount[adj] > 0 and state.g_ProvinceAccessFlag[power_idx, adj] > 0:
+            state.g_ProvinceScoreTrial[adj] = 1
+
+
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int) -> None:
     """
     Port of FUN_0044b760 = BuildConvoyOrders.
@@ -616,8 +639,5 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
         state.g_OrderTable[fleet_i, _F_DEST_PROV] = dst_prov
         state.g_OrderTable[fleet_i, _F_ORDER_ASGN] = 1
         
-        if not hasattr(state, 'g_ConvoyFleetList'):
-            state.g_ConvoyFleetList = []
-        state.g_ConvoyFleetList.append((power_idx, fleet_i))
-        
+        register_convoy_fleet(state, power_idx, fleet_i)
         assign_support_order(state, power_idx, src_prov, dst_prov, 0, flag=1)

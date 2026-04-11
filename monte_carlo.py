@@ -3,7 +3,7 @@ import random
 import numpy as np
 from .state import InnerGameState
 from .heuristics import score_order_candidates_all_powers
-from .moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals
+from .moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals, assign_support_order, register_convoy_fleet
 
 # ── Order-table field indices ────────────────────────────────────────────────
 # g_OrderTable[prov, field]  mirrors  DAT_00baeda0[prov*0x1e + field*4]
@@ -761,15 +761,45 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
     # ── helpers for unported stubs ────────────────────────────────────────────
     def _reset_per_trial_state() -> None:
-        """Stub for FUN_00460be0 — resets board-level per-trial snapshot arrays."""
-        # Clears the intermediate simulation data so each trial starts fresh.
-        pass  # TODO: port FUN_00460be0 = ResetPerTrialState
+        """Port of FUN_00460be0 = ResetPerTrialState.
+
+        Three C operations:
+        (1) For each node in active unit list (this+0x2450/54): clear node+0x20 =
+            the order-assigned pointer (ppiVar8[4] in DispatchSingleOrder).  Python
+            has no per-node flag; the equivalent is g_OrderTable being zeroed at the
+            end of this trial-reset block (line ~914), so no explicit work here.
+        (2) Same for retreat unit list (this+0x245c/60) — same reasoning.
+        (3) Free all nodes of the build-candidate list at this+0x2478 (calling
+            FUN_0040fb70 on each node[2] then _free(node)), reset list sentinel to
+            empty, clear size field (this+0x247c = 0) and waive count
+            (this+0x2480 = 0).  Python: clear g_build_order_list and zero
+            g_waive_count.
+        """
+        if hasattr(state, 'g_build_order_list'):
+            state.g_build_order_list.clear()
+        state.g_waive_count = 0
 
     def _assign_hold_supports(candidates: dict) -> None:
-        """Stub for FUN_0041d270 = AssignHoldSupports."""
-        # Assigns hold / support orders to provinces that have no order yet.
-        # candidates: {prov: True} for own unordered SC provinces.
-        pass  # TODO: port FUN_0041d270 = AssignHoldSupports
+        """FUN_0041d270 = AssignHoldSupports — decompile-verified.
+
+        Clears g_ConvoyFleetCandidates (Albert+0x4cfc) then re-populates it
+        from *candidates* (own unordered SC provinces) with random scores.
+
+        Decompile trace:
+          1. FUN_004019f0(root) + sentinel reset → clear BST → .clear()
+          2. Iterate param_1 (candidate std::set) in tree order.
+          3. Per node: province = *(node+0xC)  [MSVC release layout:
+             node[0]=_Left, node[1]=_Parent, node[2]=_Right, node[3]=key]
+          4. score = (_rand() // 0x17) % 0x7c17 + 500
+             MSVC _rand() ∈ [0, RAND_MAX=32767=0x7fff]
+             → score ∈ [500, 1924]
+          5. ScoreConvoyFleet(this+0x4cfc, buf, &score) → bisect.insort
+        """
+        state.g_ConvoyFleetCandidates.clear()
+        for prov in candidates:
+            r = random.randint(0, 32767)  # MSVC _rand() ∈ [0, RAND_MAX=0x7fff]
+            score = (r // 0x17) % 0x7c17 + 500
+            _score_convoy_fleet(prov, score)
 
     def _score_convoy_fleet(prov: int, score: int) -> None:
         """ScoreConvoyFleet (FUN_00419790) — BST insert into g_ConvoyFleetCandidates.
@@ -796,20 +826,69 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         ]
 
     def _build_order_mto(src: int, dst: int, coast: int) -> None:
-        """Stub for BuildOrder_MTO — write MTO into g_OrderTable."""
+        """Port of BuildOrder_MTO — write MTO into g_OrderTable.
+
+        Decompile-verified (decompiled.txt).  Signature:
+          __thiscall BuildOrder_MTO(this, power, src_province, dst_province, coast)
+
+        Stubbed callees:
+          ClearConvoyState()        — clears per-convoy temp state; trial reset covers it
+          BuildOrder_CTO_Ring(...)  — builds CTO ring chain; unknown decompile
+          RegisterConvoyFleet(...)  — registers fleet candidate; unknown decompile
+        """
+        # ClearConvoyState() — STUB (per-trial reset at Phase 1a covers observable effect)
+
+        # Determine unit type at src (AMY vs FLT)
+        is_army = (state.unit_info.get(src, {}).get('type') == 'AMY')
+
+        # BuildOrder_CTO_Ring(gamestate, src, dst, coast) — STUB
+
+        # ConvoyList_Insert(&DAT_00bb65a0, &dst): append dst to convoy dst list; record dst→src
+        if dst not in state.g_ConvoyDstList:
+            state.g_ConvoyDstList.append(dst)
+        if not hasattr(state, 'g_ConvoyDstToSrc'):
+            state.g_ConvoyDstToSrc = {}
+        state.g_ConvoyDstToSrc[dst] = src
+
+        # g_OrderTable[src]: write MTO order type, destination, coast
         state.g_OrderTable[src, _F_ORDER_TYPE] = float(_ORDER_MTO)
         state.g_OrderTable[src, _F_DEST_PROV]  = float(dst)
         state.g_OrderTable[src, _F_DEST_COAST] = float(coast)
 
+        # g_ProvinceBaseScore[dst] = 1: mark dst as having an incoming move
+        state.g_OrderTable[dst, _F_INCOMING_MOVE] = 1.0
+
+        # OrderedSet_FindOrInsert(this + power*0xc + 0x4000, &dst):
+        # inherit dst's candidate score (FinalScoreSet) into convoy chain score fields
+        score_lo = float(state.FinalScoreSet[power_index, dst])
+        score_hi = 0.0
+        state.g_ConvoyChainScore[dst]        = score_lo
+        state.g_OrderScoreHi[dst]            = score_hi
+        state.g_OrderTable[dst, _F_CONVOY_LO] = score_lo
+        state.g_OrderTable[dst, _F_CONVOY_HI] = score_hi
+
+        # DAT_00baede4[dst*0x1e] = g_MoveHistoryMatrix[dst + (src + power*0x40)*0x40]
+        # Python layout: g_MoveHistoryMatrix[power, src, dst]
+        state.g_OrderTable[dst, _F_SUP_COUNT] = float(
+            state.g_MoveHistoryMatrix[power_index, src, dst]
+        )
+
+        # If AMY and convoy chain depth at src ≠ 5 (not complete): clear dst score fields
+        # DAT_00baedf0[src*0x1e] = _F_ORDER_ASGN holds convoy chain depth in this context
+        if is_army and int(state.g_OrderTable[src, _F_ORDER_ASGN]) != 5:
+            state.g_OrderTable[dst, 24] = 0.0  # DAT_00baee00[dst*0x1e]
+            state.g_OrderTable[dst, 25] = 0.0  # DAT_00baee04[dst*0x78]
+
+        register_convoy_fleet(state, power_index, dst)
+
+        # AssignSupportOrder(this, power, src, dst, coast, NULL)
+        assign_support_order(state, power_index, src, dst, coast, flag=0)
+
     # ── lazy-init per-trial arrays not yet on state ───────────────────────────
     if not hasattr(state, 'g_UnitPresence'):
         state.g_UnitPresence = np.full((num_powers, num_provinces), -1, dtype=np.int32)
-    if not hasattr(state, 'g_ArmyAdjCount'):
-        state.g_ArmyAdjCount = np.zeros(num_provinces, dtype=np.int32)
     if not hasattr(state, 'g_ConvoyActiveFlag'):
         state.g_ConvoyActiveFlag = np.zeros(num_provinces, dtype=np.int32)
-    if not hasattr(state, 'g_ProvinceScoreTrial'):
-        state.g_ProvinceScoreTrial = np.zeros(num_provinces, dtype=np.int32)
     if not hasattr(state, 'g_ConvoyDstList'):
         state.g_ConvoyDstList = []
     if not hasattr(state, 'g_TrialList2'):
@@ -917,6 +996,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         state.g_ConvoyActiveFlag[:num_provinces]  = 0
         state.g_ProvinceScoreTrial[:num_provinces] = 0
         state.g_ArmyAdjCount[:num_provinces]      = 0
+        state.g_ConvoyFleetRegistered.clear()
 
         # Reset unit-presence matrix (g_UnitPresence[power*0x100+prov] = -1).
         state.g_UnitPresence[:, :num_provinces] = -1
