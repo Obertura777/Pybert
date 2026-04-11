@@ -1,5 +1,37 @@
 from .state import InnerGameState
 
+
+def _token_seq_copy(source_tokens) -> list:
+    """
+    Port of FUN_00465f60 — TokenSeq copy constructor.
+
+    C signature: ``undefined4 * __thiscall FUN_00465f60(void *this, void **param_1)``
+
+    16-byte output struct (4 × int32):
+      this[0]  = pointer to flat ushort token buffer  (0 when empty)
+      this[1]  = token count / empty sentinel         (0xffffffff when empty)
+      this[2]  = pointer to int index array           (0 when empty)
+      this[3]  = sub-list count / empty sentinel      (0xffffffff when empty)
+
+    Flow:
+      1. Zero this[0] and this[2].
+      2. If param_1[0] (source buffer pointer) == NULL:
+           set this[1] = this[3] = 0xffffffff, re-zero this[0]/this[2], return.
+      3. Else: FUN_00465940(this, param_1[0], param_1[1])
+               = TokenSeq_InitFromBuffer — copy tokens from raw buffer + length.
+
+    Python mapping:
+      Non-empty source  →  list(source_tokens)   [FUN_00465940 = TokenSeq_InitFromBuffer]
+      Empty / None      →  []                    [empty struct, sentinel fields = 0xffffffff]
+
+    Called from FUN_004325a0 (_execute_aly_vss) to build the recipient list and
+    press-content token sequences consumed by PROPOSE.
+    Also called from EvaluateOrderProposalsAndSendGOF, InitPositionForOrders,
+    BuildAndSendSUB, BuildHostilityRecord, and RECEIVE_PROPOSAL.
+    """
+    return list(source_tokens) if source_tokens else []
+
+
 def process_hst(state: InnerGameState, message: str):
     """
     Port of ParseHSTResponse (FUN_0041b410).
@@ -134,7 +166,7 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
             _send(data)
             # Send per-power ally press for each power byte in results
             for power_byte in entry.get('results', []):
-                _send_ally_press_by_power(state, int(power_byte), _send)
+                _send_ally_press_by_power(state, int(power_byte))
 
         elif press_type == 'THN':
             # Execute THEN action: first element of data is the power index
@@ -145,16 +177,56 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
     state.g_MasterOrderList = remaining
 
 
-def _send_ally_press_by_power(state: InnerGameState, power: int, send_fn) -> None:
+def _send_ally_press_by_power(state: InnerGameState, power: int) -> None:
     """
     Port of SendAllyPressByPower (FUN_00421570).
-    Sends pending ally direct-message press for the given power index.
+
+    Schedules a THN press DM for the given power with a randomised delay
+    (or immediate dispatch when g_PressInstant is set).
+
+    C flow:
+      1. FUN_00465870(local_34) — init token list (→ absorbed).
+      2. local_48[0] = power | 0x4100 — build DAIDE power token.
+         FUN_00466ed0(&THN, local_44, local_48) — wrap as THN(<power>) sequence.
+         AppendList(local_34, ...) / FreeList(local_44) — absorbed.
+      3. FUN_00418db0(power) — PrepareAllyPressEntry: mark sender's press-entry pending.
+      4. Compute target elapsed time:
+           g_PressInstant == 0 (randomised):
+             random_delay = (rand() / 23) % 15          # 0–14 units
+             target = current_elapsed + random_delay + 7
+             if g_MoveTimeLimitSec >= 1 and target > g_MoveTimeLimitSec - 20:
+                 target = g_MoveTimeLimitSec - 20        # cap 20 s before deadline
+           g_PressInstant != 0 (immediate):
+             target = current_elapsed                    # fire on next dispatch poll
+      5. FUN_00465f60(local_1c, local_34) — copy token list (→ absorbed).
+         FUN_00419c30(&g_ScheduledPressQueue, ..., &target) — enqueue THN entry.
+
+    Python: token-list mechanics absorbed; schedules
+    {'press_type': 'THN', 'data': [power], 'scheduled_time': target}
+    into g_MasterOrderList (DAT_00bb65bc/c0 — same C++ list object).
     """
-    # Gather any pending DM entries for this power from g_BroadcastList
-    for entry in getattr(state, 'g_BroadcastList', []):
-        if entry.get('power') == power and not entry.get('sent', False):
-            send_fn(entry.get('data', []))
-            entry['sent'] = True
+    import random as _random
+
+    _prepare_ally_press_entry(state, power)
+
+    elapsed = _time.time() - float(getattr(state, 'g_SessionStartTime', 0.0))
+
+    if not int(getattr(state, 'g_PressInstant', 0)):
+        # C: uVar4 = (rand() / 0x17) % 0xf  →  0–14 integer
+        random_delay = (_random.randint(0, 0x7fff) // 23) % 15
+        target = elapsed + random_delay + 7
+        move_limit = int(getattr(state, 'g_MoveTimeLimitSec', 0))
+        if move_limit >= 1 and target > move_limit - 20:
+            target = float(move_limit - 20)
+    else:
+        # C: lVar1 = now - g_TurnStartTime  →  current elapsed (send immediately)
+        target = elapsed
+
+    state.g_MasterOrderList.append({
+        'scheduled_time': target,
+        'press_type':     'THN',
+        'data':           [power],
+    })
 
 
 def _press_gate_check(state: InnerGameState, power: int) -> bool:
@@ -698,6 +770,132 @@ def _execute_then_action(state: InnerGameState, power: int) -> None:
     _execute_xdo(state, power)                                   # FUN_00433510
 
 
+# ── ComputeOrderDipFlags ──────────────────────────────────────────────────────
+
+_NEUTRAL_POWER = 0x14  # 20 — placeholder power index for "no unit / neutral"
+
+
+def compute_order_dip_flags(state: InnerGameState) -> None:
+    """
+    Port of ComputeOrderDipFlags (FUN_004113d0).
+
+    Re-initialises the three diplomatic flags on every g_OrderList node:
+      flag1 (+0x1c): True  = province is genuinely contested vs. ordering power
+      flag2 (+0x1d): True  = bilateral ally coordination is viable
+      flag3 (+0x1e): False = hostile unit present at or adjacent to the province
+
+    Called unconditionally from HOSTILITY Block 3 so that ProposeDMZ always
+    sees fresh flags.
+
+    Callees (all absorbed / already in unchecked.md):
+      FUN_0047a948            — MSVC iterator validity assertion
+      TreeIterator_Advance    — adjacency-set BST iterator step
+      std_Tree_IteratorIncrement — g_OrderList std::map iterator advance
+    """
+    own      = getattr(state, 'albert_power_idx', 0)
+    press_on = (state.g_PressFlag == 1)
+    dipl_a   = getattr(state, 'g_DiplomacyStateA', None)
+    dipl_b   = getattr(state, 'g_DiplomacyStateB', None)
+
+    for entry in state.g_OrderList:
+        province       = int(entry['province'])
+        ordering_power = int(entry['ally_power'])
+
+        # ── Init (lines 48/52/56 of decompile) ───────────────────────────────
+        flag1 = True
+        flag2 = True
+        flag3 = False
+
+        # ── Phase 1a: g_ScOwner check (lines 57–68) ──────────────────────────
+        # g_ScOwner[prov] == ordering_power → province already owned by orderer
+        # g_ScOwner[prov] == own            → we own it; no bilateral coord needed
+        sc_owner = int(state.g_ScOwner[province]) if province < len(state.g_ScOwner) else -1
+        if sc_owner == ordering_power:
+            flag1 = False
+        elif sc_owner == own:
+            flag2 = False
+
+        # ── Phase 1b: board unit at province (lines 69–85) ───────────────────
+        # Unit belonging to own_power → not contested (flag1=0)
+        # Unit belonging to ordering_power → ordering power already there (flag2=0)
+        unit = state.unit_info.get(province)
+        if unit is not None:
+            occ = int(unit['power'])
+            if occ == own:
+                flag1 = False
+            elif occ == ordering_power:
+                flag2 = False
+
+        # ── Phase 2: trust/stab check at province (lines 86–115) ─────────────
+        # Only runs when a unit is present (*(char*)(board+prov*0x24+3) != '\0').
+        if unit is not None:
+            occ = int(unit['power'])
+            # Clear flag2 when the occupant is not a trustworthy ally of own_power:
+            #   neutral, enemy-stab flagged, own unit, or zero trust.
+            if occ == _NEUTRAL_POWER:
+                flag2 = False
+            elif 0 <= occ < 7 and int(state.g_EnemyFlag[occ]) == 1:
+                flag2 = False
+            elif occ == own:
+                flag2 = False
+            elif 0 <= occ < 7 and (
+                int(state.g_AllyTrustScore[own, occ]) == 0 and
+                int(state.g_AllyTrustScore_Hi[own, occ]) == 0
+            ):
+                flag2 = False
+
+            # Set flag3 when ordering_power does not trust the occupant
+            # (occ is neutral or ordering_power has zero trust in occ).
+            if occ != ordering_power:
+                if occ == _NEUTRAL_POWER or (
+                    0 <= occ < 7 and
+                    int(state.g_AllyTrustScore[ordering_power, occ]) == 0 and
+                    int(state.g_AllyTrustScore_Hi[ordering_power, occ]) == 0
+                ):
+                    flag3 = True
+
+        # ── Phase 3: adjacent-province units (inner loop, lines 116–177) ─────
+        for adj_prov in state.get_unit_adjacencies(province):
+            adj_unit = state.unit_info.get(adj_prov)
+            if adj_unit is None:
+                continue
+            occ = int(adj_unit['power'])
+
+            # Enemy-stab flag always clears flag2 (lines 142–147).
+            if 0 <= occ < 7 and int(state.g_EnemyFlag[occ]) == 1:
+                flag2 = False
+
+            # Press-on block (lines 148–164).
+            if press_on:
+                # Ordering power's own unit at adj → skip remaining checks for
+                # this adj province (goto LAB_004116fa in C).
+                if occ == ordering_power:
+                    continue
+                if occ != own and occ != _NEUTRAL_POWER and 0 <= occ < 7:
+                    t_hi = int(state.g_AllyTrustScore_Hi[own, occ])
+                    t_lo = int(state.g_AllyTrustScore[own, occ])
+                    d_b  = int(dipl_b[occ]) if dipl_b is not None else 0
+                    d_a  = int(dipl_a[occ]) if dipl_a is not None else 0
+                    # int64 trust < 2  OR  DiplomacyState < 2
+                    if (t_hi < 0 or
+                            (t_hi < 1 and t_lo < 2) or
+                            (d_b < 1 and (d_b < 0 or d_a < 2))):
+                        flag2 = False
+
+            # flag3: ordering_power does not trust this adjacent occupant
+            # (lines 165–172).
+            if occ != ordering_power and occ != own and occ != _NEUTRAL_POWER:
+                if (0 <= occ < 7 and
+                        int(state.g_AllyTrustScore[ordering_power, occ]) == 0 and
+                        int(state.g_AllyTrustScore_Hi[ordering_power, occ]) == 0):
+                    flag3 = True
+
+        # ── Write back ────────────────────────────────────────────────────────
+        entry['flag1'] = flag1
+        entry['flag2'] = flag2
+        entry['flag3'] = flag3
+
+
 # ── ProposeDMZ ────────────────────────────────────────────────────────────────
 
 def propose_dmz(state: InnerGameState,
@@ -783,6 +981,43 @@ def propose_dmz(state: InnerGameState,
                 entry['done'] = True
 
     return sent
+
+
+# ── UpdateRelationHistory ────────────────────────────────────────────────────
+
+def _update_relation_history(state: InnerGameState) -> None:
+    """
+    Port of UpdateRelationHistory (FUN_0040d7e0).
+
+    Enforces a _safe_pow(1.8, trust_lo/10) minimum floor on every positive
+    g_AllyTrustScore[row][col] entry.  Called by friendly() (always) and by
+    _hostility() when g_PressFlag==0 or g_NearEndGameFactor>3.0.
+
+    The C function stores trust as a 64-bit int split into lo (puVar6[0]) and
+    hi (puVar6[1]) uint words.  The floor is computed as:
+        floor64 = int64(pow(1.8, trust_lo // 10))
+        floor_lo = floor64 & 0xFFFFFFFF
+        floor_hi = arithmetic_right_shift_31(floor_lo)   # 0 for positive values
+
+    Trust is raised to floor when (trust_hi, trust_lo) < (floor_hi, floor_lo)
+    in 64-bit lexicographic order.  Both words are updated on raise.
+    """
+    num_powers = 7
+    for row in range(num_powers):
+        for col in range(num_powers):
+            trust_lo = int(state.g_AllyTrustScore[row, col])
+            trust_hi = int(state.g_AllyTrustScore_Hi[row, col])
+            # Guard: trust > 0 — C: (-1 < trust_hi) AND (0 < trust_hi OR trust_lo != 0)
+            if not (trust_hi >= 0 and (trust_hi > 0 or trust_lo != 0)):
+                continue
+            floor64  = int(1.8 ** (trust_lo // 10))
+            floor_lo = floor64 & 0xFFFFFFFF
+            # C: uVar4 = (int)uVar3 >> 0x1f  — arithmetic shift, 0 for positive values
+            floor_hi = -1 if (floor_lo >> 31) else 0
+            # 64-bit comparison: (trust_hi, trust_lo) < (floor_hi, floor_lo)
+            if trust_hi <= floor_hi and (trust_hi < floor_hi or trust_lo < floor_lo):
+                state.g_AllyTrustScore[row, col]    = floor_lo
+                state.g_AllyTrustScore_Hi[row, col] = floor_hi
 
 
 # ── FRIENDLY ─────────────────────────────────────────────────────────────────
@@ -942,18 +1177,7 @@ def friendly(state: InnerGameState) -> None:
                         state.g_RelationScore[row, col] = 50
 
     # Phase 2 — UpdateRelationHistory (FUN_0040d7e0).
-    # Enforces a _safe_pow(1.8, trust_lo/10) minimum floor on every positive trust entry.
-    for row in range(num_powers):
-        for col in range(num_powers):
-            if row == col:
-                continue
-            trust_lo = int(state.g_AllyTrustScore[row, col])
-            trust_hi = int(state.g_AllyTrustScore_Hi[row, col])
-            # Guard: trust > 0 (trust_hi >= 0 AND (trust_hi > 0 OR trust_lo != 0))
-            if trust_hi >= 0 and (trust_hi > 0 or trust_lo != 0):
-                floor_val = float(int(1.8 ** (trust_lo // 10)))
-                if float(state.g_AllyTrustScore[row, col]) < floor_val:
-                    state.g_AllyTrustScore[row, col] = floor_val
+    _update_relation_history(state)
 
     # Phase 3 — g_AllyMatrix alliance state transitions.
     # trust_hi < 0 OR (trust_hi < 1 AND trust_lo < 5) → downgrade full (2) → tentative (1)
@@ -1369,8 +1593,7 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
     # ── If changed: ComputeOrderDipFlags (FUN_004113d0) ─────────────────────
     # C: LAB_0041deab falls through to FUN_004113d0 when cStack_52 == '\x01'
     if changed:
-        # TODO: port ComputeOrderDipFlags (FUN_004113d0); skipped — not yet implemented
-        pass
+        compute_order_dip_flags(state)
 
     return changed
 
@@ -1960,28 +2183,60 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
     return True
 
 
-def _score_support_opp(state: InnerGameState,
-                       base_offset: str,
-                       power: int,
-                       args: tuple) -> None:
+def _score_support_opp(
+    state: InnerGameState,
+    base_offset: str,
+    power: int,
+    args: tuple,
+) -> tuple:
     """
-    Stub for ScoreSupportOpp (called from _handle_xdo MTO/CTO branch and
-    SUP-MTO branch).
+    ScoreSupportOpp (FUN_00404fd0) — MSVC std::map<int,int> find-or-insert.
 
-    C signature (inferred):
-      ScoreSupportOpp(&DAT_00bb67f8 + power*0xc, &pvStack_6c, (int*)&{arg0, arg1})
+    C signature:
+      void __thiscall ScoreSupportOpp(void *this, void **param_1, int *param_2)
 
-    Called from _handle_xdo MTO/CTO branch as:
-      ScoreSupportOpp(&DAT_00bb67f8 + entry_power*0xc, buf, (mto_dest, dest_prov))
-    Called from _handle_xdo SUP-MTO branch as:
-      ScoreSupportOpp(&DAT_00bb69f8 + sup_unit_prov*0xc, buf, (sup_power, ppiVar16))
+    this     = &table[power * 0xc]  — per-power (or per-province) map object
+    param_1  = output: [0]=iterator_base, [1]=node_ptr, [2]=was_inserted
+    param_2  = pointer to key (= args[0]); args[1] passed through to the
+               BST insert helper FUN_00403ca0 but not used by this function.
 
-    Not yet decompiled.  UNCHECKED.
+    Node layout (MSVC release std::map<int,int>):
+      +0x00  left child ptr      (ppiVar4[0])
+      +0x04  parent ptr          (ppiVar4[1])
+      +0x08  right child ptr     (ppiVar4[2])
+      +0x0C  key   (int)         (ppiVar4[3])  ← compared against *param_2
+      +0x10  value (int)         (ppiVar4[4])  ← zero on insert
+      +0x14  _Color byte
+      +0x15  _Isnil byte         ← sentinel check: == '\\0' means real node
+
+    Algorithm: BST lower-bound walk; if key already present return its node
+    (was_inserted=False); else allocate zero-valued node via FUN_00403ca0
+    (was_inserted=True).  FUN_00401400 = BST iterator-decrement (predecessor).
+
+    Python tables:
+      'DAT_00bb67f8' → state.g_xdo_mto_opp_score[power][key]   (MTO/CTO path)
+      'DAT_00bb69f8' → state.g_xdo_sup_mto_score[power][key]   (SUP-MTO path)
+
+    Returns (sub_table, key, was_inserted).  Call sites that only need the
+    side-effect (ensuring the key exists with a default-0 value) may discard
+    the return value.
+
+    Callees: FUN_00401400 (BST predecessor), FUN_00403ca0 (BST insert).
     """
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-    _log.debug("ScoreSupportOpp STUB: base=%s power=%d args=%s",
-               base_offset, power, args)
+    _TABLE_ATTR: dict = {
+        'DAT_00bb67f8': 'g_xdo_mto_opp_score',
+        'DAT_00bb69f8': 'g_xdo_sup_mto_score',
+    }
+    attr: str = _TABLE_ATTR.get(base_offset, base_offset)
+    if not hasattr(state, attr):
+        setattr(state, attr, {})
+    table: dict = getattr(state, attr)
+    sub: dict = table.setdefault(power, {})
+    key: int = int(args[0])
+    was_inserted: bool = key not in sub
+    if was_inserted:
+        sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)
+    return sub, key, was_inserted
 
 
 def _score_sup_attacker(state: InnerGameState,
@@ -2436,3 +2691,690 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
 
     # Always returns '\x01' (True) per decompile line 114.
     return True
+
+
+# ── RECEIVE_PROPOSAL ─────────────────────────────────────────────────────────
+
+def _prepare_ally_press_entry(_state: "InnerGameState", _power: int) -> None:
+    """
+    Stub for FUN_00418db0(power).
+
+    Called by receive_proposal after recording a new incoming proposal.
+    In C, likely marks the per-power ally-press state as pending so that the
+    subsequent RESPOND / SendAllyPressByPower pass can schedule a DM reply.
+
+    UNCHECKED — FUN_00418db0 not yet decompiled.
+    """
+    _ = (_state, _power)
+
+
+def receive_proposal(
+    state: "InnerGameState",
+    sender_power: int,
+    proposal_tokens: list,
+    send_fn=None,
+) -> None:
+    """
+    Port of RECEIVE_PROPOSAL (named; no binary address recovered by Ghidra).
+
+    Deduplicates an incoming proposal press against g_PosAnalysisList
+    (DAT_00bb65c8/cc).  If this proposal has not yet been recorded:
+
+      1. Appends its token sequence to g_PosAnalysisList.
+      2. Logs "We have received the proposal: %s" (mirrors C SEND_LOG).
+      3. Adds sender_power to g_AllianceMsgTree (DAT_00bbf638) — the Python
+         equivalent of BuildAllianceMsg's sorted-BST insert.
+      4. Calls _prepare_ally_press_entry(state, sender_power) [FUN_00418db0
+         stub — marks the sender's press-entry as pending for RESPOND].
+
+    C parameters (recovered as in_stack offsets by Ghidra, pushed by caller):
+      +0x14  sender_power     — byte index of the sending power
+      +0x18  proposal_tokens  — ordered token list (iterated for map inserts)
+      +0x04  sub_tokens       — token list used by FUN_00465d90 overlap check
+                                (same data as proposal_tokens in practice;
+                                 Python uses proposal_tokens for both roles)
+
+    Called from BuildAndSendSUB when:
+      puVar18[0x2c] == 1  (has-received-proposal flag set)
+      puVar18[7]    == 0  (not yet marked as sent)
+
+    Callees absorbed inline:
+      FUN_00465870  — std::list default-constructor → []
+      FUN_0047020b  — get own-power context ptr (→ state.albert_power_idx)
+      FUN_004243a0  — init analysis-record struct (→ absorbed, no Python state)
+      FUN_00465930  — TokenSeq_Count (→ len())
+      FUN_00401950  — list content destructor (→ no-op; locals start empty)
+      StdMap_FindOrInsert  — std::map lower-bound+insert (→ set.add / dict)
+      FUN_00419cb0  — list/range iterator init for g_PosAnalysisList (→ loop)
+      FUN_00411a80  — bind iteration to DAT_00bb65d4 secondary sentinel (→ loop)
+      GetListElement  — indexed token fetch (→ list index)
+      FUN_00465d90  — token-seq overlap bool (→ frozenset intersection)
+      GameBoard_GetPowerRec — power-record lookup (→ absorbed; inner loop only
+                              fires for nodes with power_count>0, which never
+                              occurs for freshly inserted entries → no-op)
+      TreeIterator_Advance  — BST iterator step (→ absorbed in loop)
+      FUN_0040f860  — std::list::iterator++ (→ Python for-loop)
+      FUN_00465f60  — token-list copy (→ list())
+      FUN_004223c0  — analysis-struct copy/init (→ absorbed)
+      FUN_00430370  — std::list insert at sentinel (→ list.append)
+      FUN_00421400  — free analysis struct (→ no-op)
+      FreeList      — free temp token list (→ no-op)
+      FUN_0046b050  — token-list → string repr (→ str(), already in unchecked)
+      SEND_LOG      — debug/log sink (→ logging.info)
+      BuildAllianceMsg — BST insert of sender into DAT_00bbf638
+                         (→ g_AllianceMsgTree.add; already in unchecked)
+      FUN_00418db0  — PrepareAllyPressEntry (→ _prepare_ally_press_entry stub)
+    """
+    import logging as _log_module
+    _log = _log_module.getLogger(__name__)
+
+    # ── Overlap check against g_PosAnalysisList ───────────────────────────────
+    # C outer loop iterates g_PosAnalysisList nodes; FUN_00465d90(node+4, &stack4)
+    # returns True when node's token set overlaps the incoming proposal.
+    # The inner power-record loop uses piStack_c8 which is always empty for
+    # freshly inserted entries (power_count == 0), so it never executes and
+    # acStack_102[0] stays '\x01' → the outer loop breaks immediately on any
+    # overlap, treating the proposal as already seen.
+    proposal_set = frozenset(proposal_tokens)
+    already_seen = any(
+        proposal_set & entry['token_set']
+        for entry in state.g_PosAnalysisList
+    )
+
+    if already_seen:
+        return
+
+    # ── Insert into g_PosAnalysisList ────────────────────────────────────────
+    # C: FUN_00465f60(copy, &stack4)  →  copy proposal token list
+    #    FUN_004223c0(analysis, record)  →  init analysis struct (absorbed)
+    #    FUN_00430370(&sentinel, &iter, copy)  →  std::list insert
+    state.g_PosAnalysisList.append({
+        'tokens': list(proposal_tokens),
+        'token_set': proposal_set,
+        'power_count': 0,   # C node[0xe]; always 0 for newly inserted entries
+    })
+
+    # ── Log ──────────────────────────────────────────────────────────────────
+    # C: FUN_0046b050(&stack4, buf) → string repr of token list
+    #    SEND_LOG(&pvStack_ec, L"We have received the proposal: %s")
+    _log.info("We have received the proposal: %s", proposal_tokens)
+
+    # ── BuildAllianceMsg — record sender in g_AllianceMsgTree ────────────────
+    # C: puStack_f4 = (int)(elapsed_seconds + 10000)
+    #    BuildAllianceMsg(&DAT_00bbf638, &pvStack_e8, (int *)&puStack_f4)
+    # Python models g_AllianceMsgTree keyed by power index rather than by the
+    # C timestamp value (elapsed_seconds + 10000).
+    build_alliance_msg(state, sender_power)
+
+    # ── PrepareAllyPressEntry — FUN_00418db0(sender_power) ───────────────────
+    # C: final call; marks sender's per-power press-entry as pending so that
+    #    RESPOND / SendAllyPressByPower can schedule the DM reply.
+    _prepare_ally_press_entry(state, sender_power)
+
+
+# ── RESPOND ───────────────────────────────────────────────────────────────────
+
+def _respond_walk_pos_analysis(
+    state: "InnerGameState",
+    sublist3: list,
+    sender_power: int,
+    response_type: int,
+    own_power: int,
+) -> None:
+    """
+    LAB_00421ebc — walk g_PosAnalysisList for proposals matching *sublist3*
+    and register *own_power* in g_DeviationTree for each match.
+
+    C flow (decompiled.txt lines 261–316):
+      Iterate g_PosAnalysisList (DAT_00bb65c8/cc sentinel loop):
+        FUN_00465d90(node+0x10, local_3c) — token-seq overlap check.
+        If overlap:
+          iStack_68 = node[0x34]  (power-count field)
+          GameBoard_GetPowerRec(node+0x30, apuStack_8c, &uStack_c4)
+          if puVar13[1] != iStack_68                  ← power-count mismatch
+             AND (YES != param_2 OR g_PowerActiveTurn[sender] == 1):
+               StdMap_FindOrInsert(node+0x48, &send_time, &uStack_c4)
+        FUN_0040f860(&iter)  ← advance list iterator
+
+    GameBoard_GetPowerRec (power-count mismatch check) is absorbed — the check
+    fires conservatively whenever the token sets overlap.
+    StdMap_FindOrInsert → g_DeviationTree[(token_key, own_power)] insert.
+    FUN_00465d90        → frozenset intersection (already used in receive_proposal).
+    FUN_0047a948        → AssertFail (absorbed).
+    FUN_0040f860        → list iterator advance (absorbed as Python for-loop).
+    """
+    _YES = 0x481c
+    g_active = getattr(state, 'g_PowerActiveTurn', None)
+    sender_active = bool(g_active is not None and g_active[sender_power])
+
+    sublist3_set = frozenset(sublist3)
+    if not sublist3_set:
+        return
+
+    for entry in state.g_PosAnalysisList:
+        entry_set = entry.get('token_set', frozenset())
+        if not (entry_set & sublist3_set):
+            continue
+        # C: (puVar13[1] != iStack_68) — power-count mismatch; absorbed as True.
+        # C: (YES != param_2 || g_PowerActiveTurn[sender] == 1)
+        if response_type != _YES or sender_active:
+            key = (frozenset(entry['tokens']), own_power)
+            state.g_DeviationTree[key] = state.g_DeviationTree.get(key, 0)
+            if 'deviation_powers' not in entry:
+                entry['deviation_powers'] = set()
+            entry['deviation_powers'].add(own_power)
+
+
+def respond(
+    state: "InnerGameState",
+    press_list: dict,
+    response_type: int,
+    elapsed_lo: int = 0,
+    elapsed_hi: int = 0,
+    send_fn=None,
+) -> None:
+    """
+    Port of RESPOND (named; called from BuildAndSendSUB after RECEIVE_PROPOSAL).
+
+    Generates Albert's reply to an incoming ally press and queues it for dispatch.
+
+    C signature:
+      void __thiscall RESPOND(void *this, void *param_1, short param_2,
+                               uint param_3, int param_4)
+
+    Mapping:
+      this      → state
+      param_1   → press_list  — incoming press as a dict with three sublists:
+                    'sublist1': [sender_power_token]   e.g. [0x4103] for GER
+                    'sublist2': [power_tokens …]        powers named in proposal
+                    'sublist3': [order_tokens …]        XDO/PRP content
+      param_2   → response_type  YES=0x481c, REJ=0x4814, HUH=0x4806
+      param_3   → elapsed_lo     low-word of current timestamp (uint32)
+      param_4   → elapsed_hi     high-word of current timestamp (int32)
+
+    Deception path (REJ + single power + enemy + trust gate):
+      If g_EnemyFlag[sender]==1 AND sender's trust toward own is positive AND
+      relation >= 0 AND random gate fails to trigger avoidance → respond YES
+      (deceitfully accept).  Logs "We are DECEITFULLY responding to: (%s)".
+      Sets g_PowerActiveTurn[sender] = 1.
+
+    Normal path:
+      Echoes response_type unchanged.
+      Logs "Our response to a message was: %s".
+
+    Both paths: enqueue SND entry into g_MasterOrderList, update
+    g_AllianceMsgTree, then walk g_PosAnalysisList via
+    _respond_walk_pos_analysis.
+
+    HUH path:
+      FUN_0040d4d0 (absorbed) + _send_ally_press_by_power(sender) → schedule
+      THN response.  Skips queueing step; goes straight to proposal-list walk.
+
+    Timing (non-tournament mode):
+      target = elapsed_since_session_start + rand(0–7) + 5 s
+      If target < best_ally_turn_score  → push to best_score + 2 s
+      If g_MoveTimeLimitSec > 0        → cap at limit − 20 s
+    Timing (tournament mode / g_PressInstant != 0):
+      target = elapsed_since_session_start  (send immediately)
+
+    Callees absorbed inline:
+      FUN_00465870  list init          → []
+      FUN_0047020b  own-context ptr    → state.albert_power_idx
+      GetSubList    sublist extraction → press_list['sublistN']
+      AppendList / FreeList            → Python list ops
+      FUN_004658f0  first token        → list[0]
+      FUN_00465930  TokenSeq_Count     → len()
+      FUN_00465f30  wrap token→list    → [token]
+      FUN_00466480  filter by type     → absorbed in power-loop
+      FUN_00466f80  prefix+content     → [type_token] + sublist3
+      FUN_00466e10  add power token    → list.append
+      FUN_00466c40  concat token lists → list + list
+      FUN_00465f60  copy token list    → list()
+      FUN_00419c30  enqueue press      → g_MasterOrderList.append
+      FUN_0046b050  serialize tokens   → str()
+      SEND_LOG                         → logging.debug
+      BuildAllianceMsg                 → g_AllianceMsgTree.add
+      FUN_0040d4d0  HUH forward        → absorbed (no-op)
+      ATL::CSimpleStringT::CloneData   → absorbed
+      LOCK / UNLOCK                    → absorbed
+    """
+    import logging as _logging
+    import random as _random
+
+    _log = _logging.getLogger(__name__)
+
+    # DAIDE token constants (from daide_client/tokens.h)
+    _YES = 0x481c
+    _REJ = 0x4814
+    _HUH = 0x4806
+
+    own_power: int = getattr(state, 'albert_power_idx', 0)
+    # DAT_00baed32 — tournament mode (g_PressInstant in Python)
+    tournament_mode: int = int(getattr(state, 'g_PressInstant', 0))
+
+    # ── Extract sublists ─────────────────────────────────────────────────────
+    # C: GetSubList(param_1, buf, 1/2/3)
+    sublist1: list = press_list.get('sublist1', [])   # sender power token(s)
+    sublist2: list = press_list.get('sublist2', [])   # powers in proposal
+    sublist3: list = press_list.get('sublist3', [])   # order content
+
+    # local_c8[0] = FUN_004658f0(local_1c, &uStack_8e) → first token of sublist1
+    # (byte)local_c8[0] extracts the low byte = power index (0-6)
+    sender_token: int = sublist1[0] if sublist1 else 0
+    sender_power: int = sender_token & 0xff
+
+    # uStack_c4 = *(byte *)(*(int *)(this+8) + 0x2424) — own power index
+    # (already extracted above as own_power)
+
+    # ── Initial best ally turn-score lookup ──────────────────────────────────
+    # C: iVar16 = -1; puStack_bc = 0xffffffff
+    #    if (DAT_00ba27b4[power*8] >= 0): iVar16 = ...; puStack_bc = ...
+    g_turn_score = getattr(state, 'g_TurnScore', None)
+    best_score_hi: int = -1
+    best_score_lo: int = 0xffffffff
+
+    if g_turn_score is not None and sender_power < len(g_turn_score):
+        val = int(g_turn_score[sender_power])
+        hi_val = val >> 32
+        lo_val = val & 0xffffffff
+        if hi_val >= 0:
+            best_score_hi = hi_val
+            best_score_lo = lo_val
+
+    # ── Power-list loop (local_4c = sublist2) — update best turn score ───────
+    # C: uStack_84 = FUN_00465930(local_4c)  (count of entries)
+    #    for each entry != own_power: FUN_00466480 filter + score comparison
+    power_count: int = len(sublist2)
+    for pw_token in sublist2:
+        pw_idx = pw_token & 0xff
+        if pw_idx == own_power:
+            continue
+        if g_turn_score is not None and pw_idx < len(g_turn_score):
+            val = int(g_turn_score[pw_idx])
+            hi_val = val >> 32
+            lo_val = val & 0xffffffff
+            if hi_val >= 0 and (
+                hi_val > best_score_hi
+                or (hi_val == best_score_hi and lo_val > best_score_lo)
+            ):
+                best_score_hi = hi_val
+                best_score_lo = lo_val
+
+    # ── Compute target send time ──────────────────────────────────────────────
+    elapsed: float = _time.time() - float(getattr(state, 'g_SessionStartTime', 0.0))
+
+    if not tournament_mode:
+        # C: uVar17 = (rand() / 0x17) & 0x80000007  → 0-7 (mod-8 random)
+        rand_val = _random.randint(0, 0x7fff)
+        rand_offset = (rand_val // 23) % 8          # 0-7 units
+        target = elapsed + rand_offset + 5.0
+
+        # C: if (pvVar8 <= iVar16 && ...): puVar20 = puStack_bc + 2
+        # Push target forward past best ally's score + 2 s if needed
+        if best_score_hi >= 0:
+            best_f = float(best_score_hi) * float(2**32) + float(best_score_lo)
+            if target <= best_f:
+                target = best_f + 2.0
+
+        # C: if (0 < DAT_00624ef4): cap at limit - 0x14
+        move_limit = int(getattr(state, 'g_MoveTimeLimitSec', 0))
+        if move_limit > 0:
+            cap = float(move_limit - 20)
+            if target > cap:
+                target = cap
+    else:
+        # Tournament mode: send at current elapsed (no random delay)
+        target = elapsed
+
+    # ── HUH path ─────────────────────────────────────────────────────────────
+    # C: if (HUH == param_2) { FUN_0040d4d0(...); SendAllyPressByPower(sender); goto end }
+    if response_type == _HUH:
+        # FUN_0040d4d0(local_6c, param_1) — unknown HUH forward handler; absorbed
+        _send_ally_press_by_power(state, sender_power)
+        _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)
+        return
+
+    # ── REJ + single ally power → potential deceit YES ───────────────────────
+    # C: if ((REJ == param_2) && (uStack_84 == 1)) { ... } else { LAB_00421d01: ... }
+    if response_type == _REJ and power_count == 1:
+        uVar17 = sender_power
+
+        # Gate 1: sender must be designated enemy
+        # C: (&DAT_004cf568)[uVar17*2] == 1  AND  (&DAT_004cf56c)[uVar17*2] == 0
+        # Python: g_EnemyFlag[sender] == 1 (int32; hi-word of int64 is always 0)
+        g_enemy = getattr(state, 'g_EnemyFlag', None)
+        enemy_flag = int(g_enemy[uVar17]) if g_enemy is not None else 0
+
+        if enemy_flag == 1:
+            # Gate 2: trust and relation check
+            # C: iVar18 = uVar17*21 + own_power  (sender→own direction in int64 array)
+            trust_hi = int(state.g_AllyTrustScore_Hi[uVar17, own_power])
+            trust_lo = int(state.g_AllyTrustScore[uVar17, own_power])
+            # g_RelationScore[own_power, uVar17]  (DAT_00634e90[own*21+sender])
+            relation = int(state.g_RelationScore[own_power, uVar17])
+
+            # Condition to SKIP deceit (goto normal path):
+            #   (trust_hi < 0 OR (trust_hi < 1 AND trust_lo == 0) OR relation < 0)
+            #   AND random passes
+            low_trust = (
+                trust_hi < 0
+                or (trust_hi < 1 and trust_lo == 0)
+                or relation < 0
+            )
+
+            aggressiveness = int(getattr(state, 'g_DMZAggressiveness', 0))
+            press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
+
+            # C: (iVar18 = rand(), (iVar18 / 0x17) % 0x14 + aggressiveness < 0x51)
+            r1 = _random.randint(0, 0x7fff)
+            rand_check1 = (r1 // 23) % 20 + aggressiveness < 81
+
+            if press_mode:
+                # C: DAT_00baed68 == '\x01': RandUpTo(n)(0x14) + aggressiveness < 0x47
+                r2 = _random.randint(0, 20)
+                rand_check2 = r2 + aggressiveness < 71
+                random_passes = rand_check1 and rand_check2
+            else:
+                random_passes = rand_check1
+
+            skip_deceit = low_trust and random_passes
+
+            if not skip_deceit:
+                # ── Deceit path: respond YES instead of REJ ───────────────────
+                # C: FUN_00466f80(&YES, &local_6c, local_3c) → [YES] + sublist3
+                response_tokens = [_YES] + list(sublist3)
+
+                _log.debug("We are DECEITFULLY responding to: (%s)", response_tokens)
+
+                # C: (&DAT_00633768)[(byte)local_c8[0]] = 1
+                g_active = getattr(state, 'g_PowerActiveTurn', None)
+                if g_active is not None:
+                    g_active[sender_power] = 1
+
+                # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_bc)
+                state.g_MasterOrderList.append({
+                    'scheduled_time': target,
+                    'press_type':     'SND',
+                    'data':           response_tokens,
+                    'target_power':   sender_power,
+                })
+
+                # C: BuildAllianceMsg(&DAT_00bbf638, apuStack_7c, (int*)&puStack_bc)
+                build_alliance_msg(state, sender_power)
+
+                _respond_walk_pos_analysis(
+                    state, sublist3, sender_power, response_type, own_power
+                )
+                return
+
+    # ── Normal path (LAB_00421d01) ────────────────────────────────────────────
+    # C: FUN_00466f80(&param_2, &local_6c, local_3c) → [response_type] + sublist3
+    response_tokens = [response_type] + list(sublist3)
+
+    _log.debug("Our response to a message was: %s", response_tokens)
+
+    # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_ac)
+    state.g_MasterOrderList.append({
+        'scheduled_time': target,
+        'press_type':     'SND',
+        'data':           response_tokens,
+        'target_power':   sender_power,
+    })
+
+    # C: BuildAllianceMsg(&DAT_00bbf638, apuStack_7c, (int*)&puStack_bc)
+    build_alliance_msg(state, sender_power)
+
+    _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)
+
+
+# ── AllianceTree insert (FUN_00414a10 / FUN_00413fd0) ────────────────────────
+
+def alliance_tree_find_or_insert(state: "InnerGameState", key: int) -> tuple:
+    """AllianceTree_FindOrInsert — MSVC ``std::set<int>`` BST insert + RB fixup.
+
+    addr: ``0x00414a10``
+    C signature: ``void __thiscall FUN_00414a10(void *this, void **param_1,
+                    char param_2, int **param_3, undefined4 *param_4)``
+
+    This is the MSVC ``std::set<int>::insert`` fast-path called by
+    ``BuildAllianceMsg`` (``FUN_00413fd0``) after the BST descent has located
+    the insertion slot.  The C implementation:
+
+      1. Rejects inserts when ``*(uint*)(this+8) > 0x1ffffffd`` (size limit) —
+         throws ``std::length_error("map/set<T> too long")``.
+      2. Calls ``FUN_00411c40`` (``operator_new(0x18)``-based node ctor) to
+         allocate a 24-byte RB-tree node and initialise its fields::
+
+             node[+0x00] = param_1            # _Left  (left child ptr)
+             node[+0x04] = param_2            # _Parent (parent ptr)
+             node[+0x08] = param_3            # _Right  (right child ptr)
+             node[+0x0C] = *param_4           # int key (e.g. elapsed_s+10000)
+             node[+0x10] = CSimpleStringT     # cloned ATL CString ptr
+                             .CloneData(param_4[1] - 0x10) + 0x10
+             byte(node+0x14) = param_5        # _Color (0=RED, nonzero=BLACK)
+             byte(node+0x15) = 0              # _Isnil = 0 (real node)
+      3. Increments ``*(this+8)`` (``_Mysize``).
+      4. Links the new node into the min/max bookkeeping pointers held in
+         ``*(this+4)`` (``_Myhead``).
+      5. RB-tree colour fixup while ``parent.color == red``:
+           - Uncle is red   → recolour uncle + parent black, grandparent red,
+                              walk up.
+           - Uncle is black + new node is inner child → rotate to make it outer
+                              (``FUN_0040f170`` left-rotate or ``FUN_0040e050``
+                              right-rotate on parent), then fall through.
+           - Uncle is black + new node is outer child → recolour parent black,
+                              grandparent red, rotate grandparent the other way.
+      6. Forces root black: ``*(this+4)->_Parent.color = black``.
+      7. Writes ``param_1[0] = this`` (container back-pointer) and
+         ``param_1[1] = new_node`` (node pointer).
+
+    In Python ``g_AllianceMsgTree`` (``DAT_00bbf638``) is a plain ``set``; all
+    pointer-wiring and RB rebalancing collapse to a single ``set.add``.  The
+    return value mirrors the C ``param_1`` pair:
+
+      (container_set, key, was_inserted: bool)
+
+    Callees (C):
+      FUN_00411c40 — 24-byte RB-tree node allocator (left/parent/right +
+                     int key + ATL CString clone + color + isnil)
+      FUN_0040f170 — RB-tree left-rotation (insert fixup)
+      FUN_0040e050 — RB-tree right-rotation (insert fixup)
+      FUN_00402650 — ``std::length_error`` constructor (exception path only)
+      FUN_00402a30 — MSVC exception rethrow helper (exception path only)
+    """
+    was_inserted = key not in state.g_AllianceMsgTree
+    state.g_AllianceMsgTree.add(key)
+    return state.g_AllianceMsgTree, key, was_inserted
+
+
+def build_alliance_msg(state: "InnerGameState", key: int) -> tuple:
+    """BuildAllianceMsg — insert a power key into the alliance BST.
+
+    addr: ``0x00413fd0``
+    C signature: ``void __thiscall BuildAllianceMsg(void *this,
+                    undefined4 *param_1, int *param_2)``
+
+    Traverses the ``std::set<int>`` rooted at ``this`` (``DAT_00bbf638``) to
+    find the insertion slot for ``*param_2`` (power index), then delegates the
+    actual insert + RB fixup to ``AllianceTree_FindOrInsert`` (``FUN_00414a10``).
+    Writes the resulting ``(container, node)`` pair plus a proposal-active flag
+    into the caller's ``param_1`` output buffer::
+
+        param_1[0] = container_ptr   (this)
+        param_1[1] = node_ptr        (new or existing node)
+        param_1[2] = 1               (proposal-active flag, set by caller)
+
+    BST traversal uses ``node+0x0`` (left) / ``node+0x8`` (right) child pointers
+    and compares ``*param_2`` against ``node+0xc`` (key).  Nil sentinel check:
+    ``*(char*)(node + 0x15) == '\\0'``.
+
+    Returns the same ``(container, key, flag=1)`` triple that the C caller reads
+    from its stack buffer.
+    """
+    container, node, _ = alliance_tree_find_or_insert(state, key)
+    return container, node, 1   # param_1[2] = 1 (proposal-active flag)
+
+
+# ── STL tree copy (FUN_00401d70) ──────────────────────────────────────────────
+
+def _stl_tree_copy(dest: list, source: list) -> list:
+    """MSVC ``std::_Tree::_Copy`` — recursive BST deep-copy.
+
+    addr: ``0x00401d70``
+    C signature: ``undefined4 * __thiscall FUN_00401d70(void *this,
+                     undefined4 *param_1, undefined4 param_2)``
+
+    Recursively copies the BST rooted at *param_1* into the destination tree
+    (*this*), allocating each new node via ``FUN_00401b40`` (_Buynode), then
+    wiring left/right children from the recursive results.
+
+    Node layout for this tree type (compact, 18 bytes minimum):
+      +0x00  ``_Left``   — left-child pointer  (param_1[0])
+      +0x04  ``_Parent`` — parent pointer      (param_1[1])
+      +0x08  ``_Right``  — right-child pointer (param_1[2])
+      +0x0C  ``_Value``  — key/value data       (param_1+3; passed to _Buynode)
+      +0x10  ``_Color``  — RB-tree color byte
+      +0x11  ``_Isnil``  — non-zero = sentinel/nil node
+                           (checked at +0x11; distinct from g_OrderList which
+                           uses +0x21; this is a smaller per-proposal-orders
+                           tree type)
+
+    Control flow:
+      if param_1._Isnil == 0  (real node):
+          puVar1  = _Buynode(head, parent=param_2, left=head,
+                             val=param_1.value, color=param_1.color)
+          if sentinel._Isnil != 0:   # always true for the sentinel
+              local_18 = puVar1      # track begin / return root copy
+          puVar1.left  = _Copy(this, param_1.left,  puVar1)
+          puVar1.right = _Copy(this, param_1.right, puVar1)
+          return puVar1
+      else:                          # nil sentinel node
+          return this->_Myhead       # return destination sentinel unchanged
+
+    In Python the tree is a sorted ``list[dict]``; all pointer/coloring
+    bookkeeping disappears.  The function reduces to a deep-copy of the
+    source list into (and replacing) the destination list.
+
+    Callees (C):
+      FUN_00401b40 — ``std::_Tree::_Buynode``: allocates + initialises one
+                     node with (head, parent, left=head, value, color);
+                     see unchecked.md
+    """
+    import copy
+    dest.clear()
+    dest.extend(copy.deepcopy(source))
+    return dest
+
+
+# ── STL tree erase (FUN_00402b70) ─────────────────────────────────────────────
+
+def _stl_tree_erase_node(tree: list, idx: int) -> int:
+    """MSVC ``std::_Tree::erase(iterator)`` — erase one node from the sorted list.
+
+    addr: ``0x00402b70``
+    C signature: ``void __thiscall FUN_00402b70(void *this, int *param_1,
+                    int param_2, int **param_3)``
+
+    Operates on the same per-proposal-orders tree type as ``_stl_tree_copy``
+    (compact node layout: ``_Color`` at ``+0x10``, ``_Isnil`` at ``+0x11``).
+
+    C algorithm:
+      1. Validate *param_3* (the node to erase) is not the nil sentinel
+         (``*(char*)(param_3 + 0x11) != 0`` → throws
+         ``std::out_of_range("invalid map/set<T> iterator")`` via
+         ``FUN_00402650`` + ``FUN_00402a30``).
+      2. ``TreeIterator_Advance(&param_2)`` — advance *param_2* to the
+         in-order successor of *param_3*.
+      3. Determine the replacement / splice node:
+         - left child non-nil  → replacement = left child
+         - else                → replacement = right child
+         (The two-child splice branch guarded by ``param_3 != _Memory`` is dead
+         code: ``_Memory = param_3`` at entry, so the condition is always
+         false; Ghidra emits the branch but it is unreachable.)
+      4. Update all parent/child back-pointers bypassing the erased node;
+         update header's leftmost (``this+4``→``*header``) and rightmost
+         (``this+4``→``header[2]``) via ``FUN_004010a0`` / ``FUN_00401080``
+         when the erased node was the current begin or end.
+      5. RB-tree delete fixup (``LAB_00402ce5``): iterate up the tree
+         correcting colours via left-rotations (``FUN_004016a0``) and
+         right-rotations (``FUN_004010c0``).
+      6. ``_free(_Memory)`` + ``this->_Mysize -= 1``.
+      7. Write successor iterator into ``*param_1``.
+
+    Node layout (same tree type as ``_stl_tree_copy``):
+      +0x00  ``_Left``   — left child
+      +0x04  ``_Parent`` — parent
+      +0x08  ``_Right``  — right child
+      +0x0C  ``_Value``  — 4-byte key/value
+      +0x10  ``_Color``  — RB colour byte (0 = red, 1 = black)
+      +0x11  ``_Isnil``  — non-zero = sentinel/nil node
+
+    Python representation: the tree is a sorted ``list[dict]``; all
+    pointer/colour bookkeeping disappears.  The function reduces to removing
+    the entry at *idx* and returning the new index of the successor (which,
+    after deletion, is automatically ``idx``).
+
+    Raises ``IndexError`` if *idx* is out of range (mirrors the C
+    ``std::out_of_range`` throw for the end-sentinel / past-the-end check).
+
+    Callees (C):
+      FUN_00402650         — ``std::string`` ctor from ``(char*, size_t)``
+                             builds the "invalid map/set<T> iterator" message
+      FUN_00402a30         — ``std::out_of_range`` constructor
+      TreeIterator_Advance — in-order successor step (Ghidra-named; analogous
+                             to ``std_Tree_IteratorIncrement`` at 0x0040f6f0
+                             but for this compact tree type; address unknown)
+      FUN_004010a0         — leftmost-descendant finder; returns new begin
+                             after the old leftmost node is erased
+      FUN_00401080         — rightmost-descendant finder; returns new end
+                             (rightmost) after the old rightmost node is erased
+      FUN_004016a0         — RB-tree left-rotation used in delete fixup
+      FUN_004010c0         — RB-tree right-rotation used in delete fixup
+    """
+    if idx < 0 or idx >= len(tree):
+        raise IndexError("invalid map/set<T> iterator")
+    tree.pop(idx)
+    # After deletion 'idx' naturally addresses the former successor (or
+    # len(tree) when the erased entry was the last), matching the C behaviour
+    # where *param_1 is set to the advanced iterator after the node is freed.
+    return idx
+
+
+# ── HostilityRecord ───────────────────────────────────────────────────────────
+
+def build_hostility_record(src: dict) -> dict:
+    """Copy constructor for HostilityRecord.
+
+    C: ``undefined * __thiscall BuildHostilityRecord(void *this, undefined *param_1)``
+
+    Copies every field from *src* (param_1) into a new record (this) using the
+    appropriate per-field copy operation, then returns the destination.  In
+    Python, all C field copies collapse to a single ``copy.deepcopy``.
+
+    Struct layout (C offset → Python key):
+      +0x00  1B   'flag_0'        — leading flag/type byte
+      +0x04  4B   'int_4'         — dword
+      +0x08  4B   'int_8'         — dword
+      +0x0c  12B  'obj_0c'        — 12-byte token/proposal object
+                                    (FUN_00405090 copy constructor)
+      +0x18  12B  'obj_18'        — 12-byte object
+                                    (FUN_0041c3c0 copy constructor)
+      +0x24  12B  'obj_24'        — 12-byte object
+                                    (FUN_0041c3c0 copy constructor)
+      +0x30  84B  'trust_row'     — 21×int32 raw copy (one g_AllyTrustScore row)
+      +0x84  4B   'int_84'        — dword
+      +0x88  16B  'token_list_88' — token list (FUN_00465f60 copy)
+      +0x98  1B   'flag_98'       — flag byte
+      +0xa0  4B   'int_a0'        — dword
+      +0xa4  4B   'int_a4'        — dword
+      +0xa8  16B  'token_list_a8' — token list (FUN_00465f60 copy)
+      +0xb8  2B   'word_b8'       — word
+      +0xbc  16B  'token_list_bc' — token list (FUN_00465f60 copy)
+
+    Callees (C):
+      FUN_00405090  — 12-byte object copy (already in unchecked)
+      FUN_0041c3c0  — 12-byte object copy (see unchecked.md)
+      FUN_00465f60  — token-list copy (already in unchecked)
+    """
+    import copy
+    return copy.deepcopy(src)

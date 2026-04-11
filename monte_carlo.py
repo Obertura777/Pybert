@@ -884,6 +884,26 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # AssignSupportOrder(this, power, src, dst, coast, NULL)
         assign_support_order(state, power_index, src, dst, coast, flag=0)
 
+    def _insert_order_candidate(candidate_list: list, score: int, entry: dict) -> dict:
+        """InsertOrderCandidate — BST sorted insert keyed on score (ascending).
+
+        Mirrors the C++ `InsertOrderCandidate` / `FUN_004153b0` pair:
+          - Descends the BST comparing node[3] < *param_2 (go left) until sentinel.
+          - Allocates a new node (or returns existing) and links it.
+          - Returns {container, node, is_new=1} via param_1; here returns the entry dict.
+
+        Python representation: candidate_list is a list of (score, entry_dict) tuples
+        maintained in ascending score order via bisect.  Duplicate keys are allowed
+        (same score → inserted to the right of existing equal-key entries).
+        """
+        import bisect
+        keys = [s for s, _ in candidate_list]
+        pos = bisect.bisect_right(keys, score)
+        new_entry = dict(entry)
+        new_entry['score'] = score
+        candidate_list.insert(pos, (score, new_entry))
+        return new_entry
+
     # ── lazy-init per-trial arrays not yet on state ───────────────────────────
     if not hasattr(state, 'g_UnitPresence'):
         state.g_UnitPresence = np.full((num_powers, num_provinces), -1, dtype=np.int32)
@@ -1112,7 +1132,36 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                             break
                         secondary_target = (secondary_target + 1) % num_powers
 
-            # Count cap: mirrors ppiStack_7bc random table (< 40 → 1, < 60 → 2, …)
+            # Build exploit candidate set (local_6e4).
+            # InsertOrderCandidate inserts unconditionally — no count limit here.
+            exploit_candidates: list = []   # [(score, entry_dict), ...] ascending
+
+            # Scan proposal history (DAT_00baed98 / g_DealList) for matching entries.
+            for rec in list(state.g_ProposalHistoryMap):
+                if rec.get('power') != power_index:
+                    continue
+                rec_prov = rec.get('province', -1)
+                # Check reachable / alt order set match (mirrors GameBoard_GetPowerRec).
+                if rec_prov not in per_power_order_sets[power_index]:
+                    continue
+                score = rec.get('score', 0)
+                entry = {
+                    'unit_prov':    rec_prov,
+                    'target_power': rec.get('target_power', -1),
+                    'via_prov':     rec.get('src_prov', -1),
+                    'dst_prov':     rec.get('dst_prov', -1),
+                }
+                # Primary insert: auStack_204 call site.
+                if rec.get('target_power') == exploit_power:
+                    _insert_order_candidate(exploit_candidates, score, entry)
+                # Secondary insert: auStack_150 call site.
+                # Condition: target_power == secondary_target AND via_prov == dst_prov.
+                if secondary_target >= 0 and rec.get('target_power') == secondary_target:
+                    if rec.get('src_prov') == rec.get('dst_prov'):
+                        _insert_order_candidate(exploit_candidates, score, entry)
+
+            # Count cap computed AFTER insertions (mirrors decompile: lines 81–102
+            # overwrite ppiStack_7bc with the cap after the insertion loop).
             r3 = random.randrange(100)
             if secondary_target < 0:
                 if r3 < 65:
@@ -1131,25 +1180,24 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 else:
                     count_cap = 4 + int(r3 > 89)
 
-            # Scan proposal history (DAT_00baed98 / g_DealList) for matching entries.
-            inserted = 0
-            for rec in list(state.g_ProposalHistoryMap):
-                if rec.get('power') != power_index:
+            # Consumption loop (decompile lines 103–246):
+            # Iterate local_6e4 ascending by score; 60% rand gate + total count cap.
+            # Trust/convoy conditions (via_prov vs dst_prov branch, relay province
+            # lookup via g_ConvoyProv1/2/3 and g_AllyDesignation_A, reachability via
+            # GameBoard_GetPowerRec) are not yet fully decompiled — stubbed below.
+            consumed = 0
+            for _score, cand in exploit_candidates:
+                if random.randrange(100) >= 60:     # < 0x3c = 60% gate
                     continue
-                rec_prov = rec.get('province', -1)
-                # Check reachable / alt order set match (mirroring GameBoard_GetPowerRec checks).
-                if rec_prov not in per_power_order_sets[power_index]:
+                if consumed >= count_cap:
+                    break
+                unit_prov = cand['unit_prov']
+                if int(state.g_UnitPresence[power_index, unit_prov]) == -1:
                     continue
-                if rec.get('target_power') == exploit_power:
-                    # Insert as primary candidate.
-                    if inserted < count_cap:
-                        # Mirrors InsertOrderCandidate into local_6e4 set.
-                        # (no Python BST needed; append with score from rec)
-                        pass  # STUB: InsertOrderCandidate
-                    inserted += 1
-                if secondary_target >= 0 and rec.get('target_power') == secondary_target:
-                    if rec.get('src_prov') == rec.get('dst_prov'):
-                        pass  # STUB: InsertOrderCandidate for secondary
+                # STUB: trust/convoy route check unported (needs full Phase-1e decompile).
+                state.g_OrderTable[unit_prov, _F_ORDER_TYPE] = float(_ORDER_CTO)
+                state.g_ConvoyActiveFlag[unit_prov] = 1
+                consumed += 1
 
         # 1f. Support assignment ───────────────────────────────────────────────
         # Find own unordered SC provinces; call AssignHoldSupports.

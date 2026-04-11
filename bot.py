@@ -320,18 +320,58 @@ def _stab_enemy_slot_remove(slots, target):
         slots[2] = -1
 
 
+def _destroy_inner_list(container):
+    """FUN_00401950 — recursive C linked-list destructor.
+
+    C node layout: node[0]=_Next, node[2]=inner sub-data (also a list head),
+    byte@+0x11=_Isnil (non-zero = sentinel node). Walks from the first real
+    node to the sentinel, recursively calling itself on node[2] before
+    freeing each node, then advances via node[0].
+
+    Python: clears `container` in-place, recursing into any nested list/set
+    elements (node[2] equivalents) before clearing the outer container.
+    Python GC handles deallocation; only clearing is required.
+
+    Callers and their Python mappings:
+      - DAT_00bb65e4 teardown (EvaluateOrderProposalsAndSendGOF): called on
+        node[2] of each g_DmzOrderList node to clear its inner province
+        sub-list before the outer teardown loop frees the node.
+      - DEVIATE_MOVE / STABBED: called on the first real node of
+        g_AllyPromiseList[power] / g_AllyCounterList[power] to clear the
+        per-power designation list on stab detection.
+    """
+    if container is None:
+        return
+    if isinstance(container, list):
+        for item in container:
+            if isinstance(item, (list, set)):
+                _destroy_inner_list(item)
+        container.clear()
+    elif hasattr(container, 'clear'):
+        container.clear()
+
+
 def _stab_clear_ally_list(state, attr, power_idx):
     """Clear g_AllyPromiseList[power_idx] or g_AllyCounterList[power_idx].
 
+    Delegates to _destroy_inner_list (FUN_00401950) for the actual clearing.
     Supports dict-of-sets (preferred), list-of-sets, and legacy np.ndarray.
     """
     lst = getattr(state, attr, None)
     if lst is None:
         return
     if isinstance(lst, dict):
-        lst[power_idx] = set()
+        sub = lst.get(power_idx)
+        if sub is not None:
+            _destroy_inner_list(sub)
+        else:
+            lst[power_idx] = set()
     elif isinstance(lst, list) and 0 <= power_idx < len(lst):
-        lst[power_idx] = set() if isinstance(lst[power_idx], set) else 0
+        sub = lst[power_idx]
+        if isinstance(sub, (list, set)):
+            _destroy_inner_list(sub)
+        else:
+            lst[power_idx] = 0
     elif hasattr(lst, '__setitem__'):
         try:
             lst[power_idx] = 0
@@ -617,6 +657,12 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
         else:
             logger.info("We have been stabbed by (%d) during the turn", attacker)
 
+        # Clear per-power designation lists via _destroy_inner_list (FUN_00401950):
+        # C: FUN_00401950(*(int**)(DAT_00bb6f2c[attacker*3]+4))  → g_AllyPromiseList
+        #    FUN_00401950(*(int**)(DAT_00bb702c[attacker*3]+4))   → g_AllyCounterList
+        _stab_clear_ally_list(state, 'g_AllyPromiseList', attacker)
+        _stab_clear_ally_list(state, 'g_AllyCounterList', attacker)
+
         # Clear g_AllyMatrix[attacker row] (C lines 1219-1222)
         for j in range(num_powers):
             state.g_AllyMatrix[attacker, j] = 0
@@ -728,7 +774,8 @@ def _hostility(state: InnerGameState) -> None:
             )
 
     # ── Block 3: ComputeOrderDipFlags (FUN_004113d0) — always ────────────────
-    # TODO: port ComputeOrderDipFlags; sets flag1/flag2/flag3 on each g_OrderList node.
+    from .communications import compute_order_dip_flags
+    compute_order_dip_flags(state)
 
     # ── SPR||FAL outer gate (wraps Blocks 4 and 5) ───────────────────────────
     if phase in ('SPR', 'FAL'):
@@ -1470,6 +1517,77 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
     return None
 
 
+def get_sub_list(press_seq: 'str | list[str]', index: int) -> list:
+    """
+    Port of GetSubList (FUN_00466060).
+
+    C: undefined4 * __thiscall GetSubList(void *this, undefined4 *param_1, int param_2)
+      this    = press-sequence object:
+                  this[0]  = pointer to flat ushort token buffer (2 bytes/token)
+                  this[2]  = pointer to int index array:
+                               index_array[i]   = start offset of sub-list i
+                               index_array[i+1] = end offset (exclusive)
+                  this[3]  = count of sub-lists
+      param_1 = output TokenSeq (initialised to {0, 0xffffffff, 0, 0xffffffff})
+      param_2 = 0-based index of the sub-list to extract
+
+    Extraction logic (decompile lines 25–36):
+      length = index_array[i+1] - index_array[i]
+      if length == 1:
+          data = buf[start]          # bare single token — no parens to strip
+          count = 1
+      else:
+          data = buf[start + 1]      # skip leading '('
+          count = length - 2         # skip trailing ')' too
+      FUN_00465940(param_1, data, count)   # init output TokenSeq from slice
+
+    FUN_00465940 = TokenSeq_InitFromBuffer: populates a TokenSeq struct from a
+    raw pointer + length.  In Python this is simply returning the token slice.
+
+    Python equivalent:
+      Tokenise press_seq, walk top-level parenthesised groups (and bare tokens),
+      return the inner tokens of the index-th group with outer parens stripped.
+      Returns [] if index is out of range or press_seq is empty.
+
+    Called from BuildAndSendSUB as GetSubList(puVar31 + 10, apvStack_180, 1)
+    to extract the second top-level sub-expression from a proposal token seq.
+    """
+    tokens: list[str] = press_seq.split() if isinstance(press_seq, str) else list(press_seq)
+
+    # Collect top-level groups: each is either a '(…)' span or a bare token.
+    groups: list[tuple[int, int]] = []  # (start_idx, end_idx) inclusive in tokens
+    depth = 0
+    group_start: int | None = None
+
+    for i, tok in enumerate(tokens):
+        if tok == '(':
+            if depth == 0:
+                group_start = i
+            depth += 1
+        elif tok == ')':
+            depth -= 1
+            if depth == 0 and group_start is not None:
+                groups.append((group_start, i))
+                group_start = None
+        elif depth == 0:
+            # bare token at top level — single-token sub-list with no parens
+            groups.append((i, i))
+
+    if index < 0 or index >= len(groups):
+        return []
+
+    start, end = groups[index]
+    group_tokens = tokens[start:end + 1]
+    length = len(group_tokens)
+
+    if length == 1:
+        # single bare token — return as-is (mirrors iVar2 == 1 branch)
+        return group_tokens
+    else:
+        # strip outer '(' and ')' (mirrors iVar2 != 1 branch: skip first + last)
+        return group_tokens[1:-1]
+
+
 def _build_gof_seq(state: 'InnerGameState') -> list:
     """
     Port of FUN_00464460 — builds the DAIDE GOF+orders token sequence
@@ -2014,8 +2132,8 @@ class AlbertClient:
           7. CancelPriorPress           — withdraw stale prior-press token (line 693).
 
         Callees still unported: ScoreOrderCandidates (FUN_004559c0),
-        RECEIVE_PROPOSAL, RESPOND, BuildHostilityRecord, SendAlliancePress,
-        FUN_00419300, FUN_00466ed0, FUN_00466f80, FUN_00465df0, GetSubList,
+        RECEIVE_PROPOSAL, RESPOND, SendAlliancePress,
+        FUN_00419300, FUN_00466ed0, FUN_00466f80, FUN_00465df0,
         FUN_00465930, FUN_00465d90, FUN_00422a90, FUN_00465cf0, FUN_00410cf0,
         FUN_00443ed0.
         """

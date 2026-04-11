@@ -174,6 +174,14 @@ class InnerGameState:
         #             'dest','priority','from_power','to_power'}
         self.g_XdoPressProposals: list = []
 
+        # DAT_00bb67f8[power*0xc] — per-power MTO/CTO attacker scoring map.
+        # ScoreSupportOpp (FUN_00404fd0): key = dest_prov, value = int score.
+        self.g_xdo_mto_opp_score: dict = {}
+
+        # DAT_00bb69f8[prov*0xc] — per-supporting-unit-province SUP-MTO scoring map.
+        # ScoreSupportOpp (FUN_00404fd0): key = sup_power, value = int score.
+        self.g_xdo_sup_mto_score: dict = {}
+
         # DAT_00ba1fb0[province] — safe-reach score per province.
         # Set to max sorted-set rank of reachable uncontested provinces; 0xffffffff = no safe move.
         # Written by ComputeSafeReach; uint32 sentinel matches original C 0xffffffff.
@@ -348,6 +356,13 @@ class InnerGameState:
         self.g_BestOrderBackup: dict = {}
         # DAT_00baed94/98 — press deal records (earlier proposals received)
         self.g_DealList: list = []
+        # DAT_00bb65c8/cc — position analysis list; each entry:
+        #   {'tokens': list, 'token_set': frozenset, 'power_count': int}
+        # Cleared each turn.  Used by RECEIVE_PROPOSAL for proposal dedup.
+        self.g_PosAnalysisList: list = []
+        # DAT_00bbf638 — alliance-message BST; in Python modelled as a set of
+        # power indices inserted by BuildAllianceMsg / receive_proposal.
+        self.g_AllianceMsgTree: set = set()
         # DAT_00bb69fc[power*3] — per-power alternate order list
         # (already declared as g_AltOrderList above)
         # g_HistoryCounter > 19 gates some press sending
@@ -368,6 +383,10 @@ class InnerGameState:
         self.g_processing_active: int = 0
         # DAT_00ba2860:ba2864 — elapsed time recorded by FUN_00443ed0 at GOF send
         self.g_elapsed_press_time: float = 0.0
+        # DAT_00baed32 — 0 = randomised delay; non-zero = send immediately at elapsed
+        self.g_PressInstant: int = 0
+        # DAT_00624ef4 — move time limit in seconds; 0 = no deadline
+        self.g_MoveTimeLimitSec: int = 0
 
         # ── CancelPriorPress globals ─────────────────────────────────────────
         # DAT_004c6ce4 — prior press token to cancel (NOT message)
@@ -462,6 +481,16 @@ class InnerGameState:
         self.g_TurnOrderHist_Lo = np.zeros(7, dtype=np.int32)
         self.g_TurnOrderHist_Hi = np.zeros(7, dtype=np.int32)
 
+        # DAT_00ba27b0[power*8] / DAT_00ba27b4[power*8] — per-power turn score (int64);
+        # cleared in the per-power reset loop.  Used by RESPOND to track the best-scoring
+        # ally's timestamp for response-timing gating.
+        self.g_TurnScore = np.zeros(7, dtype=np.int64)
+
+        # DAT_00633768[power] — per-power active-turn flag; cleared each turn, set to 1
+        # by RESPOND deceit path for the sender power.  Gated in the g_PosAnalysisList
+        # walk: when response is YES, only register deviation entry if flag is set.
+        self.g_PowerActiveTurn = np.zeros(7, dtype=np.int32)
+
     def synchronize_from_game(self, game):
         """
         Takes the current game state (`diplomacy.Game` object) 
@@ -491,6 +520,8 @@ class InnerGameState:
         self.g_ProposalHistory.clear()
         self.g_XdoPressSent.fill(0)
         self.g_XdoPressProposals.clear()
+        self.g_PosAnalysisList.clear()
+        self.g_AllianceMsgTree.clear()
 
         # Parse Ownership
         for power_name, centers in game.get_centers().items():
