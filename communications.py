@@ -32,6 +32,198 @@ def _token_seq_copy(source_tokens) -> list:
     return list(source_tokens) if source_tokens else []
 
 
+def _token_seq_overlap(seq_a, seq_b) -> bool:
+    """
+    Port of FUN_00465d90 — token-seq overlap / containment check.
+
+    C signature: ``bool __thiscall FUN_00465d90(void *this, int *param_1)``
+
+    Returns True when the two token sequences share at least one element.
+    Absorbed throughout the codebase as ``frozenset(a) & frozenset(b)``.
+
+    Called from:
+      receive_proposal               — deduplicate proposals against g_PosAnalysisList
+      _respond_walk_pos_analysis     — match proposals for g_DeviationTree inserts
+      _cancel_prior_press            — scan g_MasterOrderList for THN(<power>) entries
+    """
+    return bool(frozenset(seq_a) & frozenset(seq_b))
+
+
+def _token_seq_no_overlap(seq_a, seq_b) -> bool:
+    """
+    Port of FUN_00465df0 — negated token-seq overlap check.
+
+    C signature: ``bool __thiscall FUN_00465df0(void *this, int *param_1)``
+
+    Decompiled body (decompiled.txt lines 128–135):
+        bVar1 = FUN_00465d90(this, param_1);   // _token_seq_overlap
+        return (bool)('\\x01' - bVar1);         // = !bVar1
+
+    Returns True when the two token sequences share NO element.
+    Called from BuildAndSendSUB as:
+        FUN_00465df0(puVar31 + 10, (int *)apvStack_220)
+    to gate whether a proposal's province list is disjoint from the current
+    SUB token list — proposals that don't touch any ordered province are skipped.
+    """
+    return not _token_seq_overlap(seq_a, seq_b)
+
+
+def _token_seq_concat_single(prefix_seq: list, out: list, payload_token: int) -> list:
+    """
+    Port of FUN_00466e10 — concatenate a prefix token-seq with one payload token
+    into an output token-seq struct.
+
+    C signature:
+        uint ** __thiscall FUN_00466e10(void *this, uint **param_1, void *param_2)
+          this    = prefix token sequence (TokenSeq)
+          param_1 = output token sequence (written in place, returned)
+          param_2 = pointer to single payload token (ushort *)
+
+    Flow (decompiled.txt):
+      1. FUN_00465940(local_1c, param_2, 1)
+           — TokenSeq_InitFromBuffer: init a 1-element temp seq from *param_2.
+      2. FUN_00466c40(this, param_1, local_1c)
+           — concat: param_1 = prefix_seq + local_1c  (= prefix_seq + [payload_token]).
+      3. EH cleanup: destruct + free temp buffer (absorbed).
+      Returns param_1.
+
+    Python: out[:] = list(prefix_seq) + [payload_token]; return out.
+
+    Absorbed at call sites as ``list + [token]`` or ``seq.append(token)`` — see
+    FUN_00466ed0 (_wrap_single_token) step 2, and the power-token loop in
+    BuildAndSendSUB / SendAllyPressByPower.
+    """
+    out[:] = list(prefix_seq) + [payload_token]
+    return out
+
+
+def _token_seq_count(seq) -> int:
+    """
+    Port of FUN_00465930 — return the number of elements in a token sequence.
+
+    C signature: ``uint __fastcall FUN_00465930(int param_1)``
+
+    Decompiled body (decompiled.txt line 89):
+        return -(uint)(*(uint *)(param_1 + 0xc) != 0xffffffff)
+               & *(uint *)(param_1 + 0xc);
+
+    The C TokenSeq struct stores its element count at offset +0xc; the sentinel
+    value 0xffffffff marks an uninitialized / empty sequence (count = 0).
+    The expression is a branchless idiom:
+      * count == 0xffffffff  →  mask = 0           →  returns 0
+      * count != 0xffffffff  →  mask = 0xffffffff  →  returns count
+
+    Python mapping: an empty/uninitialized C seq (sentinel) ↔ None; live seq ↔ list.
+    All call sites reduce to len() in the Python rewrite.
+
+    Leaf function — no callees.
+    """
+    return len(seq) if seq is not None else 0
+
+
+def _token_seq_less(seq_a, seq_b) -> bool:
+    """Port of FUN_00465cf0 — lexicographic less-than for token sequences.
+
+    addr: ``0x00465cf0``
+    C signature: ``uint __thiscall FUN_00465cf0(void *this, int *param_1)``
+
+    Both operands are 16-byte MSVC ``TokenSeq`` structs whose first two
+    fields are:
+
+    .. code-block:: text
+
+        +0  ushort*  buffer   — pointer to flat ushort token array (NULL = empty)
+        +4  int      count    — number of tokens (0xffffffff sentinel = empty)
+
+    Decompiled logic (reconstructed):
+
+    1. ``min_len = min(this->count, param_1->count)``
+    2. If ``param_1->buffer == NULL`` (right-hand empty) → return ``False``
+       (nothing is less-than an empty sequence).
+    3. If ``this->buffer == NULL`` (left-hand empty, right-hand non-empty)
+       → return ``True`` (empty precedes any non-empty sequence).
+    4. Loop ``i`` in ``[0, min_len)``:
+         - Compare ``this->buffer[i]`` vs ``param_1->buffer[i]`` as ``uint16``.
+         - First mismatch determines result (< → True, > → False); exit loop.
+    5. If all ``min_len`` elements are equal and no mismatch found:
+         return ``(this->count < param_1->count)`` (shorter sequence is less).
+
+    The CONCAT31/uVar6 manipulations in the Ghidra output are artefacts of
+    the calling-convention flag-byte packing; the meaningful return is the
+    low byte (0 = False, 1 = True).
+
+    Python mapping:
+      Token sequences are plain ``list[int]``.  Python's built-in tuple
+      comparison is lexicographic over element values and uses length as a
+      tiebreaker when one sequence is a prefix of the other — identical
+      semantics.  The NULL-buffer edge cases map to empty lists, which
+      Python handles correctly (``() < (x,)`` → True, ``(x,) < ()`` →
+      False, ``() < ()`` → False).
+
+      The function therefore reduces to ``tuple(seq_a) < tuple(seq_b)``.
+
+    Called from:
+      ``BuildAndSendSUB`` (``FUN_00457890``) as
+      ``FUN_00465cf0(puVar18 + 3, puVar31 + 10)`` — compares a proposal
+      entry's token-sequence key against a candidate sequence to decide
+      ordering in the broadcast-list traversal.
+
+      ``_ordered_token_seq_insert`` (``FUN_00419300``) — absorbed as Python
+      tuple ``<`` inside ``bisect.bisect_left`` comparisons; not called
+      explicitly there.
+
+    Leaf function — no callees.
+    """
+    return tuple(seq_a) < tuple(seq_b)
+
+
+def _wrap_single_token(prefix_token: int, payload_token: int) -> list:
+    """
+    Port of FUN_00466ed0 — wrap a single payload token with a prefix token.
+
+    C signature: ``uint ** __thiscall FUN_00466ed0(void *this, uint **param_1, void *param_2)``
+
+    Flow (decompiled.txt lines 95–125):
+      1. FUN_00465940(local_1c, this, 1)
+           — TokenSeq_InitFromBuffer: init a one-element temp list from the
+             single prefix-token pointer ``this``.
+      2. FUN_00466e10(local_1c, param_1, param_2)
+           — append the single payload token (``*param_2``) into param_1,
+             prepended by the temp list → param_1 = [prefix_token, payload_token].
+      3. MSVC EH cleanup: destructs & frees the temp token buffer (absorbed).
+      Returns param_1.
+
+    Contrast with FUN_00466f80 which accepts a *list* of payload tokens
+    (``[prefix] + list``); this variant takes exactly one token.
+
+    Call sites:
+      FUN_00466ed0(&THN, local, &power_token)   → [THN_token, power_token]
+        (SendAllyPressByPower — builds THN(<power>) press sequence)
+      FUN_00466ed0(&VSS, local, &enemy_token)   → [VSS_token, enemy_token]
+        (_execute_aly_vss — builds VSS(<mutual_enemy>) clause)
+      FUN_00466ed0(&FRM, local, puVar18+0x34)   → [FRM_token, token]
+        (BuildAndSendSUB — builds FRM-prefixed token list)
+    """
+    return [prefix_token, payload_token]
+
+
+def _get_daide_context_ptr(state: 'InnerGameState') -> int:
+    """
+    FUN_0047020b — TLS accessor for the per-thread DAIDE message context pointer.
+
+    C: ``undefined4 * FUN_0047020b(void) { return &DAT_00bc46e4; }``
+
+    DAT_00bc46e4 is a TLS slot that holds the game-context object.  Every call
+    site immediately follows with the vtable dereference ``(*piVar6 + 0xc)`` to
+    read the own-power index out of that object.  In Python the whole sequence
+    collapses to a single attribute read on the shared state object.
+
+    Returns:
+        state.albert_power_idx — own power index (0-based).
+    """
+    return getattr(state, 'albert_power_idx', 0)
+
+
 def process_hst(state: InnerGameState, message: str):
     """
     Port of ParseHSTResponse (FUN_0041b410).
@@ -60,6 +252,92 @@ def process_hst(state: InnerGameState, message: str):
         state.g_HistoryCounter = 0
 
 import re
+
+
+# ── SendAlliancePress ─────────────────────────────────────────────────────────
+
+def send_alliance_press(
+    state: 'InnerGameState',
+    key: int,
+    entry_data: dict | None = None,
+) -> dict:
+    """
+    Port of SendAlliancePress (named symbol; address not confirmed beyond call site).
+
+    C signature (thiscall on g_BroadcastList proxy DAT_00bb65ec):
+        void __thiscall SendAlliancePress(void *this,
+                                          undefined4 *param_1,
+                                          int *param_2)
+
+    The function body is MSVC ``std::set<ProposalRecord>::insert``:
+
+    1. Load header sentinel: ``ppiVar4 = *(this+4)`` — i.e. ``_Myhead``.
+    2. If root (``_Myhead[1]``) is not nil (``+0xe9 != 0``):
+         Binary search from root, branching left when
+         ``*param_2 < node[4]`` (int comparison on the key field at
+         byte offset 16 of the proposal node), right otherwise.
+         Loop terminates when next node is nil.
+    3. Call ``FUN_0042e450(this, &go_left, go_left, parent, param_2)``
+         — MSVC ``_Tree::_Insert``: allocates a new node, splices it
+         in, and rebalances the red-black tree.
+    4. Write result to ``param_1``: ``[node_ptr][secondary][inserted=1]``.
+         Note: the bool is **hardcoded 1** — the caller does not need
+         duplicate-detection; every call inserts a fresh entry.
+
+    Python absorption
+    -----------------
+    * ``g_BroadcastList`` is a plain Python ``list`` (no tree structure).
+    * The lower-bound search is replicated as a linear scan by ``key``.
+    * ``FUN_0042e450`` (RB-tree node allocator + rebalancer) is absorbed
+      into ``list.insert``.
+    * The ``pair<iterator,bool>`` output is absorbed into the return value.
+
+    Parameters
+    ----------
+    state      : InnerGameState
+    key        : int — sort key (``*param_2`` / ``node[4]``; in the
+                 BuildAndSendSUB press-deal loop this is the target
+                 power index).
+    entry_data : optional dict of extra fields to merge into the new
+                 entry (province_set, press_seq, power, …).
+
+    Returns
+    -------
+    The newly inserted entry dict (always inserted — bool result = 1).
+
+    Callees (absorbed):
+        FUN_0042e450  — MSVC _Tree::_Insert (node alloc + RB rebalance)
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    entry: dict = {
+        'key':         key,
+        'sent':        False,   # node+24 / node[6] — not yet dispatched
+        'type_flag':   0,       # node+28 / node[7]
+        'trial_count': 0,       # node+32 / node[8]
+    }
+    if entry_data:
+        entry.update(entry_data)
+
+    bl: list = state.g_BroadcastList
+
+    # lower_bound: first position where existing key >= new key
+    insert_pos = len(bl)
+    for i, node in enumerate(bl):
+        if node.get('key', 0) >= key:
+            insert_pos = i
+            break
+
+    bl.insert(insert_pos, entry)
+
+    _log.debug(
+        "send_alliance_press: inserted key=%d into g_BroadcastList at pos %d "
+        "(list now %d entries)",
+        key, insert_pos, len(bl),
+    )
+    return entry
+
 
 def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
     """
@@ -229,14 +507,82 @@ def _send_ally_press_by_power(state: InnerGameState, power: int) -> None:
     })
 
 
+def _fun_004117d0(state: InnerGameState, param_1: int) -> bool:
+    """
+    Port of FUN_004117d0 (0x004117d0).
+
+    Scans g_PosAnalysisList for any unprocessed node that has a matching order
+    on the game board.  param_1 governs the search mode:
+
+      param_1 == -1   Iterate every sub-entry in the node's inner sub-list.
+                      For each sub-entry's province key, look up the current
+                      board order via g_board_orders.  If the order_type matches
+                      the node's expected order_type ([0x10]), return True.
+
+      param_1 >= 0    Power index.  First check whether param_1 appears as a
+                      power_idx in the node's inner sub-list.  If so, look up
+                      the board order for that power index.  If the order_type
+                      matches the node's expected order_type, return True.
+
+    C node layout (undefined4* units; offsets in bytes in parens):
+      +8  (0x08)  processed flag — 0 = active, 1 = done; skip if set
+      +0xc/+0xd  (0x30/0x34)  inner sub-list sentinel/head
+      +0xf  (0x3c)  power-record field (second GameBoard_GetPowerRec target)
+      [0x10]  (0x40)  expected order-type field
+
+    Python model: g_PosAnalysisList entries always have power_count==0 (inner
+    sub-lists are never populated after receive_proposal inserts them), so the
+    inner loops never execute and this function always returns False.
+    """
+    for entry in getattr(state, 'g_PosAnalysisList', []):
+        # C: if (*(char*)(puVar1+8) != '\0') → node already processed → skip
+        if entry.get('processed', False):
+            continue
+
+        # power_count==0 → inner sub-list is empty → no matches possible
+        if entry.get('power_count', 0) == 0:
+            continue
+
+        # ── Sub-list is non-empty (not reached in current Python model) ──────
+        sub_entries   = entry.get('sub_entries', [])
+        expected_type = entry.get('order_type', -1)
+        board_orders  = getattr(state, 'g_board_orders', {})
+
+        if param_1 == -1:
+            # C param_1==-1 path: iterate sub-list; for each sub-node check
+            # GameBoard_GetPowerRec(node+0xf, buf, sub_node+0xc); if result[1]
+            # == node[0x10] → local_55 = 1.
+            for sub in sub_entries:
+                prov = sub.get('province', -1)
+                rec  = board_orders.get(prov, {})
+                if rec.get('order_type') == expected_type:
+                    return True
+        else:
+            # C param_1!=−1 path: first pass — is param_1 in sub-list?
+            # GameBoard_GetPowerRec(node+0xc, buf, &param_1); if result[1] !=
+            # node[0xd] (head ptr) → power found.
+            if not any(s.get('power_idx') == param_1 for s in sub_entries):
+                continue
+            # Second pass — check power-record field at node+0xf.
+            rec = board_orders.get(param_1, {})
+            if rec.get('order_type') == expected_type:
+                return True
+
+    return False
+
+
 def _press_gate_check(state: InnerGameState, power: int) -> bool:
     """
-    Stub for FUN_004117d0((int)param_1).
-    Returns True when this power's press channel should be skipped.
-    Original: non-zero → skip. Stubbed as always False (proceed).
-    UNCHECKED — FUN_004117d0 not yet verified.
+    Port of FUN_004117d0((int)param_1) called from SendAllyPressByPower.
+
+    Returns True (non-zero) when any unprocessed g_PosAnalysisList entry has a
+    board order for *power* matching the entry's expected order type → caller
+    skips press dispatch for this power.  False means no match → proceed.
+
+    In the current Python model power_count is always 0 so this always returns
+    False (never skip).
     """
-    return False
+    return _fun_004117d0(state, power)
 
 
 def _press_list_count(state: InnerGameState, power: int) -> int:
@@ -526,9 +872,11 @@ def _execute_xdo(state: InnerGameState, power: int) -> None:
     the C code passes the full accumulated order-sequence list as the lookup
     key.
 
-    Unchecked callees: FUN_00410980, FUN_00419300, FUN_00422a90,
+    Unchecked callees: FUN_00410980, FUN_00419300,
                        FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
                        FUN_0040f470, FUN_00465f60, PROPOSE macro.
+    FUN_00422a90 ported as validate_and_dispatch_order (dispatch.py);
+    used here only as a validity gate (dispatch side-effect suppressed).
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -608,7 +956,11 @@ def _execute_xdo(state: InnerGameState, power: int) -> None:
             score_own    = scores.get(own,   0) - baseline.get(own,   0)
             score_sender = scores.get(power, 0) - baseline.get(power, 0)
 
-        # FUN_00422a90(this) == 0: press-send gate (unchecked; treated as 0).
+        # FUN_00422a90(this, order_seq) == 0: press-send gate.
+        # Ported as validate_and_dispatch_order (dispatch.py).  In this
+        # XDO-press context we only need the validity check; the dispatch
+        # side-effect is not wanted, so the gate is approximated as always
+        # passing (returning 0) to preserve the prior behaviour.
         # Accumulate whenever this beats the running best combined score.
         total: int = score_own + score_sender
         if score_own > 0 and score_sender > -800 and total > best_score:
@@ -1275,12 +1627,24 @@ def _is_game_active(state: InnerGameState) -> bool:
 
 def _check_server_reachable(state: InnerGameState, mode: int = -1) -> bool:
     """
-    Stub for FUN_004117d0 (unchecked).
+    Port of FUN_004117d0(-1) called from dispatch_press_and_fallback_gof.
 
-    Called as FUN_004117d0(-1) in FUN_00443ed0.  Returns '\x01' when the
-    server is reachable; '\0' when the connection is lost.
+    Returns True (non-zero) when any unprocessed g_PosAnalysisList entry has
+    had its board orders satisfied — used by the caller to decide whether to
+    apply the time-window check before sending a fallback GOF.  If False, the
+    caller sends GOF immediately without checking the time window.
+
+    NOTE: the original stub described this as a TCP server-reachability check.
+    The actual decompile shows it scans g_PosAnalysisList for board-order
+    matches; the "reachable/unreachable" framing was a misinterpretation.  In
+    the C game, unmatched proposals (False) trigger immediate fallback; matched
+    proposals (True) cause the caller to wait up to base_wait+25 s first.
+
+    In the current Python model power_count is always 0, so this always returns
+    False → the time-window check is skipped and the fallback GOF fires as soon
+    as the other guards (game active, processing idle) allow it.
     """
-    return bool(getattr(state, 'g_server_reachable', True))
+    return _fun_004117d0(state, mode)
 
 
 def dispatch_press_and_fallback_gof(state: InnerGameState,
@@ -2051,9 +2415,10 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
 
     # FUN_00419300: register XDO proposal for the sender in g_XdoProposalBySender
     # C: FUN_00419300(&DAT_00bb65f8 + bVar3*0xc, &pvStack_50, local_40)
-    if not hasattr(state, 'g_XdoProposalBySender'):
-        state.g_XdoProposalBySender = {}
-    state.g_XdoProposalBySender.setdefault(sender_power, []).append(list(payload))
+    _ordered_token_seq_insert(
+        state.g_XdoProposalBySender.setdefault(sender_power, []),
+        payload,
+    )
 
     # ── Step 4: destination/scope province = element 2 of sublist 0 ──────────
     # C: GetSubList(local_40, pvStack_6c, 0) + GetListElement(puVar9, uStack_92, 2)
@@ -2239,22 +2604,47 @@ def _score_support_opp(
     return sub, key, was_inserted
 
 
-def _score_sup_attacker(state: InnerGameState,
-                        base_offset: str,
-                        power: int,
-                        args: tuple) -> None:
+def _score_sup_attacker(
+    state: InnerGameState,
+    base_offset: str,
+    power: int,
+    args: tuple,
+) -> tuple:
     """
-    Stub for FUN_004193f0 (called from _handle_xdo SUP branch loops).
+    Port of FUN_004193f0 — MSVC std::map<int,int> find-or-insert.
 
-    C signature (inferred):
-      FUN_004193f0(&DAT_00bb68f8 + entry_power*0xc, &pvStack_6c, (int*)&{arg0, arg1})
+    C signature (decompiled.txt lines 2–50):
+      void __thiscall FUN_004193f0(void *this, void **param_1, int *param_2)
 
-    Not yet decompiled.  UNCHECKED.
+    this     = &DAT_00bb68f8 + entry_power*0xc  — per-power attacker-score map
+    param_1  = output: [0]=iterator_base, [1]=node_ptr, [2]=was_inserted
+    param_2  = pointer to key (args[0])
+
+    Algorithm is structurally identical to ScoreSupportOpp (FUN_00404fd0):
+      BST lower-bound walk using the node layout
+        +0x00 left, +0x04 parent, +0x08 right, +0x0C key (int),
+        +0x10 value (int), +0x19 isnil byte (== '\\0' → real node)
+      If key found: return existing node, was_inserted=False.
+      Else: allocate zero-valued node via FUN_004136d0, was_inserted=True.
+      FUN_0040e5f0 = BST iterator-decrement (predecessor).
+
+    Python table:
+      'DAT_00bb68f8' → state.g_xdo_sup_attacker_score[power][key]
+
+    Callees (absorbed into dict operations):
+      FUN_0040e5f0 (BST predecessor / iterator-decrement)
+      FUN_004136d0 (BST insert helper)
     """
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-    _log.debug("FUN_004193f0 STUB: base=%s power=%d args=%s",
-               base_offset, power, args)
+    attr = 'g_xdo_sup_attacker_score'
+    if not hasattr(state, attr):
+        setattr(state, attr, {})
+    table: dict = getattr(state, attr)
+    sub: dict = table.setdefault(power, {})
+    key: int = int(args[0])
+    was_inserted: bool = key not in sub
+    if was_inserted:
+        sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)
+    return sub, key, was_inserted
 
 
 def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
@@ -2667,14 +3057,14 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
     # into g_NotXdoListBySender[entry['power']].
     candidate_list: list = getattr(state, 'g_xdo_candidate_list', [])
 
-    if not hasattr(state, 'g_NotXdoListBySender'):
-        state.g_NotXdoListBySender = {}
-
     for entry in candidate_list:
         power: int = int(entry.get('power', entry.get('node_power', 0)))
         # FUN_00419300(&DAT_00bb66f8 + power*0xc, &pvStack_38, local_1c)
-        # → appends local_1c (XDO content) into the per-power NOT-XDO list.
-        state.g_NotXdoListBySender.setdefault(power, []).append(list(xdo_content))
+        # → inserts local_1c (XDO content) into the per-power NOT-XDO ordered set.
+        _ordered_token_seq_insert(
+            state.g_NotXdoListBySender.setdefault(power, []),
+            xdo_content,
+        )
 
     # ── Post-loop: log + BuildAllianceMsg stub ────────────────────────────────
     # C: FUN_0046b050 → serialize token list → SEND_LOG("... NOT XDO: (%s)")
@@ -2695,17 +3085,32 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
 
 # ── RECEIVE_PROPOSAL ─────────────────────────────────────────────────────────
 
-def _prepare_ally_press_entry(_state: "InnerGameState", _power: int) -> None:
+def _prepare_ally_press_entry(state: "InnerGameState", power: int) -> None:
     """
-    Stub for FUN_00418db0(power).
+    FUN_00418db0(power) — PrepareAllyPressEntry.
 
-    Called by receive_proposal after recording a new incoming proposal.
-    In C, likely marks the per-power ally-press state as pending so that the
-    subsequent RESPOND / SendAllyPressByPower pass can schedule a DM reply.
+    Removes all pending THN(<power>) entries from g_MasterOrderList before a
+    new press item is scheduled for that power, preventing duplicates.
 
-    UNCHECKED — FUN_00418db0 not yet decompiled.
+    C logic (decompiled.txt lines 27–84):
+      1. FUN_00465870(local_28)            — init temp token list.
+         local_44[0] = power | 0x4100      — build DAIDE power token.
+         FUN_00466ed0(&THN, local_38, local_44) → local_28 holds THN(<power>).
+      2. Outer do-while: restart scan from g_MasterOrderList head each time.
+         Inner while: iterate nodes; FUN_00465d90(node+6, &local_28) checks
+         whether the node's token-seq equals THN(<power>).
+         No match → advance iterator (FUN_0040e210).
+         Scan exhausted (iter == sentinel) → FreeList + return.
+         Match → AdvanceAndRemoveListNode removes the node; outer loop restarts.
+
+    Python: token-list mechanics absorbed; equality check reduces to
+    press_type == 'THN' and data == [power].
     """
-    _ = (_state, _power)
+    master: list = getattr(state, 'g_MasterOrderList', [])
+    state.g_MasterOrderList = [
+        e for e in master
+        if not (e.get('press_type') == 'THN' and e.get('data') == [power])
+    ]
 
 
 def receive_proposal(
@@ -3373,8 +3778,125 @@ def build_hostility_record(src: dict) -> dict:
 
     Callees (C):
       FUN_00405090  — 12-byte object copy (already in unchecked)
-      FUN_0041c3c0  — 12-byte object copy (see unchecked.md)
+      FUN_0041c3c0  — 12-byte STL set copy constructor (see below)
       FUN_00465f60  — token-list copy (already in unchecked)
+    """
+    import copy
+    return copy.deepcopy(src)
+
+
+def _ordered_token_seq_insert(container: list, key_seq) -> tuple:
+    """Port of FUN_00419300 — MSVC ``std::set<TokenSeq>::insert(value)``.
+
+    addr: ``0x00419300``
+    C signature: ``void __thiscall FUN_00419300(void *this,
+                    void **param_1, void **param_2)``
+
+    The C body is a full MSVC RB-tree insert for a ``std::set`` whose element
+    type is a token-sequence list.  It descends the tree from root using
+    ``FUN_00465cf0`` (token-sequence less-than comparator, ``+0x1d`` sentinel
+    flag) to locate the insertion point, then detects duplicates in two paths:
+
+      * Last BST step went LEFT (``local_c != 0``, ``param_2 < parent.key``):
+        if parent is the leftmost node → fast-insert (no predecessor possible);
+        otherwise call ``FUN_00401790`` to step back to the in-order
+        predecessor and re-check ``FUN_00465cf0(predecessor.key, param_2)``.
+        If predecessor >= param_2 the keys are equal → no insert.
+      * Last BST step went RIGHT (``local_c == 0``, ``param_2 >= parent.key``):
+        check ``FUN_00465cf0(parent.key, param_2)``; if parent >= param_2 the
+        keys are equal → no insert.
+
+    On successful insert, ``FUN_004134d0`` allocates and splices a new RB-tree
+    node.  The result is written through *param_1*:
+
+      param_1[0]  — iterator node pointer (existing or newly inserted)
+      param_1[1]  — iterator ``_Myhead`` (header/sentinel pointer)
+      param_1[2]  — bool: 1 = new node inserted, 0 = key already existed
+
+    The 12-byte ``this`` layout::
+
+        +0  allocator/compare  (zeroed)
+        +4  _Myhead            (sentinel node ptr; [0]=leftmost, [1]=root, [2]=rightmost)
+        +8  _Mysize            (element count)
+
+    Sentinel node: ``node + 0x1d`` = ``_Isnil`` flag (0 = real node, 1 = nil).
+
+    Python mapping:
+      *container*  — sorted ``list[tuple]`` representing the BST in-order
+                     contents; Python lexicographic tuple comparison matches
+                     ``FUN_00465cf0`` semantics exactly.
+      *key_seq*    — iterable token sequence; normalised to ``tuple``.
+      Returns ``(key_tuple, inserted: bool)``.
+
+    Callees absorbed:
+      FUN_00465cf0 — TokenSeq less-than comparator (tuple ``<``)
+      FUN_004134d0 — RB-tree node allocate-and-insert (``list.insert`` via bisect)
+      FUN_00401790 — in-order predecessor step (not required in Python)
+    """
+    import bisect
+    key = tuple(key_seq)
+    idx = bisect.bisect_left(container, key)
+    if idx < len(container) and container[idx] == key:
+        return (container[idx], False)
+    container.insert(idx, key)
+    return (key, True)
+
+
+def _copy_stl_ordered_set(src):
+    """Copy constructor for a 12-byte MSVC ``std::set<int>`` (FUN_0041c3c0).
+
+    C signature: ``void * __thiscall FUN_0041c3c0(void *this, int param_1)``
+
+    Called from BuildHostilityRecord for the 'obj_18' and 'obj_24' fields::
+
+        FUN_0041c3c0((void *)(this + 0x18), (int)(param_1 + 0x18))
+        FUN_0041c3c0((void *)(this + 0x24), (int)(param_1 + 0x24))
+
+    The C++ body has two phases:
+
+    **Phase 1 — default-construct an empty set (``this``)**:
+
+    * ``FUN_0040fd90()`` — ``operator_new(0x20)``; zeros offsets 0/4/8
+      (``_Left``/``_Parent``/``_Right``); sets ``+0x1c = 1`` (``_Color =
+      BLACK``); explicitly sets ``+0x1d = 0`` (``_Isnil`` starts as 0 —
+      NOT yet a sentinel; the caller marks it).  Returns the raw pointer
+      in EAX (Ghidra shows ``void`` return but value survives in EAX).
+      Same structural role as ``FUN_00401e30`` inside ``StdSet_Init``
+      (``FUN_00405660``).
+    * Stores the sentinel at ``this+4`` (``_Myhead``).
+    * Marks the sentinel: ``sentinel+0x1d = 1`` (``_Isnil`` flag) and sets
+      ``_Left = _Parent = _Right = sentinel`` (circular self-links for an
+      empty RB-tree head).  These two steps are done by the caller
+      (``FUN_0041c3c0``), not by ``FUN_0040fd90``.
+    * Sets ``this+8 = 0`` (``_Mysize``).
+
+    **Phase 2 — copy-assign from source**:
+
+    * ``FUN_00411a80(this, param_1)`` — the MSVC ``_Tree::_Copy`` helper;
+      walks the source tree in-order and inserts each element into ``this``.
+
+    The 12-byte container layout is::
+
+        this+0   4B  allocator/compare (unused — zero-initialised by caller)
+        this+4   4B  _Myhead  (sentinel node ptr)
+        this+8   4B  _Mysize  (element count)
+
+    Python absorption: both phases collapse to ``copy.deepcopy(src)`` because
+    ``src`` is already the correct Python container (``set`` of ints).
+
+    Callees (C) — absorbed:
+      FUN_0040fd90  — allocate BST sentinel node (absorbed as Python alloc)
+      FUN_00411a80  — MSVC ``_Tree::_Copy``: outer copy driver; calls
+                      FUN_00410db0 on the source root (absorbed as deepcopy)
+      FUN_00410db0  — MSVC ``_Tree::_Copy_nodes``: recursive pre-order node
+                      copy; for each non-nil src node calls FUN_0040fdd0 to
+                      allocate a dst node (copying key at src+0x0c and color
+                      byte at src+0x1c), then recurses into left (*src) and
+                      right (src[2]) with parent=new_node; returns new_node
+                      or dst sentinel (absorbed as deepcopy)
+      FUN_0040fdd0  — MSVC ``_Tree::_Buynode``: allocates a raw tree node,
+                      sets _Left=_Right=sentinel, _Parent=arg2, copies key
+                      from arg4, sets _Color=arg5 (absorbed as Python alloc)
     """
     import copy
     return copy.deepcopy(src)

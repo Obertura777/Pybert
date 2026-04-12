@@ -29,7 +29,7 @@ from .heuristics import (
     post_process_orders, compute_press, compute_influence_matrix,
     _safe_pow,
 )
-from .dispatch import dispatch_single_order
+from .dispatch import validate_and_dispatch_order
 from .utils import dipnet_order  # noqa: F401 — re-exported for callers
 
 logger = logging.getLogger(__name__)
@@ -349,6 +349,78 @@ def _destroy_inner_list(container):
         container.clear()
     elif hasattr(container, 'clear'):
         container.clear()
+
+
+def free_list(lst):
+    """FUN_00465fa0 — Destructs and zeros a token-list structure.
+
+    C layout (3-pointer / 12-byte header at param_1):
+      param_1[0] : ptr to element vector; the dword at (ptr - 4) stores the
+                   element count; the vector itself holds count × 2-byte tokens
+                   (Diplomacy wire tokens, stored as shorts); each element is
+                   destructed by ClearConvoyState before the block is freed.
+      param_1[1] : capacity / end pointer — not touched by this function.
+      param_1[2] : auxiliary allocation (separate heap block); freed and zeroed
+                   independently.
+
+    Both allocations are released and their header slots zeroed.
+
+    Note: ClearConvoyState appears here as the eh_vector_destructor_iterator
+    callback — it is the per-element destructor registered by the MSVC EH
+    machinery, not the game-logic convoy-state reset of the same name.  For
+    2-byte POD tokens the destructor is effectively a no-op.
+
+    Python: clears the list in-place; GC handles deallocation; the auxiliary
+    allocation has no Python analogue.
+    """
+    if lst is None:
+        return
+    if isinstance(lst, list):
+        lst.clear()
+    elif hasattr(lst, 'clear'):
+        lst.clear()
+
+
+def _destroy_candidate_tree(candidate_list):
+    """FUN_00410cf0 — Post-order RB-tree destructor for g_CandidateList2 per-power trees.
+
+    Node layout (g_GeneralOrders / g_CandidateList2, ~30 bytes):
+      +0x00  _Left ptr     — iterated after freeing current node
+      +0x04  _Parent ptr   — (unused during traversal)
+      +0x08  _Right ptr    — recursed first
+      +0x0C  value[0]      — ptr to embedded token/order list (freed by FreeList)
+      +0x10  value[1..3]   — remaining payload fields
+      +0x1C  _Color byte
+      +0x1D  _Isnil byte   — non-zero = sentinel; loop runs while _Isnil == 0
+
+    C traversal (post-order, right via recursion then left via iteration):
+        while node._Isnil == 0:
+            FUN_00410cf0(node._Right)       # recurse right subtree
+            saved = node._Left
+            FreeList(&node.value)           # free embedded list rooted at value[0]
+            free(node)
+            node = saved
+
+    Called from ScoreOrderCandidates step 1 for each power as:
+        FUN_00410cf0(*(int **)(sentinel._Parent))   # pass tree root
+
+    Python: g_GeneralOrders[power] = [order_seq, ...] where each order_seq is a
+    dict that may carry a nested token list.  Clear all embedded lists then clear
+    the container — mirrors FreeList + free(node) without heap management.
+    """
+    if candidate_list is None:
+        return
+    if isinstance(candidate_list, list):
+        for entry in candidate_list:
+            if isinstance(entry, dict):
+                for key in ('tokens', 'token_list', 'orders', 'sub_list'):
+                    sub = entry.get(key)
+                    if isinstance(sub, list):
+                        free_list(sub)   # FreeList(&node.value)
+                        break
+        candidate_list.clear()
+    elif hasattr(candidate_list, 'clear'):
+        candidate_list.clear()
 
 
 def _stab_clear_ally_list(state, attr, power_idx):
@@ -1003,6 +1075,46 @@ def _cleanup_turn(state: InnerGameState) -> None:
         row_sum = float(np.sum(state.g_InfluenceMatrix[row]))
         if row_sum != 0.0:
             state.g_InfluenceMatrix[row] = (state.g_InfluenceMatrix[row] * 100.0) / row_sum
+
+
+def _prepare_draw_vote_set(state: InnerGameState) -> None:
+    """Port of PrepareDrawVoteSet (FUN_0044c9d0).
+
+    Builds the friendly-powers set (own power ∪ {p : sc_count[p]>0 AND
+    trust(own,p)>1}), calls ComputeDrawVote, and stores the result in
+    state.g_draw_sent.
+
+    C trust condition: Hi >= 0 AND (Hi > 0 OR Lo > 1)
+      where Hi = g_AllyTrustScore_Hi[own,p], Lo = g_AllyTrustScore[own,p].
+
+    The C function also manages a std::map allocator and C++ ref-counts on
+    an intermediate proposal-context object (SerializeOrders + _free); those
+    are absorbed as Python GC.
+
+    Decompile: decompiled.txt lines 42–123.
+    """
+    own = int(state.albert_power_idx)
+    num_powers = state.sc_count.shape[0]
+
+    friendly_powers: set = {own}
+    for p in range(num_powers):
+        if p == own:
+            continue
+        if int(state.sc_count[p]) > 0:
+            hi = int(state.g_AllyTrustScore_Hi[own, p])
+            lo = int(state.g_AllyTrustScore[own, p])
+            # C: trust > 1  ⟺  Hi >= 0 AND (Hi > 0 OR Lo > 1)
+            if hi >= 0 and (hi > 0 or lo > 1):
+                friendly_powers.add(p)
+
+    draw_vote = compute_draw_vote(state, friendly_powers)
+    extra_draw_flags = getattr(state, 'g_draw_flags', [])
+    if draw_vote or any(extra_draw_flags):
+        logger.info("Draw vote: proposing DRW")
+        state.g_draw_sent = 1
+    else:
+        logger.info("Draw vote: sending NOT DRW")
+        state.g_draw_sent = 0
 
 
 def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
@@ -2000,7 +2112,14 @@ class AlbertClient:
         from .monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
 
-        # Step 1 — clear candidate list before scoring pass
+        # Step 1 — clear per-power g_CandidateList2 trees (FUN_00410cf0 per power)
+        # C: for each power, FUN_00410cf0(root) post-order frees the RB-tree,
+        # then resets the sentinel.  Python: clear each power's g_GeneralOrders
+        # list via _destroy_candidate_tree, then reset the flat record list.
+        if hasattr(self.state, 'g_GeneralOrders'):
+            for _p in range(num_powers):
+                _destroy_candidate_tree(self.state.g_GeneralOrders.get(_p))
+            self.state.g_GeneralOrders = {}
         self.state.g_CandidateRecordList = []
 
         # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_UnitCount)
@@ -2053,34 +2172,7 @@ class AlbertClient:
             _phase_handler(self.state, 3)
             self._build_and_send_sub(best_orders)
 
-            # Draw vote — FUN_0044c9d0 wrapper (PrepareDrawVoteSet):
-            #   Build friendly-powers set: own power + any power p where
-            #     curr_sc_cnt[p] > 0 AND g_AllyTrustScore[own, p] > 1
-            #   (C: StdMap_FindOrInsert keyed by power index; passed as param_1
-            #    to ComputeDrawVote where Map_Find(param_1, unit+0x18) checks
-            #    unit.power ∈ friendly_powers).
-            #   Result stored in DAT_00baed2b; any of the four draw flags set → DRW.
-            sc_count = getattr(self.state, 'sc_count',
-                               np.zeros(num_powers, dtype=np.int32))
-            friendly_powers: set = {own_power_idx}
-            for p in range(num_powers):
-                if p == own_power_idx:
-                    continue
-                if int(sc_count[p]) > 0:
-                    trust_hi = int(self.state.g_AllyTrustScore_Hi[own_power_idx, p])
-                    trust_lo = int(self.state.g_AllyTrustScore[own_power_idx, p])
-                    # C: trust > 1 ↔ Hi >= 0 AND (Hi > 0 OR Lo > 1)
-                    if trust_hi >= 0 and (trust_hi > 0 or trust_lo > 1):
-                        friendly_powers.add(p)
-
-            draw_vote = compute_draw_vote(self.state, friendly_powers)
-            extra_draw_flags = getattr(self.state, 'g_draw_flags', [])
-            if draw_vote or any(extra_draw_flags):
-                logger.info("Draw vote: proposing DRW")
-                self.state.g_draw_sent = 1
-            else:
-                logger.info("Draw vote: sending NOT DRW")
-                self.state.g_draw_sent = 0
+            _prepare_draw_vote_set(self.state)
         else:
             # Retreat / adjustment phase — no SUB, but HOSTILITY runs in WIN
             if phase == 'WIN':
@@ -2134,8 +2226,9 @@ class AlbertClient:
         Callees still unported: ScoreOrderCandidates (FUN_004559c0),
         RECEIVE_PROPOSAL, RESPOND, SendAlliancePress,
         FUN_00419300, FUN_00466ed0, FUN_00466f80, FUN_00465df0,
-        FUN_00465930, FUN_00465d90, FUN_00422a90, FUN_00465cf0, FUN_00410cf0,
+        FUN_00465930, FUN_00465d90, FUN_00465cf0, FUN_00410cf0,
         FUN_00443ed0.
+        FUN_00422a90 ported as validate_and_dispatch_order (dispatch.py).
         """
         own_power_idx = getattr(self.state, 'albert_power_idx', 0)
         n_powers = int(getattr(self.state, 'n_powers', 7))
@@ -2163,7 +2256,7 @@ class AlbertClient:
         for prov, _order_type in order_pairs:
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
-                dispatch_single_order(self.state, own_power_idx, seq)
+                validate_and_dispatch_order(self.state, own_power_idx, seq)
 
         formatted = list(self.state.g_OrderList)
         logger.info("SUB — %d orders for %s: %s",
@@ -2198,8 +2291,9 @@ class AlbertClient:
         #     overlap ≥ 3 → SUB press via AppendList + SendAlliancePress.
         #   sent proposals (node[6] == own_power): trust ≥ 2 for other power
         #     → SUB press via SendAlliancePress.
-        # Placeholder: iterate g_DealList as a loose proxy (trust ≥ 3, overlap).
+        # Proxy: iterate g_DealList (trust ≥ 3, province overlap).
         if self.state.g_HistoryCounter > 19:
+            from .communications import send_alliance_press
             submitted_provs = {prov for prov, _ in order_pairs}
             for deal in list(getattr(self.state, 'g_DealList', [])):
                 other = deal.get('power', -1)
@@ -2209,10 +2303,23 @@ class AlbertClient:
                 if trust < 3:
                     continue
                 deal_provs = deal.get('province_set', set())
-                if deal_provs & submitted_provs:
-                    self._send_dm(f"PRP ( PCE ( {own_power_idx} {other} ) )")
-                    logger.debug("Deal match: sent ally press to power %d (trust=%d)",
-                                 other, trust)
+                overlap = deal_provs & submitted_provs
+                if overlap:
+                    press_seq = f"PRP ( PCE ( {own_power_idx} {other} ) )"
+                    send_alliance_press(
+                        self.state,
+                        key=other,
+                        entry_data={
+                            'power':        other,
+                            'province_set': overlap,
+                            'press_seq':    press_seq,
+                        },
+                    )
+                    logger.debug(
+                        "Deal match: queued alliance press to power %d "
+                        "(trust=%d, overlap=%s)",
+                        other, trust, overlap,
+                    )
 
         # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)

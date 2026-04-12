@@ -160,6 +160,23 @@ class InnerGameState:
         # detection and to exclude the designated ally-B power from supporter candidates.
         self.g_AllyDesignation_B = np.full(256, -1, dtype=np.int64)
 
+        # DAT_004d3610/14 — g_AllyDesignation_C: int64[province], power booked as ally-C for
+        # that province; -1 = none. Third designation slot; read by check_order_alliance
+        # (FUN_0041d360) and cleared during late-game retreat.
+        self.g_AllyDesignation_C = np.full(256, -1, dtype=np.int64)
+
+        # DAT_00bb6f28/2c — g_ally_promise_list: per-power ally promise records.
+        # dict[power_idx -> list[dict{'dest_prov': int, ...}]]
+        # Cleared per turn; written by alliance management; read by check_order_alliance
+        # to detect province-ordering conflicts against outstanding ally promises.
+        self.g_ally_promise_list: dict = {}
+
+        # DAT_00bb7028/2c — g_ally_counter_list: per-power counter-proposal records.
+        # dict[power_idx -> list[dict{'dest_prov': int, ...}]]
+        # Cleared per turn; written by alliance management; read by check_order_alliance
+        # post-loop to verify counter-list consistency for the destination power.
+        self.g_ally_counter_list: dict = {}
+
         # DAT_00baed94 — proposal history; set of int keys
         # key = (unit2_prov * 1000 + own_prov) * 1000 + dest
         # Prevents duplicate XDO support proposals within a turn.
@@ -212,6 +229,12 @@ class InnerGameState:
         # DAT_00bbf60c — global list of candidate proposal records.
         # Each entry: {'power', 'orders', 'score', 'heat_scores', 'deviation', 'pressure_cost'}.
         self.g_CandidateRecordList: list = []
+
+        # DAT_00bb6cf8[pow*0xc] — per-power general candidate order sequences.
+        # Maps power_idx -> [order_seq, ...] where each order_seq is a dict with
+        # at least {'type': str}.  Cleared by _destroy_candidate_tree (FUN_00410cf0)
+        # at the start of each ScoreOrderCandidates pass.
+        self.g_GeneralOrders: dict = {}
 
         # DAT_00bb65b4/b8 — cached std::set iterator (g_LastMTOInsert).
         # Stores (type: int, province: int) of the last MTO/fleet insert, or None = set.end().
@@ -277,6 +300,14 @@ class InnerGameState:
         # g_InfluenceMatrix_Alt is the same array as g_InfluenceMatrix (alias)
         # DAT_00b81ff0 — trust-adjusted, noise-perturbed, row-normalised influence matrix
         # (self.g_InfluenceMatrix already declared above)
+
+        # Own power index (0-based); set at turn start by AlbertBot from power_name.
+        # C: *(byte *)(state->inner + 0x2424)
+        self.albert_power_idx: int = 0
+
+        # DAT_00baed2b — result of PrepareDrawVoteSet / ComputeDrawVote.
+        # 1 = propose DRW this turn; 0 = do not.
+        self.g_draw_sent: int = 0
 
         # Current SC counts and targets derived each turn from g_SCOwnership
         # sc_count[power] — int[7]; filled by synchronize_from_game / cal_board
@@ -344,6 +375,14 @@ class InnerGameState:
         # DAT_00bb6df4 — XDO proposal dedup set (compound order-seq keys;
         # approximated here as per-province set; C uses FUN_00410980/FUN_00419300)
         self.g_XdoProposalList: set = set()
+        # DAT_00bb65f8[power*0xc] — per-sender XDO proposal ordered set.
+        # Populated by FUN_00419300 in _handle_xdo; sorted list[tuple] per power.
+        self.g_XdoProposalBySender: dict = {}
+        # DAT_00bb66f8[power*0xc] — per-power NOT-XDO retraction ordered set.
+        # Populated by FUN_00419300 in _not_xdo; sorted list[tuple] per power.
+        # Note: DAT_00bb66f8 is also mapped to g_DeviationTree (different usage
+        # context in RECEIVE_PROPOSAL vs. cal_not_xdo).
+        self.g_NotXdoListBySender: dict = {}
         # DAT_004c6bbc — MC trial cap per proposal (difficulty=100 → 30)
         self.g_PressProposalsCap: int = 30
         # DAT_00b95368/58/e0[trial*4] — per-trial score tracking arrays
@@ -434,6 +473,10 @@ class InnerGameState:
         self.prov_to_id = {}
         self.adj_matrix = {}
         self.unit_info = {} # prov_id -> {'power': int, 'type': 'AMY'/'FLT', 'coast': str}
+        # Set of province IDs whose underlying province type is 'WATER' (sea zones).
+        # Populated once during synchronize_from_game from game.map.area_type().
+        # Mirrors the flag at inner_state + prov_id * 0x24 + 4 == '\0' in the C++ original.
+        self.water_provinces: frozenset = frozenset()
 
         # ── PhaseHandler snapshots (FUN_0040df20) ────────────────────────────
         # DAT_0062e4b8 — phase×power snapshot of g_AllyTrustScore lo-word
@@ -504,7 +547,8 @@ class InnerGameState:
                 if prov not in self.prov_to_id:
                     self.prov_to_id[prov] = len(self.prov_to_id)
             
-            # Build adjacency graph
+            # Build adjacency graph and water-province set
+            water_prov_ids = set()
             for prov in self.prov_to_id:
                 base_prov = prov.split('/')[0] if '/' in prov else prov
                 self.adj_matrix[self.prov_to_id[prov]] = []
@@ -512,6 +556,9 @@ class InnerGameState:
                     adj_base = adj.split('/')[0] if '/' in adj else adj
                     if adj_base in self.prov_to_id:
                         self.adj_matrix[self.prov_to_id[prov]].append(self.prov_to_id[adj_base])
+                if game.map.area_type(base_prov) == 'WATER':
+                    water_prov_ids.add(self.prov_to_id[prov])
+            self.water_provinces = frozenset(water_prov_ids)
 
         # Reset turn specific structures
         self.g_SCOwnership.fill(0)

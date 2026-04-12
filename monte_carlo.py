@@ -748,7 +748,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
       score_convoy_fleet      — BST insert-with-score; STUB
       move_candidate          — BST erase/pop from Albert+0x4cfc; STUB
       build_order_mto         — writes MTO into g_OrderTable; STUB
-      insert_order_candidate  — inserts candidate into local set; STUB
+      insert_order_candidate  — FUN_004153b0; std::_Tree::_Insert for InsertOrderCandidate tree; ported inline as _insert_order_candidate (bisect-sorted list)
       evaluate_order_proposal — monte_carlo.py; already ported
     """
     import logging
@@ -891,6 +891,25 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
           - Descends the BST comparing node[3] < *param_2 (go left) until sentinel.
           - Allocates a new node (or returns existing) and links it.
           - Returns {container, node, is_new=1} via param_1; here returns the entry dict.
+
+        `FUN_00410480` (`std_Tree_Buynode` for InsertOrderCandidate tree) is absorbed
+        here.  In C++ it called `operator_new(0x3c)` (60-byte node) then
+        `FUN_0040fa10(node, head, parent, head, data_ptr, color=0)`:
+
+          Confirmed node layout (60 bytes / 0x3c):
+            [0x00] _Left   = head   (param_1)
+            [0x04] _Parent = parent (param_2)
+            [0x08] _Right  = head   (param_3)
+            [0x0c..0x27]  7-int payload — data_ptr[0..6] (slots 3–9)
+                          data_ptr[0] = score (BST key)
+            [0x28..0x37]  16-byte TokenSeq — FUN_00465f60(node+0x28, data_ptr+7)
+                          (slots 10–13; data_ptr[7] = buf ptr, data_ptr[8] = count)
+            [0x38]        color byte = param_6 = 0 (RED in MSVC RB-tree)
+            [0x39]        0 (isNil = false)
+
+        In Python this collapses to `dict(entry)` (payload copy) +
+        `candidate_list.insert(pos, ...)` (linking).  No Albert logic — pure STL
+        boilerplate; no separate Python function is needed.
 
         Python representation: candidate_list is a list of (score, entry_dict) tuples
         maintained in ascending score order via bisect.  Duplicate keys are allowed
