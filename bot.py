@@ -28,6 +28,14 @@ from .heuristics import (
     compute_draw_vote,
     post_process_orders, compute_press, compute_influence_matrix,
     _safe_pow,
+    score_provinces,
+    score_order_candidates_own_power,
+    populate_build_candidates,
+    populate_remove_candidates,
+    compute_win_builds,
+    compute_win_removes,
+    _WIN_BUILD_WEIGHTS,
+    _WIN_REMOVE_WEIGHTS,
 )
 from .dispatch import validate_and_dispatch_order
 from .utils import dipnet_order  # noqa: F401 — re-exported for callers
@@ -51,7 +59,7 @@ _DAIDE_POWER_NAMES = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
 # ── Stub sub-functions (unimplemented; named after research.md §sub-function table) ──
 
 def _phase_handler(state: InnerGameState, phase: int) -> None:
-    """PhaseHandler (FUN_0040df20).
+    """PhaseHandler (FUN_0040df20 / SetGamePhase).
 
     Snapshots g_AllyTrustScore and g_RelationScore (DAT_00634e90) into
     phase-indexed arrays at each sub-phase boundary (phase 0–3).
@@ -1731,12 +1739,13 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
     WIN:
       Build entries should come from the build-candidate list at this+0x2474/0x2478.
       Each candidate has province at +0x0c (int) and BLD/REM DAIDE token at +0x10 (short).
-      this+0x2480 (int) = waive count; this+0x2488 (char) = fleet-build flag.
-      THESE FIELDS HAVE NO PYTHON EQUIVALENT YET — the build loop currently falls back
-      to state.g_build_order_list (stub) so callers must populate that list before
-      invoking _send_gof. state.g_waive_count (int) and state.g_fleet_build_flag (bool)
-      must also be set. TODO: add these fields to InnerGameState once the winter-order
-      handler that populates this+0x2474 is ported (needs Ghidra for handler function).
+      this+0x2480 (int) = waive count → state.g_waive_count.
+      this+0x2488 (char) = build/remove flag — encoded in g_build_order_list strings
+        (each entry already contains 'BLD' or 'REM').
+      g_build_order_list is populated by compute_win_builds (FUN_00442040) or
+      compute_win_removes (FUN_0044bd40) before _send_gof is called.
+      Unit-type (AMY/FLT) in build entries is a heuristic stub pending decompile
+      of FUN_00442040 (see unchecked.md).
     """
     phase = getattr(state, 'g_season', 'SPR')
     own_power = getattr(state, 'albert_power_idx', 0)
@@ -2177,6 +2186,37 @@ class AlbertClient:
             # Retreat / adjustment phase — no SUB, but HOSTILITY runs in WIN
             if phase == 'WIN':
                 _hostility(self.state)
+
+                # WIN build/remove candidate pipeline — mirrors send_GOF WIN branch:
+                #   ResetPerTrialState → ScoreProvinces →
+                #   populate candidates → ScoreOrderCandidates_OwnPower →
+                #   FUN_00442040 (builds) or FUN_0044bd40 (removes)
+                self.state.g_build_order_list.clear()   # ResetPerTrialState
+                self.state.g_waive_count = 0
+                score_provinces(self.state, 0, 0, own_power_idx)
+                # Count units directly from unit_info (mirrors FUN_0040ab10 which
+                # counts from the unit list rather than any cached counter).
+                # g_UnitCount is only refreshed by _analyze_position in movement
+                # phases, so it may be stale here.
+                sc    = int(self.state.sc_count[own_power_idx])
+                units = sum(
+                    1 for u in self.state.unit_info.values()
+                    if u.get('power') == own_power_idx
+                )
+                if units < sc:
+                    # BUILD: unit_count < sc_count
+                    populate_build_candidates(self.state, own_power_idx)
+                    score_order_candidates_own_power(
+                        self.state, _WIN_BUILD_WEIGHTS, own_power_idx)
+                    compute_win_builds(self.state, sc - units)
+                elif sc < units:
+                    # REMOVE: sc_count < unit_count
+                    populate_remove_candidates(self.state, own_power_idx)
+                    score_order_candidates_own_power(
+                        self.state, _WIN_REMOVE_WEIGHTS, own_power_idx)
+                    compute_win_removes(self.state, units - sc)
+                # else sc == units: no builds/removes, no waives — empty GOF
+
             _phase_handler(self.state, 3)
 
         # Step 6 — CleanupTurn + GOF

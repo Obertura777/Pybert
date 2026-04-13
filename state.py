@@ -350,6 +350,11 @@ class InnerGameState:
         # Built on first use from prov_to_id; cached here for all callers.
         self._id_to_prov: dict = {}
 
+        # Home supply centers per power: dict[power_idx → frozenset[prov_id]].
+        # Populated once during synchronize_from_game from game.map.homes.
+        # Used by populate_build_candidates to gate legal build locations.
+        self.home_centers: dict = {}
+
         # ── UpdateScoreState / BuildAndSendSUB globals ───────────────────────
         # DAT_0062e460[power] — unit count; non-zero = power has live units
         self.g_UnitCount = np.zeros(7, dtype=np.int32)
@@ -560,8 +565,22 @@ class InnerGameState:
                     water_prov_ids.add(self.prov_to_id[prov])
             self.water_provinces = frozenset(water_prov_ids)
 
+            # Build home-SC map: power_idx → frozenset of province IDs.
+            # game.map.homes is a dict of power_name → [home_sc_name, ...]
+            homes = getattr(game.map, 'homes', {})
+            for power_name, home_scs in homes.items():
+                if power_name in power_to_id:
+                    p_id = power_to_id[power_name]
+                    prov_ids = frozenset(
+                        self.prov_to_id[sc.split('/')[0]]
+                        for sc in home_scs
+                        if sc.split('/')[0] in self.prov_to_id
+                    )
+                    self.home_centers[p_id] = prov_ids
+
         # Reset turn specific structures
         self.g_SCOwnership.fill(0)
+        self.g_ScOwner.fill(-1)
         self.g_OwnReachScore.fill(0)
         self.unit_info.clear()
         self.g_ProposalHistory.clear()
@@ -577,7 +596,9 @@ class InnerGameState:
                 for center in centers:
                     prov = center.split('/')[0] if '/' in center else center
                     if prov in self.prov_to_id:
-                        self.g_SCOwnership[p_id, self.prov_to_id[prov]] = 1
+                        prov_id = self.prov_to_id[prov]
+                        self.g_SCOwnership[p_id, prov_id] = 1
+                        self.g_ScOwner[prov_id] = p_id
                         
         # Register Unit Ownership
         for power_name, units in game.get_units().items():
