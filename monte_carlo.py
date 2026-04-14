@@ -3,7 +3,7 @@ import random
 import numpy as np
 from .state import InnerGameState
 from .heuristics import score_order_candidates_all_powers
-from .moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals, assign_support_order, register_convoy_fleet
+from .moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals, assign_support_order, register_convoy_fleet, build_convoy_orders
 
 # ── Order-table field indices ────────────────────────────────────────────────
 # g_OrderTable[prov, field]  mirrors  DAT_00baeda0[prov*0x1e + field*4]
@@ -833,7 +833,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
         Stubbed callees:
           ClearConvoyState()        — clears per-convoy temp state; trial reset covers it
-          BuildOrder_CTO_Ring(...)  — builds CTO ring chain; unknown decompile
+          BuildOrder_CTO_Ring(...)  — builds CTO ring chain; decompile-verified (BuildOrder_CTO.c:67)
           RegisterConvoyFleet(...)  — registers fleet candidate; unknown decompile
         """
         # ClearConvoyState() — STUB (per-trial reset at Phase 1a covers observable effect)
@@ -841,7 +841,16 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # Determine unit type at src (AMY vs FLT)
         is_army = (state.unit_info.get(src, {}).get('type') == 'AMY')
 
-        # BuildOrder_CTO_Ring(gamestate, src, dst, coast) — STUB
+        # BuildOrder_CTO_Ring(gamestate, src, dst, coast)
+        # OrderedSet_FindOrInsert(this+0x2450, &src): insert src into active-unit set.
+        # If src already present (iVar2 == iVar3 sentinel) → early return, no-op.
+        # Otherwise write node+0x20=2 (MTO ring), node+0x24=dst, node+0x28=coast.
+        # Python: g_OrderTable proxies the ordered-set node fields; guard on
+        # _F_ORDER_TYPE != 0 mirrors the "already inserted" early-return.
+        if int(state.g_OrderTable[src, _F_ORDER_TYPE]) == 0:
+            state.g_OrderTable[src, _F_ORDER_TYPE] = float(_ORDER_MTO)  # 2 = MTO ring
+            state.g_OrderTable[src, _F_DEST_PROV]  = float(dst)
+            state.g_OrderTable[src, _F_DEST_COAST] = float(coast)
 
         # ConvoyList_Insert(&DAT_00bb65a0, &dst): append dst to convoy dst list; record dst→src
         if dst not in state.g_ConvoyDstList:
@@ -1213,9 +1222,99 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 unit_prov = cand['unit_prov']
                 if int(state.g_UnitPresence[power_index, unit_prov]) == -1:
                     continue
-                # STUB: trust/convoy route check unported (needs full Phase-1e decompile).
-                state.g_OrderTable[unit_prov, _F_ORDER_TYPE] = float(_ORDER_CTO)
-                state.g_ConvoyActiveFlag[unit_prov] = 1
+
+                # Phase-1e: convoy trust/route check
+                # Ported from ProcessTurn.c lines 2463–2751.
+                army_src = unit_prov
+                dst      = cand['dst_prov']
+                coast    = 0  # coast not carried in the candidate dict
+
+                # Self-move: ordered to own province → hold and stop candidate scan.
+                if dst == army_src:
+                    state.g_OrderTable[army_src, _F_ORDER_TYPE] = float(_ORDER_HLD)
+                    consumed += 1
+                    break
+
+                # Register dst in convoy destination tracking.
+                if dst not in state.g_ConvoyDstList:
+                    state.g_ConvoyDstList.append(dst)
+
+                # Read relay province tables (interleaved lo/hi int32 pairs in C).
+                # Python stores each as a single int64; sign encodes the hi guard word.
+                #   relay3 ← g_AllyDesignation_C  (DAT_004d3610 = g_ConvoyProv3)
+                #   relay1 ← g_AllyDesignation_B  (proxy for g_ConvoyProv1, same stride)
+                #   ally_a ← g_AllyDesignation_A
+                def _relay(arr, prov):
+                    v = int(arr[prov])
+                    return v, (-1 if v < 0 else 0)
+
+                relay3_lo, relay3_hi = _relay(state.g_AllyDesignation_C, dst)
+                relay1_lo, relay1_hi = _relay(state.g_AllyDesignation_B, dst)
+                ally_a_lo, ally_a_hi = _relay(state.g_AllyDesignation_A, dst)
+
+                # Three-probe trust accumulation (last-wins; ally_a only if still zero).
+                trust_lo = trust_hi = 0
+                probes = [
+                    (relay3_lo, relay3_hi, False),
+                    (relay1_lo, relay1_hi, False),
+                    (ally_a_lo, ally_a_hi, True),
+                ]
+                for probe_lo, guard_hi, is_ally_a in probes:
+                    if guard_hi < 0:
+                        continue
+                    if is_ally_a and (trust_lo != 0 or trust_hi != 0):
+                        continue
+                    if 0 <= probe_lo < num_powers:
+                        # g_AllyHistoryCount threshold > 9; approximated as 0 (not yet decoded).
+                        history = 0
+                        if history > 9 or power_index == own_power:
+                            trust_lo = float(state.g_AllyTrustScore[power_index, probe_lo])
+                            trust_hi = int(state.g_AllyTrustScore_Hi[power_index, probe_lo])
+
+                # Route check: unreachable dst → force trust to (3, 0) (always passes gate).
+                if dst not in g_ReachableProvinces:
+                    trust_lo, trust_hi = 3, 0
+
+                # Trust gate.
+                # not_early_game: DAT_00baed68 (g_PressFlag) != 1  OR  g_NearEndGameFactor >= 2.0
+                not_early_game = (state.g_PressFlag != 1) or (state.g_NearEndGameFactor >= 2.0)
+                accepted = False
+                if not_early_game or relay1_hi < 0:
+                    # Main path: accept when trust meets threshold.
+                    if not (trust_hi < 1 and (trust_hi < 0 or trust_lo == 0)):
+                        accepted = True
+                else:
+                    # Early-game mutual-trust path.
+                    if 0 <= relay1_lo < num_powers:
+                        fwd_hi = int(state.g_AllyTrustScore_Hi[power_index, relay1_lo])
+                        fwd_lo = float(state.g_AllyTrustScore[power_index, relay1_lo])
+                        if fwd_hi >= 0 and (fwd_hi > 0 or fwd_lo > 1):
+                            rev_hi = int(state.g_AllyTrustScore_Hi[relay1_lo, power_index])
+                            rev_lo = float(state.g_AllyTrustScore[relay1_lo, power_index])
+                            if rev_hi >= 0 and (rev_hi > 0 or rev_lo > 1):
+                                accepted = True  # mutual high trust
+                    if not accepted:
+                        # Fallback: active convoy chain at dst, or pool-B scoring.
+                        if int(state.g_ConvoyActiveFlag[dst]) > 0:
+                            accepted = True
+                        elif int(state.g_SCOwnership[power_index, dst]) == 1:
+                            # Pool-B scoring sub-path (item #6; partially decoded).
+                            _score_convoy_fleet(dst, 0x7ffb)
+                            # Not accepted; continue to next candidate.
+
+                if not accepted:
+                    continue  # ClearConvoyState + RemoveOrderCandidate
+
+                # Accept: dispatch on whether dst is a coastal province.
+                # province_has_coast mirrors Albert.province_property[dst*0x14+0x214] > 0.
+                province_has_coast = any(
+                    adj in state.water_provinces
+                    for adj in state.adj_matrix.get(dst, [])
+                )
+                if not province_has_coast:
+                    _build_order_mto(army_src, dst, coast)
+                else:
+                    build_convoy_orders(state, power_index, army_src, dst)
                 consumed += 1
 
         # 1f. Support assignment ───────────────────────────────────────────────
@@ -1246,9 +1345,56 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 _move_candidate(prov)
                 _score_convoy_fleet(prov, fleet_pool_a)
 
-        # Own-power only: second convoy pass (lines 1294–1390 in decompile).
+        # Own-power only: second convoy pass (ProcessTurn.c lines 1294–1409).
+        # Iterates g_ConvoyFleetCandidates (Albert+0x4cfc); for candidates with
+        # score < 0x7e1f (Phase 1f SC-province entries) whose dst is in
+        # g_MoveList[own_power] (= state.g_ConvoyDstToSrc, populated by
+        # _build_order_mto), re-scores up to two candidates with pool-B scores
+        # then restarts the outer loop from the beginning.
+        #
+        # pool-B initial score: ppiStack_7b4 = 0x7fff - (1 + inserted_count) * 4
+        #   = 0x7ffb - 4 * inserted_count  (ppiStack_79c starts at 1 in C).
+        # Two scoring ops per found candidate (fleet-prov sub-pass + dst sub-pass),
+        # each decrementing fleet_pool_b by 1.
+        #
+        # C lookup key matching details:
+        #   ppiStack_7bc (fleet/src prov) = g_MoveList node value [4] → army_src
+        #     via state.g_ConvoyDstToSrc[dst]; score check mirrors Phase 1g check.
+        #   ppiStack_7c0 (dst prov) = *(candidate + 0x10) = candidate dst province.
+        #   LAB_004516fb = advance (skip candidate, no restart).
+        #   LAB_0045162d = second sub-pass (dst re-score, always reached).
+        #   LAB_004516f1  = restart outer loop (ppiStack_790 = first element).
         if power_index == own_power:
-            pass  # STUB: second convoy pass (pool-B scoring, decompile lines 1294+)
+            fleet_pool_b = 0x7ffb - 4 * inserted_count
+            found = True
+            while found:
+                found = False
+                for cand_score, dst in list(state.g_ConvoyFleetCandidates):
+                    if cand_score >= 0x7e1f:
+                        # LAB_004516fb: score too high (Phase 1g/1h candidate) → advance
+                        continue
+                    # g_MoveList[own_power] lookup: is dst a target of own MTO?
+                    army_src = state.g_ConvoyDstToSrc.get(dst)
+                    if army_src is None:
+                        # LAB_004516fb: no own-power MTO targets this province → advance
+                        continue
+                    # First sub-pass (lines 1347–1375): optional — score army_src candidate
+                    # if army_src passes the enemy-presence / SC-ownership gate.
+                    # Mirrors: if (-1 < g_EnemyPresence[power, fleet_prov]) and
+                    #          (g_EnemyPresence > 0 or g_SCOwnership != 0).
+                    src_enemy = int(state.g_EnemyPresence[power_index, army_src])
+                    src_sc    = int(state.g_SCOwnership[power_index, army_src])
+                    if src_enemy > 0 or (src_enemy >= 0 and src_sc != 0):
+                        _move_candidate(army_src)
+                        fleet_pool_b -= 1
+                        _score_convoy_fleet(army_src, fleet_pool_b)
+                    # LAB_0045162d: second sub-pass (lines 1378–1400) — always score dst.
+                    _move_candidate(dst)
+                    fleet_pool_b -= 1
+                    _score_convoy_fleet(dst, fleet_pool_b)
+                    # LAB_004516f1: restart outer loop from beginning.
+                    found = True
+                    break
 
         # 1h. Target-bonus scoring ────────────────────────────────────────────
         # Pass 1: MTO/CTO toward target-flagged provinces (+150 or +75).

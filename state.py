@@ -1,4 +1,112 @@
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+_POWER_NAMES_STATE = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+
+
+def _parse_retreat_order(order_str: str, power: int, prov_to_id: dict) -> dict | None:
+    """Parse a DAIDE-style retreat order string into a g_RetreatList record.
+
+    Handles:
+      "A PAR R BUR"  → order_type=7 (RTO), dst_province=BUR
+      "A PAR D"      → order_type=8 (DSB), dst_province=-1
+    """
+    parts = order_str.split()
+    if len(parts) < 2:
+        return None
+    unit_char = parts[0].upper()          # 'A' or 'F'
+    src_str   = parts[1].split('/')[0]    # strip coast
+    src_prov  = prov_to_id.get(src_str, -1)
+    if src_prov < 0:
+        return None
+    unit_type = 0 if unit_char != 'F' else 1
+
+    if len(parts) >= 3:
+        action = parts[2].upper()
+        if action == 'R' and len(parts) >= 4:
+            dst_str  = parts[3].split('/')[0]
+            dst_prov = prov_to_id.get(dst_str, -1)
+            return {
+                'src_province': src_prov, 'unit_type': unit_type, 'power': power,
+                'order_type': 7, 'dst_province': dst_prov,
+                'sup_src': -1, 'sup_dst': -1, 'endgame_flag': 0,
+            }
+        if action == 'D':
+            return {
+                'src_province': src_prov, 'unit_type': unit_type, 'power': power,
+                'order_type': 8, 'dst_province': -1,
+                'sup_src': -1, 'sup_dst': -1, 'endgame_flag': 0,
+            }
+    return None
+
+
+def _parse_movement_order(order_str: str, power: int, prov_to_id: dict) -> dict | None:
+    """Parse a DAIDE-style movement order string into a g_OrderHistList record.
+
+    Handles MTO, SUP-HLD, SUP-MTO, CVY, CTO, HLD.
+    """
+    parts = order_str.split()
+    if len(parts) < 2:
+        return None
+    unit_char = parts[0].upper()
+    src_str   = parts[1].split('/')[0]
+    src_prov  = prov_to_id.get(src_str, -1)
+    if src_prov < 0:
+        return None
+    unit_type = 0 if unit_char != 'F' else 1
+
+    rec = {
+        'src_province': src_prov, 'unit_type': unit_type, 'power': power,
+        'order_type': 1,  # HLD default
+        'dst_province': -1, 'sup_src': -1, 'sup_dst': -1, 'endgame_flag': 0,
+    }
+
+    if len(parts) == 2 or (len(parts) == 3 and parts[2].upper() == 'H'):
+        rec['order_type'] = 1  # HLD
+        return rec
+
+    if len(parts) >= 3:
+        action = parts[2].upper()
+        if action == '-':
+            # MTO or CTO
+            if len(parts) >= 4:
+                dst_str  = parts[3].split('/')[0]
+                dst_prov = prov_to_id.get(dst_str, -1)
+                rec['dst_province'] = dst_prov
+                # 'VIA' suffix → convoy transport (CTO type 6)
+                rec['order_type'] = 6 if len(parts) > 4 and parts[4].upper() == 'VIA' else 2
+            return rec
+        if action == 'S':
+            # Support: "A PAR S A BUR" (SUP-HLD) or "A PAR S A BRE - PIE" (SUP-MTO)
+            # Supported unit starts at parts[3] (skip optional unit-type token at parts[3])
+            # Diplomacy library format: "A PAR S A BUR" or "A PAR S F NTH - NWG"
+            if len(parts) >= 4:
+                sup_src_str = parts[3].split('/')[0] if parts[3].upper() not in ('A', 'F') else (parts[4].split('/')[0] if len(parts) > 4 else '')
+                # Handle "A PAR S A BUR" where parts[3]='A', parts[4]='BUR'
+                idx = 3
+                if parts[idx].upper() in ('A', 'F'):
+                    idx += 1
+                if idx < len(parts):
+                    sup_src_str = parts[idx].split('/')[0]
+                    sup_src = prov_to_id.get(sup_src_str, -1)
+                    rec['sup_src'] = sup_src
+                    # Check for '-' (SUP-MTO)
+                    if idx + 1 < len(parts) and parts[idx + 1] == '-' and idx + 2 < len(parts):
+                        sup_dst_str = parts[idx + 2].split('/')[0]
+                        rec['sup_dst'] = prov_to_id.get(sup_dst_str, -1)
+                        rec['order_type'] = 4  # SUP-MTO
+                    else:
+                        rec['order_type'] = 3  # SUP-HLD
+            return rec
+        if action == 'C':
+            # CVY: "F NTH C A LON - HOL"
+            rec['order_type'] = 5
+            return rec
+    return rec
+
 
 class InnerGameState:
     def __init__(self):
@@ -98,6 +206,11 @@ class InnerGameState:
         self.g_SupportDemand = np.zeros(256, dtype=np.int32)
         # DAT_00ba3770[province] — convoy source province score (0xffffffff = unset)
         self.g_ConvoySourceProv = np.zeros(256, dtype=np.float64)
+
+        # DAT_00633e90[province] — convoy active flag; set to 1 by BuildOrder_SUP_MTO /
+        # BuildOrder_SUP_HLD when a support order targets a convoy fleet; read in Phase 1e
+        # as a fallback acceptance gate.  Reset to 0 at the start of each trial.
+        self.g_ConvoyActiveFlag = np.zeros(256, dtype=np.int32)
 
         # DAT_00ba3b70[province] — per-province score flag; set to 1 by RegisterConvoyFleet
         # for adjacent provinces meeting the army-adj + target criteria; reset per trial.
@@ -346,6 +459,19 @@ class InnerGameState:
         # order_type: 0 or 8 = DSB, 7 = RTO.  Populated before _send_gof is called.
         self.g_retreat_order_list: list = []
 
+        # Albert+0x248c/0x2490 — g_RetreatList: ordered-set of retreat-phase order nodes.
+        # Written by ORD handler when season == SUM or AUT; cleared at retreat-phase start.
+        # Each entry: {'src_province': int, 'unit_type': int, 'power': int,
+        #              'order_type': int (2=MTO,3=SUP-HLD,4=SUP-MTO,6=CTO,7=RTO,8=DSB),
+        #              'dst_province': int, 'sup_src': int, 'sup_dst': int, 'endgame_flag': int}
+        # In Python, populated from game.order_history at synchronize_from_game time.
+        self.g_RetreatList: list = []
+
+        # Albert+0x2498/0x249c — g_OrderHistList: ordered-set of movement-phase order nodes.
+        # Written by ORD handler when season == SPR or FAL; cleared at retreat-phase start.
+        # Same node layout as g_RetreatList.  Populated from game.order_history.
+        self.g_OrderHistList: list = []
+
         # Lazy-built reverse map: province_id (int) → province name (str).
         # Built on first use from prov_to_id; cached here for all callers.
         self._id_to_prov: dict = {}
@@ -377,6 +503,8 @@ class InnerGameState:
         # ── BuildAndSendSUB globals ──────────────────────────────────────────
         # DAT_00bb65f0 — outer broadcast proposal list
         self.g_BroadcastList: list = []
+        # DAT_00baed60 — g_BroadcastList size watermark after RegisterReceivedPress
+        self.g_BroadcastListWatermark: int = 0
         # DAT_00bb6df4 — XDO proposal dedup set (compound order-seq keys;
         # approximated here as per-province set; C uses FUN_00410980/FUN_00419300)
         self.g_XdoProposalList: set = set()
@@ -400,10 +528,12 @@ class InnerGameState:
         self.g_BestOrderBackup: dict = {}
         # DAT_00baed94/98 — press deal records (earlier proposals received)
         self.g_DealList: list = []
-        # DAT_00bb65c8/cc — position analysis list; each entry:
+        # DAT_00bb65c8/cc — position analysis list (g_OwnProposalMap in C); each entry:
         #   {'tokens': list, 'token_set': frozenset, 'power_count': int}
         # Cleared each turn.  Used by RECEIVE_PROPOSAL for proposal dedup.
         self.g_PosAnalysisList: list = []
+        # DAT_00bb65d4 — accepted proposals this turn (YES results from EvaluatePress)
+        self.g_AcceptedProposals: list = []
         # DAT_00bbf638 — alliance-message BST; in Python modelled as a set of
         # power indices inserted by BuildAllianceMsg / receive_proposal.
         self.g_AllianceMsgTree: set = set()
@@ -411,6 +541,10 @@ class InnerGameState:
         # (already declared as g_AltOrderList above)
         # g_HistoryCounter > 19 gates some press sending
         self.g_HistoryCounter: int = 0
+        # DAT_00bb6e10[p*0xc] — per-power allowed-press-type std::map<ushort>.
+        # Populated by process_hst from g_AllowedPressTokenList thresholds.
+        # Key = raw DAIDE ushort token int (PCE=0x4A10, ALY=0x4A00, etc.).
+        self.g_press_history: dict = {}  # {power_int: set[int]}
 
         # ── DispatchScheduledPress globals ───────────────────────────────────
         # DAT_00bb65c0 — master scheduled press list
@@ -455,16 +589,16 @@ class InnerGameState:
         self.g_StabFlag = np.zeros((7, 7), dtype=np.int32)
         # DAT_0062b0c8[pow*21+other] — 1 = cease-fire declared between pow and other
         self.g_CeaseFire = np.zeros((7, 7), dtype=np.int32)
-        # DAT_0062be98[pow*21+other] — cooperation / non-aggression signal
-        self.g_CoopFlag = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062be98[pow*21+other] — cooperation score flag (fall/autumn season)
+        self.g_CoopScoreFlag_B = np.zeros((7, 7), dtype=np.int32)
         # DAT_0062a9e0[pow*21+other] — 1 = peace overture signal received from other
         self.g_PeaceSignal = np.zeros((7, 7), dtype=np.int32)
         # DAT_0062b7b0[pow*21+other] — non-zero = neutral/cease-fire state suppresses relation gain
         self.g_NeutralFlag = np.zeros((7, 7), dtype=np.int32)
         # DAT_0062a2f8[pow*21+other] — count of consecutive stab-penalty steps applied
         self.g_StabCounter = np.zeros((7, 7), dtype=np.int32)
-        # DAT_0062c580[pow*21+other] — third flag in stab/cease-fire/coop chain
-        self.g_SomeCoopScore = np.zeros((7, 7), dtype=np.int32)
+        # DAT_0062c580[pow*21+other] — cooperation score flag (spring/summer season)
+        self.g_CoopScoreFlag_A = np.zeros((7, 7), dtype=np.int32)
         # DAT_004d4610/14[pow*21+other] — extended trust lo/hi words (cleared for eliminated)
         self.g_TrustExtended_Lo = np.zeros((7, 7), dtype=np.int32)
         self.g_TrustExtended_Hi = np.zeros((7, 7), dtype=np.int32)
@@ -587,7 +721,10 @@ class InnerGameState:
         self.g_XdoPressSent.fill(0)
         self.g_XdoPressProposals.clear()
         self.g_PosAnalysisList.clear()
+        self.g_AcceptedProposals.clear()
         self.g_AllianceMsgTree.clear()
+        self.g_BroadcastList.clear()
+        self.g_BroadcastListWatermark = 0
 
         # Parse Ownership
         for power_name, centers in game.get_centers().items():
@@ -625,11 +762,65 @@ class InnerGameState:
         max_scs = int(np.max(self.sc_count)) if np.any(self.sc_count) else 0
         self.g_NearEndGameFactor = max_scs / 18.0 * 5.0
 
-        # Season token: SPR/SUM/FAL/AUT/WIN from phase string e.g. "S1901M"
+        # Season token: SPR/SUM/FAL/AUT/WIN from phase string e.g. "S1901M"/"F1901R"/"W1901A"
+        # Phase format: [S|F|W] + year + [M|R|A]
+        #   S+M=SPR, S+R=SUM, F+M=FAL, F+R=AUT, W+A=WIN
         phase = game.get_phase() if hasattr(game, 'get_phase') else ''
-        if isinstance(phase, str) and len(phase) >= 1:
-            _season_map = {'S': 'SPR', 'F': 'FAL', 'W': 'WIN'}
-            self.g_season = _season_map.get(phase[0], 'SPR')
+        if isinstance(phase, str) and len(phase) >= 2:
+            phase_type   = phase[-1].upper()   # 'M', 'R', or 'A'
+            season_letter = phase[0].upper()   # 'S', 'F', or 'W'
+            if phase_type == 'M':
+                self.g_season = 'SPR' if season_letter == 'S' else 'FAL'
+            elif phase_type == 'R':
+                self.g_season = 'SUM' if season_letter == 'S' else 'AUT'
+            elif phase_type == 'A':
+                self.g_season = 'WIN'
+            else:
+                self.g_season = 'SPR'
+
+        # Populate g_RetreatList and g_OrderHistList from game order history.
+        # g_RetreatList  = most-recent completed retreat phase (R suffix) orders.
+        # g_OrderHistList = most-recent completed movement phase (M suffix) orders.
+        # Both are cleared and repopulated each synchronize call (Python timing
+        # differs from C++ ORD-handler timing; we read history instead).
+        order_history = getattr(game, 'order_history', None)
+        if order_history is not None and self.prov_to_id:
+            self.g_RetreatList = []
+            self.g_OrderHistList = []
+            last_retreat_key  = None
+            last_movement_key = None
+            for ph_key in reversed(list(order_history.keys())):
+                ph_str = str(ph_key)
+                if last_retreat_key is None and ph_str.endswith('R'):
+                    last_retreat_key = ph_key
+                if last_movement_key is None and ph_str.endswith('M'):
+                    last_movement_key = ph_key
+                if last_retreat_key is not None and last_movement_key is not None:
+                    break
+
+            if last_retreat_key is not None:
+                retreat_phase_orders = order_history[last_retreat_key]
+                if isinstance(retreat_phase_orders, dict):
+                    for pwr_name, orders_list in retreat_phase_orders.items():
+                        p_id = power_to_id.get(pwr_name, -1)
+                        if p_id < 0 or not orders_list:
+                            continue
+                        for ord_str in orders_list:
+                            rec = _parse_retreat_order(ord_str, p_id, self.prov_to_id)
+                            if rec is not None:
+                                self.g_RetreatList.append(rec)
+
+            if last_movement_key is not None:
+                movement_phase_orders = order_history[last_movement_key]
+                if isinstance(movement_phase_orders, dict):
+                    for pwr_name, orders_list in movement_phase_orders.items():
+                        p_id = power_to_id.get(pwr_name, -1)
+                        if p_id < 0 or not orders_list:
+                            continue
+                        for ord_str in orders_list:
+                            rec = _parse_movement_order(ord_str, p_id, self.prov_to_id)
+                            if rec is not None:
+                                self.g_OrderHistList.append(rec)
 
     def get_unit_type(self, prov_id: int):
         return self.unit_info.get(prov_id, {}).get('type', None)

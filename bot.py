@@ -501,12 +501,10 @@ def _stabbed(state: InnerGameState) -> None:
     state.g_NeutralFlag.fill(0)
     state.g_CeaseFire.fill(0)
     state.g_PeaceSignal.fill(0)
-    # DAT_0062c580 = g_SomeCoopScore, cleared when season == SPR
     if season == 'SPR':
-        state.g_SomeCoopScore.fill(0)
-    # DAT_0062be98 = g_CoopFlag, cleared when season == FAL
+        state.g_CoopScoreFlag_A.fill(0)
     elif season == 'FAL':
-        state.g_CoopFlag.fill(0)
+        state.g_CoopScoreFlag_B.fill(0)
 
     # ── Phase 1: unit-list province-designation check (Albert+0x2450/54) ─────
     # C: for each unit node (iVar15) where unit.power==col and col!=row:
@@ -600,11 +598,11 @@ def _stabbed(state: InnerGameState) -> None:
 
             # Season-dependent bilateral CoopScore flags (C lines 399-413)
             if season in ('SUM', 'FAL'):
-                state.g_SomeCoopScore[row, col] = 1
-                state.g_SomeCoopScore[col, row] = 1
+                state.g_CoopScoreFlag_A[row, col] = 1
+                state.g_CoopScoreFlag_A[col, row] = 1
             else:  # AUT, WIN, SPR
-                state.g_CoopFlag[row, col] = 1
-                state.g_CoopFlag[col, row] = 1
+                state.g_CoopScoreFlag_B[row, col] = 1
+                state.g_CoopScoreFlag_B[col, row] = 1
 
             # Bilateral trust reset (C lines 409-413)
             state.g_AllyTrustScore[row, col] = 0
@@ -632,9 +630,9 @@ def _deviate_move(state: InnerGameState) -> None:
 
     Structure (outer loop = all 7 powers as victim perspective):
       Phase 0 – zero init pass (6 arrays, numPowers×numPowers)
-      Phase 1 – retreat-list peace signal (stub: g_RetreatList not yet in state)
+      Phase 1 – retreat-list peace signal (g_RetreatList; LAB_0043a000 → do-loop line 162)
       Phase 2 – order-history retreat stab detection (g_OrderHistList type-7 records)
-      Phase 3 – movement-order deviation stab (stub: requires g_RetreatList)
+      Phase 3 – movement-order deviation stab (g_RetreatList; LAB_0043a175 line 382)
       On stab detected → _apply_deviate_stab consequences
     """
     own_power = getattr(state, 'albert_power_idx', 0)
@@ -651,10 +649,132 @@ def _deviate_move(state: InnerGameState) -> None:
     elif season == 'FAL':
         state.g_CoopScoreFlag_B.fill(0)
 
-    # Phase 1: retreat-list peace signal (C: Albert+0x248c/0x2490 = g_RetreatList)
-    # For each retreating unit: scan adjacency; if source province owned by p AND
-    # dest owned by p → g_PeaceSignal[p*21+other]=1.
-    # TODO: implement when g_RetreatList is added to InnerGameState.
+    # Phases 1 & 3 share one do-loop over g_RetreatList (decompile line 162;
+    # Phase 3 continues at LAB_0043a175 line 382; UnitList_Advance at line 1323).
+    # Outer loop is the victim-power loop; inner loop iterates g_RetreatList.
+    retreat_list = getattr(state, 'g_RetreatList', [])
+    attack_map   = getattr(state, 'g_AttackMap', None)  # int64[pow*0x100+prov]; 2=active
+
+    for p in range(num_powers):
+        for rec in retreat_list:
+            other = int(rec.get('power', -1))
+            if not (0 <= other < num_powers) or other == p:
+                continue
+
+            src_prov = int(rec.get('src_province', -1))
+            dst_prov = int(rec.get('dst_province', -1))
+
+            # ── Phase 1: retreat-zone peace signal (LAB_0043a000 do-loop) ───────
+            # AdjacencyList_FilterByUnitType on src_prov → adjacent attack sources.
+            # For each adj: if adj designated to p AND dst_prov designated to p
+            #               → g_PeaceSignal[p, other] = 1.
+            # C uses g_AllyDesignation_A/B/C (004d0e10/1610/1e10); Python uses the
+            # available designation arrays as an approximation.
+            if 0 <= dst_prov < 256:
+                for adj in state.adj_matrix.get(src_prov, []):
+                    if adj >= 256:
+                        continue
+                    adj_in_p = (
+                        int(state.g_AllyDesignation_A[adj]) == p or
+                        int(state.g_AllyDesignation_B[adj]) == p or
+                        int(state.g_AllyDesignation_C[adj]) == p
+                    )
+                    dst_in_p = (
+                        int(state.g_AllyDesignation_A[dst_prov]) == p or
+                        int(state.g_AllyDesignation_B[dst_prov]) == p or
+                        int(state.g_AllyDesignation_C[dst_prov]) == p
+                    )
+                    if adj_in_p and dst_in_p:
+                        state.g_PeaceSignal[p, other] = 1
+                        break
+
+            # ── Phase 3: movement-order deviation stab (LAB_0043a175) ───────────
+            order_type = int(rec.get('order_type', -1))
+            sup_src    = int(rec.get('sup_src', -1))
+            sup_dst    = int(rec.get('sup_dst', -1))
+            endgame_flag = int(rec.get('endgame_flag', 0))
+
+            # End-game override: g_NearEndGameFactor >= 4.0 AND sc_count[other] > 2
+            # node+0x6b endgame_flag: if set AND in endgame path → treat as stab without trust
+            endgame_override = (
+                state.g_NearEndGameFactor >= 4.0 and
+                int(state.sc_count[other]) > 2 and
+                endgame_flag == 1
+            )
+
+            # Determine if this record constitutes a deviation into power p's territory
+            deviation = False
+
+            if order_type in (2, 6):  # MTO or CTO
+                if 0 <= dst_prov < 256:
+                    if (int(state.g_AllyDesignation_A[dst_prov]) == p or
+                            int(state.g_AllyDesignation_B[dst_prov]) == p or
+                            int(state.g_AllyDesignation_C[dst_prov]) == p):
+                        deviation = True
+                        # "Unduly pressured" sub-case (C lines ~4858-4860):
+                        # attacker already had an active attack there (AttackMap==2)
+                        # AND own power had a positive score → g_CeaseFire, not stab.
+                        if (p == own_power and attack_map is not None and
+                                0 <= other < 7 and 0 <= dst_prov < 256 and
+                                int(attack_map[other, dst_prov]) == 2):
+                            state.g_CeaseFire[p, other] = 1
+                            logger.info(
+                                "We have unduly pressured by (%d) during this turn", other)
+                            deviation = False  # cease-fire set; not a stab
+
+            elif order_type == 4:  # SUP-MTO
+                if 0 <= sup_dst < 256:
+                    if (int(state.g_AllyDesignation_A[sup_dst]) == p or
+                            int(state.g_AllyDesignation_B[sup_dst]) == p or
+                            int(state.g_AllyDesignation_C[sup_dst]) == p):
+                        deviation = True
+                elif 0 <= sup_src < 256:
+                    for adj in state.adj_matrix.get(sup_src, []):
+                        if adj >= 256:
+                            continue
+                        if (int(state.g_AllyDesignation_A[adj]) == p or
+                                int(state.g_AllyDesignation_B[adj]) == p or
+                                int(state.g_AllyDesignation_C[adj]) == p):
+                            deviation = True
+                            break
+                if deviation and p == own_power:
+                    logger.info(
+                        "Power (%d) did not make his expected support order this turn", other)
+
+            elif order_type == 3:  # SUP-HLD
+                if 0 <= sup_src < 256:
+                    for adj in state.adj_matrix.get(sup_src, []):
+                        if adj >= 256:
+                            continue
+                        if (int(state.g_AllyDesignation_A[adj]) == p or
+                                int(state.g_AllyDesignation_B[adj]) == p or
+                                int(state.g_AllyDesignation_C[adj]) == p):
+                            deviation = True
+                            break
+                if deviation and p == own_power:
+                    logger.info(
+                        "Power (%d) did not make his expected support order this turn", other)
+
+            else:
+                # Type ≠ 2/3/4/6 (e.g. RTO=7, DSB=8, HLD=1): "did not make expected move"
+                # Only log when p is our own power (research.md §Phase 3).
+                if p == own_power:
+                    logger.info(
+                        "Power (%d) did not make his expected move this turn", other)
+                # No designation check; flag as deviation only for own-power victim.
+                deviation = (p == own_power)
+
+            if not deviation:
+                continue
+
+            # Final stab/neutral marking (LAB_0043aacd):
+            # endgame_override OR trust[p][other] > 0 → stab
+            if endgame_override or int(state.g_AllyTrustScore[p, other]) > 0:
+                _apply_deviate_stab(state, other, p, own_power, num_powers, season)
+            else:
+                state.g_NeutralFlag[p, other] = 1
+                if p == own_power:
+                    logger.info("We have been attacked by (%d) during the turn", other)
 
     # Phase 2: order-history retreat stab detection (C: Albert+0x2498/0x249c = g_OrderHistList)
     # Outer loop uStack_1c0 = victim power p (0..numPowers-1).
@@ -675,7 +795,7 @@ def _deviate_move(state: InnerGameState) -> None:
             if order_type != 7:
                 continue  # phase 2 only handles retreat orders (type 7)
 
-            expected_dest = int(rec.get('expected_dest', rec.get('dst_prov', -1)))
+            expected_dest = int(rec.get('expected_dest', rec.get('dst_province', rec.get('dst_prov', -1))))
             if expected_dest < 0:
                 continue
 
@@ -698,13 +818,6 @@ def _deviate_move(state: InnerGameState) -> None:
                 # At least one direction > 0 → stab (LAB_0043bad4)
                 _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
                                     retreat_phase=True)
-
-    # Phase 3: movement-order deviation stab (C: LAB_0043aacd / LAB_0043b0b2)
-    # For each unit in g_RetreatList: compare actual order type/dest against expected
-    # ally designation. If deviation and 4.0 <= g_NearEndGameFactor → skip.
-    # trust[p][attacker] < 0 AND trust[attacker][p] < 0 → g_NeutralFlag
-    # else → _apply_deviate_stab
-    # TODO: implement when g_RetreatList is added to InnerGameState.
 
 
 def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
@@ -1744,8 +1857,8 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
         (each entry already contains 'BLD' or 'REM').
       g_build_order_list is populated by compute_win_builds (FUN_00442040) or
       compute_win_removes (FUN_0044bd40) before _send_gof is called.
-      Unit-type (AMY/FLT) in build entries is a heuristic stub pending decompile
-      of FUN_00442040 (see unchecked.md).
+      Unit-type (AMY/FLT): coastal → FLT, inland → AMY (confirmed by
+      FUN_00442040 / FUN_00461010 decompile; see docs/funcs/ComputeWinBuilds_Populate.md).
     """
     phase = getattr(state, 'g_season', 'SPR')
     own_power = getattr(state, 'albert_power_idx', 0)
@@ -1834,6 +1947,99 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
     if len(gof_seq) > 1:                     # TokenSeq_Count(local_2c) > 1
         gof_seq = _build_gof_seq(state)      # FUN_00464460 — rebuild for send
         send_dm(gof_seq)                     # SendDM
+
+
+# ── EvaluateOrderProposalsAndSendGOF ─────────────────────────────────────────
+
+def _evaluate_order_proposals_and_send_gof(
+    state: 'InnerGameState',
+    send_dm,
+) -> None:
+    """
+    Port of FUN_00457520 = EvaluateOrderProposalsAndSendGOF.
+
+    Iterates g_OwnProposalMap (Python: state.g_PosAnalysisList) looking for
+    entries whose proposed XDO orders are now all committed to the game board.
+    For each newly-satisfied entry it runs CAL_MOVE on every associated press
+    entry; if any CAL_MOVE returns truthy the GOF commit path fires
+    (NormalizeInfluenceMatrix + send_GOF), otherwise ScheduledPressDispatch is
+    called.
+
+    C layout (undefined4* offsets from BST node puVar5):
+      +8        board_satisfied byte (0 = pending, 1 = done; outer gate)
+      +0xc/0xd  inner XDO sub-list (sentinel/head)
+      +0xf      unit/province field for GameBoard_GetPowerRec
+      [0x10]    expected power-token (equality check vs board result[1])
+      [0x14]    type_flag (0 = external/received proposal)
+      +0x15/16  press-entry sub-list (used for CAL_MOVE inner loop)
+
+    Board-satisfaction rule (C lines 59–101 in the decompile):
+      bVar3 starts True.  For each XDO sub-entry, call GameBoard_GetPowerRec;
+      if result[1] == node[0x10] (board already has the expected order token)
+      → bVar3 = False.  bVar3 True after full scan ⟹ board not yet committed
+      → entry is "satisfiable" and the GOF candidate path runs.
+
+    Python model note:
+      g_PosAnalysisList entries are inserted by receive_proposal with empty
+      sub_entries / press_entries, so the inner board-check loop never executes
+      (bVar3 stays True) and the press-entry loop also never executes (bVar4
+      stays False).  Result: ScheduledPressDispatch is always called.  The full
+      sub-list population path is preserved for future fidelity.
+    """
+    from .communications import dispatch_scheduled_press, cal_move
+    from .heuristics import normalize_influence_matrix
+
+    bVar4 = False
+    board_orders = getattr(state, 'g_board_orders', {})
+
+    for entry in getattr(state, 'g_PosAnalysisList', []):
+        # C: if (*(char*)(puVar5 + 8) == '\0') — skip already-satisfied entries
+        if entry.get('board_satisfied', False) or entry.get('processed', False):
+            continue
+
+        # ── Board-satisfaction inner loop (node+0xc/0xd sub-list) ─────────────
+        # bVar3 starts True; cleared if any sub-entry is already on the board
+        # with the expected power-token (i.e. the proposed order is committed).
+        bVar3 = True
+        sub_entries   = entry.get('sub_entries', [])
+        expected_tok  = entry.get('order_type', -1)  # node[0x10]
+
+        for sub in sub_entries:
+            prov = sub.get('province', -1)
+            rec  = board_orders.get(prov, {})
+            # C: if (puVar8[1] == local_4c) bVar3 = false
+            if rec.get('order_type') == expected_tok:
+                bVar3 = False
+
+        if bVar3:
+            # C: *(undefined1*)(puVar5 + 8) = 1
+            entry['board_satisfied'] = True
+            entry['processed'] = True          # keep _fun_004117d0 in sync
+
+            # C: if (puVar5[0x14] == 0) — external/received proposal
+            if entry.get('type_flag', 0) == 0:
+                # C: clear DAT_00bb65e4 (pending-GOF linked list) — no Python
+                # equivalent; the C list is a singly-linked structure that is
+                # rebuilt each time.  Skip.
+
+                # C: SerializeOrders + RegisterProposalOrders with node's XDO
+                # sub-list.  No Python equivalent at this stage; skip.
+
+                # ── Inner press-entry loop (node+0x15/0x16 sub-list) ──────────
+                # C: FUN_00405090 + FUN_00465f60(auStack_a8, inner+0xc)
+                #    cVar7 = CAL_MOVE(param_1); if cVar7==1 → bVar4 = true
+                press_entries = entry.get('press_entries', [])
+                for pe in press_entries:
+                    tokens = pe.get('tokens', []) if isinstance(pe, dict) else list(pe)
+                    if cal_move(state, tokens):
+                        bVar4 = True
+
+    # C: if (bVar4) NormalizeInfluenceMatrix + send_GOF; else ScheduledPressDispatch
+    if bVar4:
+        normalize_influence_matrix(state)
+        _send_gof(state, send_dm)
+    else:
+        dispatch_scheduled_press(state, send_dm)
 
 
 # ── Order-sequence builder ───────────────────────────────────────────────────
@@ -2324,14 +2530,53 @@ class AlbertClient:
             for power_i in range(n_powers):
                 _send_ally_press_by_power(self.state, power_i, self._send_dm)
 
-        # ── 6. g_ProposalHistoryMap press deal matching (lines 847–1271) ─────
-        # STUB: full port awaits RECEIVE_PROPOSAL / RESPOND / g_ProposalHistoryMap.
-        # C iterates g_ProposalHistoryMap; for each entry:
-        #   received proposals (node[4] == own_power): trust ≥ 1, province
-        #     overlap ≥ 3 → SUB press via AppendList + SendAlliancePress.
-        #   sent proposals (node[6] == own_power): trust ≥ 2 for other power
-        #     → SUB press via SendAlliancePress.
-        # Proxy: iterate g_DealList (trust ≥ 3, province overlap).
+        # ── 6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass ───────────────
+        # C: BuildAndSendSUB outer loop (lines 490–569) processes g_BroadcastList
+        #    entries where received_flag==1 AND type_flag==0 AND
+        #    trial_count == g_PressProposalsCap.
+        # Python: MC already ran; treat all received entries as fully scored.
+        # After RESPOND, C calls FUN_00457520 (EvaluateOrderProposalsAndSendGOF).
+        from .communications import (
+            receive_proposal as _receive_proposal,
+            evaluate_press   as _evaluate_press,
+            respond          as _respond,
+        )
+        press_cap = getattr(self.state, 'g_PressProposalsCap', 30)
+        for _entry in list(self.state.g_BroadcastList):
+            if not _entry.get('received_flag'):
+                continue
+            if _entry.get('type_flag', 0) != 0:
+                continue
+            # Python MC already ran; treat trial_count as complete.
+            _entry['trial_count'] = press_cap
+
+            _from_tok  = _entry.get('from_power_tok', 0)
+            _from_idx  = _from_tok & 0xff
+            _prop_toks = _entry.get('sublist3', _entry.get('press_content', []))
+
+            # RECEIVE_PROPOSAL — dedup + log + PrepareAllyPressEntry
+            _receive_proposal(self.state, _from_idx, _prop_toks, self._send_dm)
+
+            # EvaluatePress = FUN_0042fc40 → YES (0x481C) or REJ (0x4814)
+            _sVar2 = _evaluate_press(self.state, _entry)
+
+            # RESPOND = albert/Source/RESPOND.c
+            _st = _entry.get('sched_time', 0)
+            _respond(
+                self.state,
+                press_list=_entry,
+                response_type=_sVar2,
+                elapsed_lo=_st & 0xFFFFFFFF,
+                elapsed_hi=(_st >> 32) & 0xFFFFFFFF,
+                send_fn=self._send_dm,
+            )
+            # C line 569: FUN_00457520 = EvaluateOrderProposalsAndSendGOF
+            _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
+
+        # ── 6b. g_DealList press deal matching (lines 847–1271, g_HistoryCounter>19)
+        # C iterates g_BroadcastList for own-proposal entries; for each entry
+        #   with trust ≥ 1/2 and province overlap, sends SUB press via
+        #   SendAlliancePress.  Proxy: iterate g_DealList (trust ≥ 3, overlap).
         if self.state.g_HistoryCounter > 19:
             from .communications import send_alliance_press
             submitted_provs = {prov for prov, _ in order_pairs}

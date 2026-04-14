@@ -1,5 +1,15 @@
 from .state import InnerGameState
 
+# DAIDE press-type token constants (raw ushort values; keys in g_PerPowerPressHistory std::map).
+# Confirmed from FUN_00418ed0 / FUN_004108a0 decompiles (2026-04-13).
+_TOK_ALY = 0x4A00
+_TOK_DMZ = 0x4A03
+_TOK_ORR = 0x4A0F
+_TOK_PCE = 0x4A10
+_TOK_AND = 0x4A01
+_TOK_VSS = 0x4A1C
+_TOK_XDO = 0x4A1F
+
 
 def _token_seq_copy(source_tokens) -> list:
     """
@@ -251,6 +261,23 @@ def process_hst(state: InnerGameState, message: str):
     if getattr(state, 'g_ForceDisablePress', 0) == 1:
         state.g_HistoryCounter = 0
 
+    # Populate per-power allowed-press-type maps (DAT_00bb6e10[p*0xc]).
+    # C: RegisterAllowedPressToken called for each token in g_AllowedPressTokenList[0..lvl-1].
+    # Threshold table (research.md §3548-3552):
+    #   lvl > 9:  adds PCE, ALY, VSS, DMZ
+    #   lvl > 19: adds XDO
+    #   lvl > 29: adds AND, ORR
+    lvl = state.g_HistoryCounter
+    allowed: set = set()
+    if lvl > 9:
+        allowed |= {_TOK_PCE, _TOK_ALY, _TOK_VSS, _TOK_DMZ}
+    if lvl > 19:
+        allowed.add(_TOK_XDO)
+    if lvl > 29:
+        allowed |= {_TOK_AND, _TOK_ORR}
+    num_powers = getattr(state, 'g_NumPowers', 7)
+    state.g_press_history = {p: set(allowed) for p in range(num_powers)}
+
 import re
 
 
@@ -339,19 +366,622 @@ def send_alliance_press(
     return entry
 
 
+# ── RegisterReceivedPress helpers ────────────────────────────────────────────
+
+def _extract_top_paren_groups(text: str) -> list:
+    """Return a list of the content strings of each top-level ( ... ) group."""
+    groups: list = []
+    depth = 0
+    start = -1
+    for i, c in enumerate(text):
+        if c == '(':
+            if depth == 0:
+                start = i + 1
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0 and start != -1:
+                groups.append(text[start:i].strip())
+                start = -1
+    return groups
+
+
+def _parse_xdo_candidates(content_str: str) -> list:
+    """
+    Extract XDO order sequences from a press content string.
+
+    Returns a list of dicts: {'tokens': [str, ...], 'type_flag': 0}.
+    type_flag=0 marks these as external (received) order candidates.
+    """
+    candidates: list = []
+    tokens = content_str.split()
+    idx = 0
+    while idx < len(tokens):
+        if tokens[idx] == 'XDO':
+            xdo_tokens = ['XDO']
+            idx += 1
+            depth = 0
+            while idx < len(tokens):
+                t = tokens[idx]
+                if t == '(':
+                    depth += 1
+                    xdo_tokens.append(t)
+                elif t == ')':
+                    if depth == 0:
+                        break
+                    depth -= 1
+                    xdo_tokens.append(t)
+                else:
+                    xdo_tokens.append(t)
+                idx += 1
+            candidates.append({'tokens': xdo_tokens, 'type_flag': 0})
+        else:
+            idx += 1
+    return candidates
+
+
+# ── EvaluatePress = FUN_0042fc40 ──────────────────────────────────────────────
+
+# ── Sub-evaluator helpers and implementations for FUN_0042c040 ────────────
+
+_POWER_NAMES = ('AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR')
+
+def _pow_idx(tok) -> "int | None":
+    """Return 0-based power index from a DAIDE power token or name string."""
+    if isinstance(tok, int):
+        if 0x4100 <= tok <= 0x4106:
+            return tok & 0x7f
+        return None
+    s = str(tok).upper()
+    return _POWER_NAMES.index(s) if s in _POWER_NAMES else None
+
+
+def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Port of FUN_0040d1a0 — PCE proposal evaluator.
+
+    Iterates the power list in the PCE proposal.
+    bVar1 = own power found, bVar2 = proposer found, bVar3 = no hostile powers.
+    Returns:
+      YES if bVar1 AND bVar2 AND bVar3
+      REJ if bVar1 AND bVar2 AND NOT bVar3
+      BWX otherwise (0x4A02 — "busy waiting", i.e. not applicable to us)
+    Hostile = g_EnemyFlag[p]==1 OR g_RelationScore[own][p] < 0.
+    """
+    _BWX = 0x4A02
+    own = state.albert_power_idx
+    bVar1 = bVar2 = False
+    bVar3 = True
+    for tok in rest:
+        p = _pow_idx(tok)
+        if p is None:
+            continue
+        if p == own:
+            bVar1 = True
+        else:
+            if p == from_power:
+                bVar2 = True
+            if int(state.g_EnemyFlag[p]) == 1 or int(state.g_RelationScore[own, p]) < 0:
+                bVar3 = False
+    if bVar1 and bVar2:
+        return 0x481C if bVar3 else 0x4814   # YES or REJ
+    return _BWX
+
+
+def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Stub for FUN_0041f090 — DMZ (demilitarise) proposal evaluator.
+
+    C: verifies that every province in the DMZ power-province list has no
+    Albert order crossing it, using a g_OrderList BST walk.  Checks ally
+    trust scores for all non-own powers in the DMZ-with list.
+    Full decompile available (_eval_dmz.c); Python port pending due to
+    g_OrderList BST struct mapping.
+    """
+    return 0x481C  # TODO: full Python port pending
+
+
+def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Stub for FUN_0041e2d0 — ALY proposal evaluator.
+
+    C: ALY (powers) VSS (powers) — 4-token proposal.  Checks:
+      bVar1 = own in ALY list, bVar2 = from_power in ALY list,
+      bVar3 = no VSS-power already in g_AllyMatrix,
+      bVar4 = no existing ally of ALY powers is in the VS list.
+    Full decompile available (_eval_aly.c); Python port pending.
+    """
+    return 0x481C  # TODO: full Python port pending
+
+
+def _cal_value(state: "InnerGameState", context_toks: list) -> int:
+    """
+    Stub for CAL_VALUE = FUN_004266b6 — XDO / negated-XDO order evaluator.
+
+    Called for XDO, NOT XDO, NOT NOT XDO, and SUB NOT XDO proposals.
+    `context_toks` may include leading NOT tokens (C's local_48 accumulator)
+    to signal negation.  CAL_VALUE.c is 10 k+ tokens; full port pending.
+    """
+    return 0x481C  # TODO: full decompile pending
+
+
+def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Port of FUN_0041ea20 — SLO (solo-win) proposal evaluator.
+
+    C: YES if own power is in the proposed SLO power list.
+    (The `local_4c == 1` guard in C tracks single-proposer; approximated
+    here by accepting whenever own power appears.)
+    """
+    own = state.albert_power_idx
+    for tok in rest:
+        if _pow_idx(tok) == own:
+            return 0x481C   # YES — someone is offering Albert the win
+    return 0x4814            # REJ
+
+
+def _eval_drw(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Port of FUN_0041ed30 — DRW (draw) proposal evaluator.
+
+    C logic (from _eval_drw.c):
+      bVar6 = True  iff  len(full_input)==2 (i.e. DRW + power_list section)
+                   AND own power is in the power list.
+      Returns YES  iff  g_draw_sent (DAT_00baed5d) != 0  AND  bVar6.
+      Otherwise REJ.
+
+    `rest` is tokens[1:] after DRW is stripped, so C's len==2 ↔ len(rest)==1.
+    """
+    # C uVar8==2 ↔ Python len(rest)==1 (DRW already consumed)
+    if len(rest) != 1:
+        return 0x4814   # REJ — not a well-formed DRW proposal
+
+    own = state.albert_power_idx
+    bVar5 = False
+    pwr_section = rest[0]
+    iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
+    for tok in iterable:
+        if _pow_idx(tok) == own:
+            bVar5 = True
+            break
+
+    if state.g_draw_sent and bVar5:
+        return 0x481C   # YES
+    return 0x4814        # REJ
+
+
+def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Port of FUN_0040d310 — NOT PCE / SUB PCE evaluator.
+
+    C logic (from _eval_not_pce.c):
+      bVar4 = (len(power_list) < 3) AND FUN_0040d0a0 returns 0
+              → approximated as: len(rest) < 3  (FUN_0040d0a0 stubbed False)
+      bVar2 = own power in list, bVar3 = from_power in list.
+      Returns:
+        YES  if bVar2 AND bVar3 AND bVar4
+        REJ  if bVar2 AND bVar3 AND NOT bVar4
+        BWX  if bVar2 AND NOT bVar3
+        YES  (default uVar8) otherwise
+    """
+    _BWX = 0x4A02
+    own = state.albert_power_idx
+    bVar4 = (len(rest) < 3)   # FUN_0040d0a0 stub: assume returns 0
+    bVar2 = bVar3 = False
+    for tok in rest:
+        p = _pow_idx(tok)
+        if p is None:
+            continue
+        if p == own:
+            bVar2 = True
+        elif p == from_power:
+            bVar3 = True
+    if bVar2 and bVar3:
+        return 0x481C if bVar4 else 0x4814   # YES or REJ
+    if bVar2:
+        return _BWX   # own found but proposer not in list
+    return 0x481C     # default YES (Albert not named → not applicable)
+
+
+def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+    """
+    Stub for FUN_0041f5a0 — NOT DMZ / SUB DMZ evaluator.
+
+    C: complex multi-BST walk comparing current vs. previous board ownership
+    (DAT_00bb7028/bb6f28) with ally trust checks.
+    Full decompile available (_eval_not_dmz.c); Python port pending.
+    """
+    return 0x481C  # TODO: full Python port pending
+
+
+def _eval_sub_xdo(rest: list) -> int:
+    """
+    Port of FUN_0040d450 — SUB XDO evaluator (no `this` / no ECX).
+
+    C (_eval_sub_xdo.c): unconditionally sets *param_1 = REJ and returns.
+    Plain cdecl, not __thiscall.
+    """
+    return 0x4814   # REJ — always
+
+
+def _eval_single_xdo(state: "InnerGameState", tokens: list,
+                     from_power: int = 0) -> int:
+    """
+    Port of FUN_0042c040 — single-proposal type dispatcher.
+
+    Dispatches to type-specific sub-evaluators based on the first token
+    of the proposal list.  Returns YES (0x481C), REJ (0x4814), or
+    HUH (0x4806).
+
+    C dispatch table (from _eval_single_xdo.c):
+      PCE              → _eval_pce        (FUN_0040d1a0)
+      DMZ              → _eval_dmz        (FUN_0041f090)
+      ALY              → _eval_aly        (FUN_0041e2d0)
+      XDO              → _cal_value       (CAL_VALUE / FUN_004266b6)
+      SLO              → _eval_slo        (FUN_0041ea20)
+      DRW              → _eval_drw        (FUN_0041ed30)
+      NOT PCE          → _eval_not_pce    (FUN_0040d310)
+      NOT DMZ          → _eval_not_dmz    (FUN_0041f5a0)
+      NOT XDO          → _cal_value       (local_48 = [NOT, …] passed as ctx)
+      NOT NOT XDO      → _cal_value       (local_48 = [NOT, NOT, …])
+      SUB PCE          → _eval_not_pce    (FUN_0040d310, same as NOT PCE)
+      SUB DMZ          → _eval_not_dmz    (FUN_0041f5a0, same as NOT DMZ)
+      SUB XDO          → _eval_sub_xdo    (FUN_0040d450, no `this`)
+      SUB NOT XDO      → _cal_value       (local_48 context)
+      else             → HUH
+
+    DAT_004c6e14 = 0x4A26 = SUB token (confirmed via research.md §2585).
+    """
+    _YES, _REJ, _HUH = 0x481C, 0x4814, 0x4806
+    _PCE, _DMZ, _ALY = 0x4A10, 0x4A03, 0x4A00
+    _XDO, _SLO, _DRW = 0x4A1F, 0x4816, 0x4801
+    _NOT, _SUB        = 0x480D, 0x4A26
+
+    _NAME = {
+        _PCE: 'PCE', _DMZ: 'DMZ', _ALY: 'ALY',
+        _XDO: 'XDO', _SLO: 'SLO', _DRW: 'DRW',
+        _NOT: 'NOT', _SUB: 'SUB',
+    }
+
+    def _teq(tok, val):
+        return tok == val or str(tok).upper() == _NAME.get(val, '')
+
+    if not tokens:
+        return _HUH
+
+    t0 = tokens[0]
+    rest = tokens[1:]
+
+    if _teq(t0, _PCE):
+        return _eval_pce(state, rest, from_power)
+
+    if _teq(t0, _DMZ):
+        return _eval_dmz(state, rest, from_power)
+
+    if _teq(t0, _ALY):
+        return _eval_aly(state, rest, from_power)
+
+    if _teq(t0, _XDO):
+        return _cal_value(state, rest)
+
+    if _teq(t0, _SLO):
+        return _eval_slo(state, rest, from_power)
+
+    if _teq(t0, _DRW):
+        return _eval_drw(state, rest, from_power)
+
+    if _teq(t0, _NOT):
+        if not rest:
+            return _HUH
+        t1 = rest[0]
+        rest2 = rest[1:]
+        if _teq(t1, _PCE):
+            return _eval_not_pce(state, rest2, from_power)
+        if _teq(t1, _DMZ):
+            return _eval_not_dmz(state, rest2, from_power)
+        if _teq(t1, _XDO):
+            return _cal_value(state, [_NOT] + rest)
+        if _teq(t1, _NOT):
+            if not rest2 or not _teq(rest2[0], _XDO):
+                return _HUH
+            return _cal_value(state, [_NOT, _NOT] + rest2)
+        return _HUH
+
+    if _teq(t0, _SUB):
+        # SUB = DAT_004c6e14 = 0x4A26; C logs the message before dispatching
+        if not rest:
+            return _HUH
+        t1 = rest[0]
+        rest2 = rest[1:]
+        if _teq(t1, _PCE):
+            return _eval_not_pce(state, rest2, from_power)   # same as NOT PCE
+        if _teq(t1, _DMZ):
+            return _eval_not_dmz(state, rest2, from_power)   # same as NOT DMZ
+        if _teq(t1, _XDO):
+            return _eval_sub_xdo(rest2)                       # FUN_0040d450
+        if _teq(t1, _NOT):
+            if not rest2 or not _teq(rest2[0], _XDO):
+                return _HUH
+            return _cal_value(state, [_NOT] + rest2)
+        return _HUH
+
+    return _HUH
+
+
+def evaluate_press(state: "InnerGameState", entry: dict) -> int:
+    """
+    Port of EvaluatePress = FUN_0042fc40.
+
+    Evaluates an AND / ORR / single-XDO press proposal and returns
+    YES (0x481C) or REJ (0x4814).  The result is passed directly to
+    RESPOND as param_2.
+
+    C flow (decompiled.txt FUN_0042fc40):
+      - Clears DAT_00bb65d8 scratch list at entry.
+      - Gets first token of press content:
+          AND  → count XDO sub-proposals; if count > 1 call CAL_VALUE
+                 (FUN_004266b6) for combined score; then evaluate each
+                 sub-proposal individually via FUN_0042c040.
+                 All must pass → YES; any fail → REJ + clear accepted list.
+          ORR  → evaluate each sub-proposal; first YES wins.
+                 Random 51% gate: if scratch non-empty, may replace stored
+                 accepted proposal with new YES one.
+          else → single proposal: call FUN_0042c040 directly.
+      - On YES: registers accepted tokens in DAT_00bb65d4 (g_AcceptedProposals).
+
+    CAL_VALUE (FUN_004266b6) stub: returns YES unconditionally.
+    FUN_0042c040 = _eval_single_xdo: type dispatcher (PCE/DMZ/ALY/XDO/SLO/DRW/NOT/SUB).
+    """
+    import random as _random
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    _YES, _REJ = 0x481C, 0x4814
+    _AND, _ORR, _XDO = 0x4A01, 0x4A0F, 0x4A1F
+
+    # C: clears DAT_00bb65d8 (scratch list) at start of each call.
+    # Python: use local scratch; nothing to clear on state.
+
+    press = entry.get('sublist3', entry.get('press_content', []))
+    order_cands = entry.get('order_candidates', [])
+
+    if not press and not order_cands:
+        return _REJ
+
+    # Extract from_power index for sub-evaluator calls.
+    _from_tok = entry.get('from_power_tok', 0)
+    _from_pow = (_from_tok & 0x7f) if isinstance(_from_tok, int) and _from_tok >= 0x4100 else 0
+
+    # Identify first token (may be string like 'AND' or int like 0x4A01)
+    first = press[0] if press else None
+    first_is_and = (first == _AND or str(first).upper() == 'AND')
+    first_is_orr = (first == _ORR or str(first).upper() == 'ORR')
+
+    if first_is_and:
+        # ── AND path ─────────────────────────────────────────────────────
+        # Count XDO sub-proposals among order_cands.
+        xdo_count = sum(
+            1 for c in order_cands
+            if (c.get('tokens') or [''])[0] in (_XDO, 'XDO')
+        )
+
+        result_ok = True
+
+        # CAL_VALUE: stub → always YES for multi-XDO compound proposals.
+        # C: if (1 < local_80): psVar5 = CAL_VALUE(this, &uStack_7a)
+        if xdo_count > 1:
+            pass  # result_ok stays True
+
+        if result_ok:
+            for cand in order_cands:
+                tok = cand.get('tokens', [])
+                r = _eval_single_xdo(state, tok, _from_pow)
+                if r == _YES:
+                    # C: FUN_00419300(&DAT_00bb65d4, apvStack_2c, local_6c)
+                    state.g_AcceptedProposals.append(tok)
+                else:
+                    result_ok = False
+
+        if not result_ok:
+            state.g_AcceptedProposals.clear()  # C: cleanup loop on failure
+            _log.debug("evaluate_press: AND proposal rejected")
+            return _REJ
+
+        _log.debug("evaluate_press: AND proposal accepted")
+        return _YES
+
+    elif first_is_orr:
+        # ── ORR path ─────────────────────────────────────────────────────
+        # DAT_00bb65dc == 0 check: scratch list empty at start of call.
+        scratch: list = []   # DAT_00bb65d8 analog
+        scratch_count = 0    # DAT_00bb65dc analog
+
+        for cand in order_cands:
+            tok = cand.get('tokens', [])
+            r = _eval_single_xdo(state, tok, _from_pow)
+            if r == _YES:
+                if scratch_count == 0:
+                    scratch = tok
+                    scratch_count = 1
+                else:
+                    # C: (rand()/0x17)%100 < 0x33  → 51% keep, 49% replace
+                    rv = _random.randint(0, 0x7FFF)
+                    if (rv // 23) % 100 >= 0x33:
+                        scratch = tok
+                # C: FUN_00419300(&DAT_00bb65d4, ppvVar4, local_6c)
+                state.g_AcceptedProposals.append(tok)
+
+        if scratch_count > 0:
+            _log.debug("evaluate_press: ORR proposal accepted")
+            return _YES
+
+        _log.debug("evaluate_press: ORR proposal rejected")
+        return _REJ
+
+    else:
+        # ── Single proposal path ─────────────────────────────────────────
+        tok = order_cands[0].get('tokens', press) if order_cands else press
+        r = _eval_single_xdo(state, tok, _from_pow)
+        if r == _YES:
+            # C: FUN_00419300(&DAT_00bb65d4, apvStack_4c, &stack0x00000008)
+            state.g_AcceptedProposals.append(tok)
+            _log.debug("evaluate_press: single proposal accepted")
+        else:
+            _log.debug("evaluate_press: single proposal rejected")
+        return r
+
+
+# ── RegisterReceivedPress = FUN_00431310 ─────────────────────────────────────
+
+def register_received_press(
+    state: "InnerGameState",
+    press_content: list,
+    from_power_tok: int,
+    to_power_toks: list,
+    flag: int = 0,
+) -> None:
+    """
+    Port of RegisterReceivedPress = FUN_00431310.
+
+    Creates g_BroadcastList entries for an incoming FRM press proposal so that
+    BuildAndSendSUB can process them via RECEIVE_PROPOSAL → EvaluatePress → RESPOND.
+
+    C parameters:
+      param_1..4  (list)  = press content token list (XDO/PRP body)
+      param_5     (ushort) = from-power token (0x4100 | power_idx)
+      param_6..9  (list)  = to-power token list
+      param_11    (BST*)  = order-candidates map (heap-allocated, freed at end)
+      param_12    (byte)  = flag
+
+    C flow:
+      1. Build local power-set map from from-power + to-powers.
+      2. Build SUB token prefix; copy content, from-power, to-powers into locals.
+      3. FUN_00426140 — alliance-partner gate (stub: always proceed).
+      4. local_134 = __time64(NULL) — capture current wall-clock time.
+      5. Two-pass split of param_11 by type_flag:
+           Pass 1: type_flag==0 → local_1e4; call BuildHostilityRecord + SendAlliancePress.
+           Pass 2: re-iterate, same split; watermark = size before pass-1 insert.
+      6. DAT_00baed60 = final g_BroadcastList size (watermark).
+
+    Python compression:
+      - param_11 (BST of order candidates) is replaced by _parse_xdo_candidates()
+        applied to the press content string.
+      - BuildHostilityRecord absorbed (fields embedded in entry dict).
+      - Two C passes produce two BroadcastList entries; both have received_flag=True.
+      - received_flag is set explicitly here (in C it is set by FUN_0042e450, the
+        MSVC RB-tree node allocator inside SendAlliancePress).
+
+    The BroadcastList entry layout matches what RESPOND expects as press_list:
+      sublist1 = [from_power_tok]
+      sublist2 = to_power_toks
+      sublist3 = press_content  (XDO/PRP tokens; used by receive_proposal + respond)
+
+    Callees (C):
+      FUN_00422960   AllianceRecord constructor      → absorbed
+      FUN_00426140   alliance-partner gate           → stub: always proceed
+      BuildHostilityRecord                           → absorbed into entry dict
+      SendAlliancePress                              → send_alliance_press()
+      DestroyAllianceRecord                          → absorbed
+      FUN_0041abc0   BST destructor for param_11    → absorbed (_free / Python GC)
+    """
+    import time as _time
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    sched_time = int(_time.time())  # C: local_134 = __time64(NULL)
+
+    # Parse order candidates from press content (replaces the BST param_11).
+    content_str = ' '.join(str(t) for t in press_content)
+    order_candidates = _parse_xdo_candidates(content_str)
+    # type_flag==0 = external/received candidates (both passes send these)
+    external_cands = [c for c in order_candidates if c.get('type_flag', 0) == 0]
+
+    # C: local_1f8 = DAT_00bb65f4  (g_BroadcastList size before first insert)
+    size_before = len(state.g_BroadcastList)
+
+    # ── Pass 1: type_flag==0 entries, watermark=None ──────────────────────
+    entry1: dict = {
+        'received_flag':   True,          # set by FUN_0042e450 in C
+        'type_flag':       0,             # external / received
+        'trial_count':     0,             # incremented by BuildAndSendSUB outer loop
+        'sched_time':      sched_time,    # node[0x2e/0x2f] passed to RESPOND
+        'watermark':       None,          # local_150 = 0xffffffff first pass
+        'from_power_tok':  from_power_tok,
+        'sublist1':        [from_power_tok],
+        'sublist2':        list(to_power_toks),
+        'sublist3':        list(press_content),
+        'order_candidates': list(external_cands),
+    }
+    send_alliance_press(state, key=size_before, entry_data=entry1)
+    _log.debug(
+        "register_received_press: pass-1 entry from power_tok=0x%x, content=%s",
+        from_power_tok, press_content,
+    )
+
+    # ── Pass 2: same candidates, watermark = size before pass-1 ──────────
+    # C: local_150 = local_1f8; local_e4[0] = DAT_00bb65f4 (updated size)
+    size_after = len(state.g_BroadcastList)
+    entry2: dict = dict(entry1)
+    entry2['watermark'] = size_before   # local_150 = local_1f8
+    entry2['flag'] = flag               # local_13c = param_12
+    entry2['order_candidates'] = list(external_cands)  # doubled in C; same here
+    send_alliance_press(state, key=size_after, entry_data=entry2)
+
+    # C: DAT_00baed60 = DAT_00bb65f4  (final g_BroadcastList size watermark)
+    state.g_BroadcastListWatermark = len(state.g_BroadcastList)
+    _log.debug(
+        "register_received_press: watermark=%d", state.g_BroadcastListWatermark
+    )
+
+
 def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
     """
     Port of process_frm and FRIENDLY logic (FUN_0042dc40).
     Updates g_AllyMatrix and sets relation tracking arrays by unpacking FRM envelopes.
+    Also calls register_received_press (FUN_00431310) for incoming XDO/PRP proposals.
     """
     power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
-    
+
     sender_upper = sender.upper()
     if sender_upper not in power_names:
         return
-        
+
     sender_id = power_names.index(sender_upper)
-    
+
+    # ── XDO / PRP press proposal → register for BuildAndSendSUB processing ──
+    # C: FUN_00431310 called when FRM contains a press proposal (XDO/PRP body).
+    # Parse the FRM envelope: FRM ( from ) ( to... ) ( press_content )
+    if 'XDO' in sub_message or 'PRP' in sub_message:
+        groups = _extract_top_paren_groups(sub_message)
+        # groups[0] = from_power names, groups[1] = to_power names, groups[2] = content
+        if len(groups) >= 3:
+            to_str = groups[1]
+            content_str = groups[2]
+        elif len(groups) >= 2:
+            to_str = groups[0]   # FRM keyword stripped; fallback
+            content_str = groups[1]
+        else:
+            to_str = ''
+            content_str = groups[0] if groups else sub_message
+
+        # Build to-power token list
+        to_power_toks = [
+            power_names.index(p) | 0x4100
+            for p in to_str.upper().split()
+            if p in power_names
+        ]
+        # from-power token (sender already parsed above)
+        from_power_tok = sender_id | 0x4100
+        # press content as a token list (strings for Python string-mode press)
+        press_tokens = content_str.split()
+
+        register_received_press(
+            state,
+            press_content=press_tokens,
+            from_power_tok=from_power_tok,
+            to_power_toks=to_power_toks,
+        )
+
     # Process explicit DAIDE ALY proposals/confirmations.
     if "ALY (" in sub_message:
         match = re.search(r'ALY \((.*?)\)', sub_message)
@@ -365,7 +995,7 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                         # Establish explicit bilateral bounds
                         state.g_AllyMatrix[sender_id, ally_id] = 1
                         state.g_AllyMatrix[ally_id, sender_id] = 1
-                        
+
                         # Increment trust progressively
                         state.g_AllyTrustScore[sender_id, ally_id] += 1.0
                         state.g_AllyTrustScore[ally_id, sender_id] += 1.0
@@ -383,7 +1013,7 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                         # Break alliance mapping forcefully
                         state.g_AllyMatrix[sender_id, ally_id] = 0
                         state.g_AllyMatrix[ally_id, sender_id] = 0
-                        
+
                         # Degrade trust aggressively on rejections
                         current_trust = state.g_AllyTrustScore[sender_id, ally_id]
                         state.g_AllyTrustScore[sender_id, ally_id] = max(0.0, current_trust - 2.0)
@@ -587,25 +1217,28 @@ def _press_gate_check(state: InnerGameState, power: int) -> bool:
 
 def _press_list_count(state: InnerGameState, power: int) -> int:
     """
-    Stub for DAT_00bb6e14[power * 3].
-    Returns the current count field of the press-history list for power.
-    UNCHECKED — FUN_004108a0 / DAT_00bb6e14 not yet verified.
+    Port of DAT_00bb6e14[power * 3] — _Mysize field of the per-power press std::map.
+    Returns the number of allowed press tokens registered for power.
+    Confirmed: structure is std::map<ushort> (RB-tree); key = raw DAIDE token ushort.
+    See FUN_00418ed0 / FUN_004108a0 decompiles (2026-04-13).
     """
-    history = getattr(state, 'g_press_history', {})
-    return len(history.get(power, []))
+    return len(state.g_press_history.get(power, set()))
 
 
-def _find_press_token(state: InnerGameState, power: int, token_type: str) -> object:
+def _find_press_token(state: InnerGameState, power: int, token: int) -> object:
     """
-    Stub for FUN_004108a0(&DAT_00bb6e10 + power * 0xc, local_8, &TOKEN).
-    Searches the press-history list for `power` for an entry of `token_type`.
-    Returns the found entry, or None.
-    UNCHECKED — FUN_004108a0 not yet verified.
+    Port of FUN_004108a0(&DAT_00bb6e10 + power * 0xc, local_scratch, &token).
+    Searches the per-power allowed-press std::map for raw ushort token value.
+    Returns a truthy sentinel if found, None if not (models found_node != _Myhead).
+
+    Confirmed from FUN_004108a0 decompile (2026-04-13):
+      - lower_bound RB-tree traversal; key at node+0x0c as ushort
+      - arg2 dereferenced as *arg2 (ushort value, not pointer comparison)
+      - not-found → param_1[1] = _Myhead sentinel
+
+    Pass integer DAIDE token constants: PCE=_TOK_PCE, ALY=_TOK_ALY, etc.
     """
-    for entry in getattr(state, 'g_press_history', {}).get(power, []):
-        if entry.get('type') == token_type:
-            return entry
-    return None
+    return token if token in state.g_press_history.get(power, set()) else None
 
 
 def _press_token_found(result: object, state: InnerGameState, power: int) -> bool:
@@ -702,7 +1335,7 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
     # Inner check: PCE entry must exist in press history for this power
     #   this_00 = FUN_004108a0(press_list_base, apuStack_4c, &PCE)
     #   uVar5   = FUN_00401050(this_00, ppuVar6)  → non-zero if found
-    pce_result = _find_press_token(state, power, 'PCE')
+    pce_result = _find_press_token(state, power, _TOK_PCE)
     if not _press_token_found(pce_result, state, power):
         return False
 
@@ -1036,7 +1669,7 @@ def _execute_then_action(state: InnerGameState, power: int) -> None:
     #    will never fire, but the call sequence is preserved for fidelity.
     if state.g_HistoryCounter > 9:
         saved_count = _press_list_count(state, power)           # DAT_00bb6e14[power * 3]
-        pce_result  = _find_press_token(state, power, 'PCE')    # FUN_004108a0(..., &PCE)
+        pce_result  = _find_press_token(state, power, _TOK_PCE)  # FUN_004108a0(..., &PCE)
         # puVar2[1] (count field of result) vs iVar5 (saved count)
         pce_count_after = len(pce_result) if isinstance(pce_result, list) else saved_count
         if pce_count_after != saved_count:
@@ -1068,9 +1701,9 @@ def _execute_then_action(state: InnerGameState, power: int) -> None:
 
     # 4. ALY + VSS check (history > 9).
     if state.g_HistoryCounter > 9:
-        aly_result = _find_press_token(state, power, 'ALY')     # FUN_004108a0(..., &ALY)
+        aly_result = _find_press_token(state, power, _TOK_ALY)   # FUN_004108a0(..., &ALY)
         if _press_token_found(aly_result, state, power):         # FUN_00401050
-            vss_result = _find_press_token(state, power, 'VSS') # FUN_004108a0(..., &VSS)
+            vss_result = _find_press_token(state, power, _TOK_VSS)  # FUN_004108a0(..., &VSS)
             if _press_token_found(vss_result, state, power):
                 action_taken = _execute_aly_vss(state, power)   # FUN_004325a0
 
@@ -1080,7 +1713,7 @@ def _execute_then_action(state: InnerGameState, power: int) -> None:
 
     # 6. DMZ check: only if no action yet and not near end-game.
     if not action_taken and state.g_NearEndGameFactor < 3.0:
-        dmz_result = _find_press_token(state, power, 'DMZ')     # FUN_004108a0(..., &DMZ)
+        dmz_result = _find_press_token(state, power, _TOK_DMZ)   # FUN_004108a0(..., &DMZ)
         if _press_token_found(dmz_result, state, power):
             # Extra condition (lines 80-83 of decompile):
             #   DAT_00baed68 == 0  OR  g_DiplomacyStateB[power] > 1
@@ -1099,7 +1732,7 @@ def _execute_then_action(state: InnerGameState, power: int) -> None:
         return
 
     # 9. XDO check.
-    xdo_result = _find_press_token(state, power, 'XDO')         # FUN_004108a0(..., &XDO)
+    xdo_result = _find_press_token(state, power, _TOK_XDO)       # FUN_004108a0(..., &XDO)
     if not _press_token_found(xdo_result, state, power):         # FUN_00401050
         return
 

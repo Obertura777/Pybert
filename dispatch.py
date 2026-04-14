@@ -10,6 +10,8 @@ _ERR_POWER_MISMATCH   = -0x14c09   # unit belongs to a different power
 _ERR_NO_TARGET        = -0x186aa   # MTO / CTO / CVY missing destination
 _ERR_ADJACENCY        = -0x186aa   # FUN_00460b30 adjacency gate failed
 _ERR_NO_SUP_UNIT      = -0x186b4   # SUP missing target unit
+_ERR_CVY_NO_ARMY      = -0x186d7   # CVY: army not in orders / wrong type
+_ERR_CVY_REACH        = -0x186e1   # CVY: FUN_004619f0 convoy-reachability failed
 _ERR_UNKNOWN_ORDER    = -0x15f91   # order type not HLD/MTO/SUP/CTO/CVY
 
 # Error codes for FUN_0041d360 (check_order_alliance)
@@ -364,15 +366,14 @@ def validate_and_dispatch_order(
               SUP-HLD → dispatch_single_order.
         CTO → target_dest present; FUN_004619f0 (stubbed True);
               check_order_alliance → dispatch_single_order.
-        CVY → target_dest present; FUN_004619f0 (stubbed True);
-              check_order_alliance → dispatch_single_order.
+        CVY → target_unit (army) validated; FUN_004619f0 convoy reachability
+              (army prov → dest); check_order_alliance → dispatch_single_order.
         other → return _ERR_UNKNOWN_ORDER  (C: return -0x15f91).
 
     Returns 0 on success, negative error code on failure.
 
     Unchecked callees absorbed here:
-      FUN_004619f0  convoy reachability     → ported as is_convoy_reachable (SUP-MTO + CTO);
-                                              CVY retains stub-True (army prov not in order dict)
+      FUN_004619f0  convoy reachability     → ported as is_convoy_reachable (SUP-MTO + CTO + CVY)
     """
     order_type: str = order_seq.get('type', '')
     unit_str:   str = order_seq.get('unit', '')
@@ -508,23 +509,37 @@ def validate_and_dispatch_order(
         return 0
 
     if order_type == 'CVY':
-        # C lines 543–668: convoy fleet validation, FUN_004619f0.
-        # FUN_004619f0 is called with the fleet's unit_data and target_dest.
-        # Since the fleet is type 'F' (not 'A'), is_convoy_reachable returns True
-        # only via the IsLegalMove (direct adjacency) path; fleet cannot be an army
-        # convoy subject so step 2 immediately exits False.  The net effect: the
-        # check only passes when the fleet can directly reach dest_prov, which is
-        # not the intended semantics for CVY (fleets convoy armies to land provinces
-        # they cannot themselves enter).  Per decompile, the check here uses the
-        # ARMY's unit_data rather than the fleet's — but the army's province is not
-        # encoded in the CVY order_seq dict.  Until FUN_00422a90 is fully decompiled,
-        # retain the stub-True behaviour for CVY to avoid rejecting valid orders.
+        # C lines 461–600: fleet CVY validation (FUN_00422a90 / decompiled.txt).
+        # Ordering unit (element 0) = fleet; element 2 = army being conveyed.
+        # FUN_004619f0 is called with the ARMY's unit_data and dest province
+        # (decompiled.txt line 547); returns -0x186e1 if reachability fails.
         target_dest = order_seq.get('target_dest', '')
         if not target_dest:
             return _ERR_NO_TARGET
-        # FUN_004619f0: stubbed True for CVY (see comment above).
         dest_prov_id = state.prov_to_id.get(target_dest.split('/')[0].upper())
-        dest_power   = state.get_unit_power(dest_prov_id) if dest_prov_id is not None else -1
+        # Extract army from target_unit (e.g. "A BRE").
+        # C: GetSubList(local_6c, .., 2) → army sublist; GetListElement(.., 2) = province id.
+        cvy_army_str  = order_seq.get('target_unit', '')
+        cvy_parts     = cvy_army_str.split()
+        army_prov_id  = None
+        if len(cvy_parts) >= 2:
+            army_prov_id = state.prov_to_id.get(cvy_parts[1].split('/')[0].upper())
+        # C: AMY == unit.type check + FUN_004619f0 convoy-reachability.
+        if dest_prov_id is not None and army_prov_id is not None:
+            army_unit = state.unit_info.get(army_prov_id)
+            if army_unit is None or army_unit.get('type') != 'A':
+                logger.debug(
+                    "validate_and_dispatch_order: CVY army not found or not AMY at %r",
+                    cvy_parts[1] if len(cvy_parts) >= 2 else cvy_army_str,
+                )
+                return _ERR_CVY_NO_ARMY
+            if not is_convoy_reachable(state, army_prov_id, 'A', dest_prov_id):
+                logger.debug(
+                    "validate_and_dispatch_order: CVY convoy-reachability failed "
+                    "%r → %r", cvy_parts[1] if len(cvy_parts) >= 2 else '?', target_dest,
+                )
+                return _ERR_CVY_REACH
+        dest_power = state.get_unit_power(dest_prov_id) if dest_prov_id is not None else -1
         if dest_prov_id is not None:
             rc = check_order_alliance(state, own_power_idx, dest_prov_id,
                                       own_power_idx, dest_power)
