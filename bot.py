@@ -177,16 +177,27 @@ def _move_analysis(state: InnerGameState) -> None:
 
                 if order_type in (_ORDER_MTO, _ORDER_CTO):      # C types 2 and 6
                     if 0 <= dest < 256:
+                        # B-gate (C lines 287-296): bcd0 bump is gated on
+                        # `g_AllyDesignation_B[dest] != b` — i.e. the move is
+                        # NOT a consolidation into a province already
+                        # B-designated for the attacker at start-of-season.
+                        # Before 2026-04-14 this gate was missing → consolidation
+                        # moves were over-counted as aggressive.
+                        desig_b = (int(state.g_AllyDesignation_B[dest])
+                                   if hasattr(state, 'g_AllyDesignation_B') else -1)
+                        b_gate_open = (desig_b != b)  # B.lo != attacker
                         if reach[dest] == 2:
                             # b moves into a-reachable contested province → aggressive
-                            bcd0[a, b] += 1
+                            if b_gate_open:
+                                bcd0[a, b] += 1
+                                for adj2 in state.adj_matrix.get(dest, []):
+                                    if prov_power[adj2] == a:
+                                        af00[a, b] += 1
                             reach[dest] = 3
-                            for adj2 in state.adj_matrix.get(dest, []):
-                                if prov_power[adj2] == a:
-                                    af00[a, b] += 1
                         elif reach[dest] == 3:
                             # b was moving to already-upgraded province → un-count
-                            bcd0[a, b] -= 1
+                            if b_gate_open:
+                                bcd0[a, b] -= 1
                             reach[dest] = 2
                 elif order_type == _ORDER_SUP_MTO:              # C type 4
                     # Only count if b is NOT supporting an a-unit
@@ -1143,6 +1154,15 @@ def _hostility(state: InnerGameState) -> None:
                     state.g_RelationScore[own_power, p] = 0
                     state.g_RelationScore[p, own_power] = 0
                 logger.debug("HOSTILITY: attempting peace with power %d", p)
+
+    # Block 6 — UpdateRelationHistory (HOSTILITY.c:510-512).
+    # C: `if ((DAT_00baed68 == '\0') || (3.0 < _g_NearEndGameFactor))`
+    # i.e., press off OR near-end-game phase. Added 2026-04-14 — was previously
+    # missing; docstring mistakenly claimed it was "embedded in friendly()".
+    near_end = float(getattr(state, 'g_NearEndGameFactor', 0.0))
+    if (not press_on) or near_end > 3.0:
+        from albert.communications import _update_relation_history
+        _update_relation_history(state)
 
 
 def _post_friendly_update(state: InnerGameState) -> None:
@@ -2528,7 +2548,7 @@ class AlbertClient:
         # which is always true here after order submission.
         if self.state.g_HistoryCounter > 0:
             for power_i in range(n_powers):
-                _send_ally_press_by_power(self.state, power_i, self._send_dm)
+                _send_ally_press_by_power(self.state, power_i)
 
         # ── 6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass ───────────────
         # C: BuildAndSendSUB outer loop (lines 490–569) processes g_BroadcastList

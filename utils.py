@@ -367,7 +367,7 @@ def dipnet_unit(unit: List[str]):
         return unit_type + " " + loc
 
 
-def daidefy_unit(unit: List[str], game=None, power=None) -> str:
+def daidefy_unit(unit: List[str], game: Game | None = None, power=None) -> str:
     """Converts DipNet-style unit to DAIDE-style unit
 
     E.g. (for initial game state)
@@ -389,6 +389,7 @@ def daidefy_unit(unit: List[str], game=None, power=None) -> str:
     )
 
     if power is None:
+        assert game is not None, "daidefy_unit requires game when power is None"
         pow = get_unit_power(game, loc_for_unit_power)
     else:
         pow = power
@@ -404,6 +405,7 @@ def get_unit_power(game: Game, unit: str) -> str:
     for pp, locs in loc_dict.items():
         if loc in locs:
             return pp[:3]
+    return ""
 
 
 def decimal_to_hex(decimal):
@@ -570,6 +572,8 @@ def daidefy_order(
             # HLD
             assert len(rest) == 1, f"HLD order has more than 1 element: {order}"
             return daide_primary_unit + " HLD"
+
+    raise ValueError(f"Unhandled order: {order}")
 
 
 def hex_to_decimal(hex):

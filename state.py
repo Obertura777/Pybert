@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -109,6 +110,58 @@ def _parse_movement_order(order_str: str, power: int, prov_to_id: dict) -> dict 
 
 
 class InnerGameState:
+    # Dynamically-populated attributes (may be assigned lazily by other modules
+    # via `hasattr(...)` guards). Declared here so the static type checker knows
+    # they exist on every InnerGameState instance.
+    g_ActiveDmzList: "Any"
+    g_ActiveDmzMap: "Any"
+    g_AllianceOrders: "Any"
+    g_AllianceOrdersPresent: "Any"
+    g_AllyOrderHistory: "Any"
+    g_ConvoyRoute: "Any"
+    g_CoopFlag: "Any"
+    g_DesigCountA: "Any"
+    g_DesigCountB: "Any"
+    g_DesigListA: "Any"
+    g_DesigListB: "Any"
+    g_DmzOrderList: "Any"
+    g_GeneralOrdersPresent: "Any"
+    g_LoneLeadPower: "Any"
+    g_MoveTimeLimit: "Any"
+    g_OrderHistory: "Any"
+    g_OtherScore: "Any"
+    g_PressCandidateA: "Any"
+    g_PressCandidateB: "Any"
+    g_PressThreshRandom: "Any"
+    g_ProposalHistoryMap: "Any"
+    g_RingCoast_A: "Any"
+    g_RingCoast_B: "Any"
+    g_RingCoast_C: "Any"
+    g_RingConvoyEnabled: "Any"
+    g_RingConvoyScore: "Any"
+    g_RingProv_A: "Any"
+    g_RingProv_B: "Any"
+    g_RingProv_C: "Any"
+    g_SomeCoopScore: "Any"
+    g_StabMode: "Any"
+    g_SupportOpportunitiesSet: "Any"
+    g_SupportProposals: "Any"
+    g_SupportTrustAdj: "Any"
+    g_TrialList2: "Any"
+    g_TrialMap: "Any"
+    g_UnitPresence: "Any"
+    g_VictoryThreshold: "Any"
+    g_XdoDestBySender: "Any"
+    g_XdoGlobalDestMap: "Any"
+    g_XdoSupHldMap: "Any"
+    g_baed6d: "Any"
+    g_one_shot_press: "Any"
+    g_pending_orders_A: "Any"
+    g_pending_orders_B: "Any"
+    g_trust_counter: "Any"
+    g_turn_start_time: "Any"
+    g_xdo_candidate_list: "Any"
+
     def __init__(self):
         # 1. Global Game State
         self.g_NearEndGameFactor = 0.0
@@ -371,6 +424,34 @@ class InnerGameState:
         # ScoreOrderCandidates_AllPowers during the MC trial loop.
         self.g_NeedsRescore = np.full(256, -1, dtype=np.int64)
 
+        # ── ScoreOrderCandidates_AllPowers extra globals (ported 2026-04-14) ──
+        # DAT_0055b0e8/ec[(prov+pow*0x40)*2] — per-power province max score (int64)
+        self.g_MaxProvScorePerPower = np.full((7, 256), -(1 << 62), dtype=np.int64)
+        # DAT_005508e8/ec — per-power province min score (int64)
+        self.g_MinProvScorePerPower = np.full((7, 256), (1 << 62), dtype=np.int64)
+        # DAT_005cf0e8/ec[(prov+pow*0x100)*2] — support-candidate mark
+        self.g_SupportCandidateMark = np.zeros((7, 256), dtype=np.int64)
+        # DAT_005700e8/ec[(prov+pow*0x40)*2] — best-reachable-via-enemy threat path score
+        self.g_ThreatPathScore = np.zeros((7, 256), dtype=np.int64)
+        # DAT_005ee8e8/ec — classified-province secondary marker (0=unclassified, -1=flanked)
+        self.g_TargetFlag2 = np.zeros((7, 256), dtype=np.int64)
+        # DAT_0052b4e8/ec — secondary attack counter (paired with g_AttackCount)
+        self.g_AttackCount2 = np.zeros((7, 256), dtype=np.int64)
+        # DAT_00535ce8/ec — secondary enemy pressure (additional to g_EnemyReachScore)
+        self.g_EnemyPressureSecondary = np.zeros((7, 256), dtype=np.int64)
+        # (g_AllyHistoryCount was a stale alias for g_RelationScore / DAT_00634e90;
+        #  removed 2026-04-14 — see g_RelationScore declaration below.)
+        # DAT_004d2e10/14 — ally-designation-E counterpart (paired with _A)
+        self.g_AllyDesignation_E = np.full(256, -1, dtype=np.int64)
+        # DAT_005c48e8/ec — direct reach flag (1-hop BFS target)
+        self.g_DirectReachFlag = np.zeros((7, 256), dtype=np.int64)
+        # DAT_005ba0e8/ec — extended reach flag (2-hop via unit)
+        self.g_ExtendedReachFlag = np.zeros((7, 256), dtype=np.int64)
+        # DAT_005b98e8/ec — top-reach flag (per-province, shared with NeedsRescore codepath)
+        self.g_TopReachFlag = np.zeros(256, dtype=np.int64)
+        # g_ProvTargetFlag[pow, prov] — primary target classification (1/2/-10/0)
+        self.g_ProvTargetFlag = np.zeros((7, 256), dtype=np.int64)
+
         # g_OpeningTarget[power] — per-power opening deception target province.
         # -1 = no target.  Set in SPR when g_DeceitLevel == 1.
         self.g_OpeningTarget = np.full(7, -1, dtype=np.int32)
@@ -429,7 +510,7 @@ class InnerGameState:
         self.target_sc_count = np.full(7, 18, dtype=np.int32)
 
         # DAT_004cf4c0[power*2] — g_EnemySlot priority queue (top-3 enemies, -1=empty)
-        self.g_EnemySlot = np.full(3, -1, dtype=np.int32)
+        self.g_EnemySlot: Any = np.full(3, -1, dtype=np.int32)
 
         # ── PostProcessOrders (move-history matrix) ──────────────────────────
         # DAT_00635578[power*0x10000+src*0x100+dst] — fading move-history table
@@ -765,10 +846,11 @@ class InnerGameState:
         # Season token: SPR/SUM/FAL/AUT/WIN from phase string e.g. "S1901M"/"F1901R"/"W1901A"
         # Phase format: [S|F|W] + year + [M|R|A]
         #   S+M=SPR, S+R=SUM, F+M=FAL, F+R=AUT, W+A=WIN
-        phase = game.get_phase() if hasattr(game, 'get_phase') else ''
-        if isinstance(phase, str) and len(phase) >= 2:
-            phase_type   = phase[-1].upper()   # 'M', 'R', or 'A'
-            season_letter = phase[0].upper()   # 'S', 'F', or 'W'
+        _phase_raw: Any = game.get_phase() if hasattr(game, 'get_phase') else ''
+        phase: str = str(_phase_raw) if _phase_raw is not None else ''
+        if len(phase) >= 2:
+            phase_type   = phase[-1:].upper()   # 'M', 'R', or 'A'
+            season_letter = phase[:1].upper()   # 'S', 'F', or 'W'
             if phase_type == 'M':
                 self.g_season = 'SPR' if season_letter == 'S' else 'FAL'
             elif phase_type == 'R':
@@ -836,6 +918,18 @@ class InnerGameState:
 
     def get_unit_adjacencies(self, prov_id: int):
         return self.adj_matrix.get(prov_id, [])
+
+    def get_adjacent_provinces(self, prov_id: int):
+        """Alias for get_unit_adjacencies — matches C AdjacencyList_FilterByUnitType."""
+        return self.adj_matrix.get(prov_id, [])
+
+    def get_power_units(self, power_id: int):
+        """Provinces where a unit belonging to `power_id` resides."""
+        return [p for p, info in self.unit_info.items() if info.get('power', -1) == power_id]
+
+    def get_unit_owner(self, prov_id: int):
+        """Alias for get_unit_power — returns None when no unit present."""
+        return self.unit_info.get(prov_id, {}).get('power', None)
 
     def can_reach(self, src_prov: int, dst_prov: int):
         return dst_prov in self.adj_matrix.get(src_prov, [])

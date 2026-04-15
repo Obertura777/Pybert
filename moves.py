@@ -60,7 +60,7 @@ def compute_safe_reach(state: InnerGameState):
     # FLT: power_idx = 0x14 (no valid power) → all 7 powers get contested=1,
     #      including the fleet owner — fleets block safe-reach for everyone.
     for prov_id, unit_data in state.unit_info.items():
-        if unit_data['type'] == 'AMY':
+        if unit_data['type'] == 'A':
             unit_power = unit_data['power']
             for power in range(num_powers):
                 if power != unit_power:
@@ -101,38 +101,79 @@ def compute_safe_reach(state: InnerGameState):
 
 def build_support_opportunities(state: InnerGameState):
     """
-    Port of FUN_004460a0. Identifies which units can support other 
-    moves based on exact nested AdjacencyList_FilterByUnitType checks.
+    Port of FUN_004460a0 = BuildSupportOpportunities.
+
+    Triangle-geometry pass: for each power pow, for each own unit U at province p,
+    scan U's adjacency q; if three gates pass, for each r adj to q (r != p, own
+    SC-territory) walk r's adjacency s — if s == p, the triangle p-q-r-p is closed
+    and (U at p → q, W at r supports U into q) is a legal support pair. Appends
+    one record per closed triangle to g_SupportOpportunitiesSet.
+
+    Gates on q (the attack target):
+      1. g_TopReachFlag[q] == 1  (DAT_005b98e8 lo=1, hi=0)
+      2. g_SCOwnership[pow, q] == 1
+      3. OrderedSet rank of q matches g_MaxProvinceScore[q]  (q is top-scored
+         target for this power)
+
+    Gate on r (the supporter position):
+      - g_SCOwnership[pow, r] == 1
+      - r != p
+
+    See docs/funcs/BuildSupportOpportunities.md for full notes.
     """
-    state.g_SupportProposals = []
-    state.g_ProximityScore = getattr(state, 'g_ProximityScore', {})
-    
-    for src_prov in range(256):
-        if state.has_unit(src_prov):
-            unit_power = state.get_unit_power(src_prov)
-            
-            # Sub-list 1: Direct Adjacencies
-            for adj_prov in state.get_unit_adjacencies(src_prov):
-                # Update proximity buffers
-                state.g_ProximityScore[src_prov] = state.g_ProximityScore.get(src_prov, 0) + 1
-                if state.g_CoverageFlag[unit_power, adj_prov] == 1:
-                    state.g_ProximityScore[src_prov] += 2
-                    
-                # Nested safety check targeting support eligibility (similar to Ghidra)
-                is_safe = (state.g_SCOwnership[unit_power, adj_prov] == 1 and state.get_enemy_reach(unit_power, adj_prov) == 0)
-                
-                if is_safe:
-                    # Sub-list 2: Secondary Adjacencies
-                    for sup_prov in state.get_unit_adjacencies(adj_prov):
-                        if sup_prov != src_prov and state.has_unit(sup_prov):
-                            candidate = {
-                                'power': unit_power,
-                                'mover_prov': src_prov,
-                                'target_prov': adj_prov,
-                                'supporter_prov': sup_prov,
-                                'score': state.g_MaxProvinceScore[adj_prov]
-                            }
-                            state.g_SupportProposals.append(candidate)
+    # Fresh list each call; C clears DAT_00baed74 linked list at entry.
+    state.g_SupportOpportunitiesSet = []
+    # Maintain legacy alias for downstream consumers that read g_SupportProposals.
+    state.g_SupportProposals = state.g_SupportOpportunitiesSet
+
+    num_powers = 7
+
+    # For Gate 3 we need a per-power "top-scored target" check. FinalScoreSet
+    # (Albert.FinalScoreSet[pow, prov]) is the per-power score we compare against
+    # the global g_MaxProvinceScore[prov]. Fall back to permissive when either
+    # table isn't populated.
+    has_final = hasattr(state, 'FinalScoreSet')
+
+    for power in range(num_powers):
+        # Walk units owned by this power (C: unit_list where unit[0x18] == power)
+        for p, info in list(state.unit_info.items()):
+            if info.get('power') != power:
+                continue
+
+            # --- first adjacency: q = potential attack target ---------------
+            for q in state.get_adjacent_provinces(p):
+                # Gate 1: g_TopReachFlag[q] == 1
+                if int(state.g_TopReachFlag[q]) != 1:
+                    continue
+                # Gate 2: q is in this power's SC-ownership region
+                if int(state.g_SCOwnership[power, q]) != 1:
+                    continue
+                # Gate 3: q is the top-scored target (OrderedSet key matches)
+                if has_final:
+                    fs = float(state.FinalScoreSet[power, q])
+                    mx = float(state.g_MaxProvinceScore[q])
+                    if fs != mx:
+                        continue
+
+                # --- second adjacency: r = potential supporter province -----
+                for r in state.get_adjacent_provinces(q):
+                    # Supporter must be on own SC territory
+                    if int(state.g_SCOwnership[power, r]) != 1:
+                        continue
+                    # r != p (C line 155: piVar6[3] != local_2c)
+                    if r == p:
+                        continue
+
+                    # --- third adjacency: s; if s == p the triangle closes ---
+                    if p in state.get_adjacent_provinces(r):
+                        state.g_SupportOpportunitiesSet.append({
+                            'power':           power,
+                            'score':           float(state.g_MaxProvinceScore[q]),
+                            'mover_prov':      p,   # U source (p)
+                            'target_prov':     q,   # U destination (q)
+                            'supporter_prov':  r,   # W position (r)
+                            # coast tokens omitted (Python adj matrix is coast-agnostic)
+                        })
 
 def assign_support_order(
     state: InnerGameState,
@@ -200,25 +241,39 @@ def assign_support_order(
     if (int(state.g_SupportDemand[dst_prov]) == 1
             and state.g_BuildOrderPending[power_idx, dst_prov] == 0):
 
-        # g_ThreatLevel (DAT_0058f8e8), g_EnemyPressure (DAT_00520ce8)
-        threat   = int(state.g_ThreatLevel[power_idx, dst_prov])
-        pressure = int(state.g_EnemyPressure[power_idx, dst_prov])
+        # g_ThreatLevel (DAT_0058f8e8) = threat level at dst for this power
+        # g_SCOwnership[pow,dst] gates the two branches (C line 114 / 116):
+        #   branch 1: threat > 1 (>=2) AND dst NOT own-SC
+        #   branch 2: threat > 2 (>=3) AND dst IS own-SC
+        # Both branches also require DAT_00520cec == 0 (hi-word of pressure;
+        # always true for non-negative int32 values → elided)
+        threat = int(state.g_ThreatLevel[power_idx, dst_prov])
+        own_sc_at_dst = int(state.g_SCOwnership[power_idx, dst_prov])
 
         if threat != -1 and (
-            (threat >= 2 and pressure == 0) or
-            (threat >= 3 and pressure == 1)
+            (threat >= 2 and own_sc_at_dst == 0) or
+            (threat >= 3 and own_sc_at_dst == 1)
         ):
             if int(state.g_SupportDemand[src_prov]) != 1:
-                # Validate: src adjacent to dst AND src is own SC (gamestate+0x24b4 list)
+                # Validate: src adjacent to dst AND dst is a home build-center
+                # for this power (C: GameBoard_GetPowerRec lookup against
+                # gamestate+0x24b4 build-center list). 2026-04-14 — tightened
+                # from the prior src-SCOwnership heuristic to the correct
+                # dst-home-center membership check via state.home_centers.
+                home = state.home_centers.get(power_idx, frozenset())
                 src_valid = (
                     dst_prov in state.adj_matrix.get(src_prov, [])
-                    and state.g_SCOwnership[power_idx, src_prov] == 1
+                    and dst_prov in home
+                    and int(state.g_SCOwnership[power_idx, dst_prov]) == 1
                 )
                 if src_valid:
                     sup_confirmed  = int(state.g_OrderTable[dst_prov, 20])
-                    # Unassigned sentinel: both fields == 0.0 (C equiv: both == 0xffffffff)
-                    score_unset    = (state.g_OrderTable[dst_prov, 18] == 0.0
-                                      and state.g_OrderTable[dst_prov, 19] == 0.0)
+                    # C: (DAT_00baede8[dst*0x1e] & DAT_00baedec[dst*0x1e]) == 0xffffffff.
+                    # Both score_lo (field 18) and score_hi (field 19) must be
+                    # the -1 sentinel for "unset". Fixed 2026-04-14 — was
+                    # `== 0.0` which conflated zero-score with unset.
+                    score_unset    = (state.g_OrderTable[dst_prov, 18] == -1.0
+                                      and state.g_OrderTable[dst_prov, 19] == -1.0)
                     # g_UnitPresence == {0,0}: power has NO unit at dst
                     dst_empty      = (state.unit_info.get(dst_prov, {}).get('power', -1)
                                       != power_idx)
@@ -227,9 +282,16 @@ def assign_support_order(
                         state.g_OrderTable[dst_prov, 20] = 1       # g_SupportConfirmed
                         state.g_ConvoySourceProv[dst_prov] = float(src_prov)  # g_SupportTarget
 
-    # ── Convoy fleet conflict resolution ────────────────────────────────────
-    # g_LastMTOInsert: (type, province) of cached last insert node, None = set.end()
-    if state.g_LastMTOInsert is not None:
+    # ── Convoy fleet conflict resolution (C LAB_00441685, lines 146-184) ────
+    # Gated 2026-04-14: C runs GameBoard_GetPowerRec against gamestate+0x24b4
+    # (build-center list) and only clears the cached MTO's support-commit when
+    # `piVar13[1] != iVar14` — i.e. dst is NOT in this power's build-center
+    # list. Python mirrors with `dst_prov not in home_centers[power_idx]`.
+    # Previously fired unconditionally; over-fire was usually harmless when
+    # g_LastMTOInsert was None, but observable on re-entry after a genuine
+    # home-center commit.
+    home = state.home_centers.get(power_idx, frozenset())
+    if dst_prov not in home and state.g_LastMTOInsert is not None:
         node_type, node_prov = state.g_LastMTOInsert
         if node_type == 2 and int(state.g_OrderTable[node_prov, 20]) == 1:
             state.g_OrderTable[node_prov, 20] = 0
@@ -251,6 +313,10 @@ _F_ORDER_TYPE    =  0   # 1=HLD 2=MTO 3=SUP_HLD 4=SUP_MTO 5=CVY 6=CTO
 _F_DEST_PROV     =  2   # destination province (MTO/CTO)
 _F_INCOMING_MOVE = 13   # 1 = province has incoming MTO/CTO (DAT_00baedd4 = g_ProvinceBaseScore)
 _F_ORDER_ASGN    = 20   # 1 = support order committed
+_F_CONVOY_LEG0   =  8   # CTO convoy leg 0 (DAT_00baee08)
+_F_CONVOY_LEG1   =  9   # CTO convoy leg 1 (DAT_00baee0c)
+_F_CONVOY_LEG2   = 10   # CTO convoy leg 2 (DAT_00baee10)
+_F_SOURCE_PROV   = 16   # source province; SUP = supported unit's province
 
 _ORDER_MTO = 2
 _ORDER_CVY = 5
@@ -345,7 +411,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
             bfs_wave += 1
 
         # ── Phase 3: army-only convoy expansion ─────────────────────────────
-        if unit_type != 'AMY':
+        if unit_type != 'A':
             for prov in army_reach:
                 state.g_ConvoyReachCount[power_idx, prov] += 1
             continue
@@ -360,7 +426,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
         for cur_prov, cur_coast, wave in reach_candidates:
             # AdjacencyList call #2: fleet-type filter
             for adj in state.get_unit_adjacencies(cur_prov):
-                if state.get_unit_type(adj) != 'FLT':
+                if state.get_unit_type(adj) != 'F':
                     continue
                 if adj not in in_fleet_chain:
                     in_fleet_chain.add(adj)
@@ -391,7 +457,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
                     army_reach.add(adj)
                     if adj not in in_reach:
                         in_reach.add(adj)
-                        reach_candidates.append((adj, 'AMY', fc_wave))
+                        reach_candidates.append((adj, 'A',fc_wave))
 
         # Sub-pass D: 10-hop convoy chain completion pass.
         # local_1a8 counts from 0..MAX_CONVOY_CHAIN_DEPTH (< 0xb in original).
@@ -404,7 +470,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
                         army_reach.add(adj)
                         if adj not in in_reach:
                             in_reach.add(adj)
-                            reach_candidates.append((adj, 'AMY', wave + 1))
+                            reach_candidates.append((adj, 'A',wave + 1))
             local_1a8 += 1
 
         # Commit convoy reach counts for all discovered destinations
@@ -482,6 +548,11 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
         if threat_count < 2:
             # 0 or 1 threat: only act for convoy order with press off
             # decompile line 169: order_type check uses own_prov's field (iVar1+0x20), i.e. _ORDER_CVY
+            # C: (&DAT_00baedf0)[own_prov * 0x1e] == 5. Decompile label
+            # (DAT_00baedf0 = g_SupportConfirmed, field 20) is a Ghidra
+            # mis-symbol — field 20's domain is {0,1} per AssignSupportOrder
+            # writes, so `==5` can't be g_SupportConfirmed. Actual read is
+            # field 0 (g_OrderState, 5=CVY). Verified 2026-04-14.
             if (threat_count == 1
                     and int(ot[own_prov, _F_ORDER_TYPE]) == _ORDER_CVY
                     and state.g_PressFlag == 0):
@@ -510,8 +581,10 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                     continue
 
                 # Priority logic (decompile lines 292-303):
-                # trust = g_AllyTrustScore[power_idx * 0x15 + threat_power] (lo-word, int)
-                trust = int(state.g_AllyTrustScore[power_idx, threat_power])
+                # C reads DAT_00634e90 = g_RelationScore (pow*21+other, int32).
+                # NOT g_AllyTrustScore — that's at a different address (float64).
+                # Fixed 2026-04-14 — was previously reading g_AllyTrustScore.
+                trust = int(state.g_RelationScore[power_idx, threat_power])
                 if trust < 0xf:
                     # priority=8 when: g_AllyDesignation_B[dest] == power_idx
                     #                  AND dest == own_prov AND base_score < t_score

@@ -338,9 +338,15 @@ def validate_and_dispatch_order(
     state: InnerGameState,
     own_power_idx: int,
     order_seq: dict,
+    commit: bool = True,
 ) -> int:
     """
     Port of FUN_00422a90 — ValidateAndDispatchDaideOrder.
+
+    ``commit=False`` runs legality + trust scoring (FUN_00422a90 +
+    FUN_0041d360) but skips dispatch_single_order, so the order is
+    *evaluated* without being executed. Used by the FUN_00426140
+    legitimacy gate, which needs pure scoring over candidate clauses.
 
     Takes a parsed DAIDE order token sequence (expressed here as the
     dispatch_single_order-compatible dict used throughout the Python rewrite),
@@ -416,7 +422,8 @@ def validate_and_dispatch_order(
     if order_type == 'HLD':
         # C: `if (HLD == uStack_94) goto LAB_00423fb5` — success, no
         # check_order_alliance call.  HLD has no destination.
-        dispatch_single_order(state, own_power_idx, order_seq)
+        if commit:
+            dispatch_single_order(state, own_power_idx, order_seq)
         return 0
 
     if order_type == 'MTO':
@@ -439,14 +446,20 @@ def validate_and_dispatch_order(
                                       own_power_idx, dest_power)
             if rc != 0:
                 return rc
-        dispatch_single_order(state, own_power_idx, order_seq)
+        if commit:
+            dispatch_single_order(state, own_power_idx, order_seq)
         return 0
 
     if order_type == 'SUP':
         # C lines 318–554: supported-unit lookup, FUN_0040dfe0 end-check,
-        # IsLegalMove on source, FUN_004619f0 convoy-reachability (stub).
-        # Two check_order_alliance calls for SUP-MTO (lines 515+537); one via
-        # LAB_00423083 for SUP-HLD.
+        # IsLegalMove on source, FUN_004619f0 convoy-reachability (ported,
+        # not a stub — see is_convoy_reachable above). Two check_order_alliance
+        # calls for SUP-MTO (lines 515+537); one via LAB_00423083 for SUP-HLD.
+        # KNOWN GAP: supporter-side adjacency check not yet wired.
+        #   SUP-MTO: C requires IsLegalMove(supporter, dest); Python doesn't check.
+        #   SUP-HLD: C requires IsLegalMove(supporter, supported.province); Python
+        #   doesn't check. Both map to error -0x186c1 / -0x186c3. These are plain
+        #   adjacency (not convoy), so is_convoy_reachable is not the right tool.
         target_unit = order_seq.get('target_unit', '')
         if not target_unit:
             return _ERR_NO_SUP_UNIT
@@ -473,13 +486,27 @@ def validate_and_dispatch_order(
                     "%r → %r", sup_prov_name, target_dest,
                 )
                 return _ERR_ADJACENCY
+        # Supporter-side adjacency check (FUN_00422a90 lines 95, SUP-HLD equiv):
+        #   SUP-MTO: supporter must reach target_dest
+        #   SUP-HLD: supporter must reach supported unit's province
+        # prov_id is the supporter's province. check_prov_id is the province the
+        # supporter needs to reach (target_dest for MTO, supported unit's prov
+        # for HLD). Plain adjacency — no convoy fallback for supporter.
+        if check_prov_id is not None and prov_id != check_prov_id:
+            if check_prov_id not in state.adj_matrix.get(prov_id, []):
+                logger.debug(
+                    "validate_and_dispatch_order: SUP supporter %r not adjacent "
+                    "to %r", prov_raw, check_prov_name,
+                )
+                return _ERR_ADJACENCY
         if check_prov_id is not None:
             dest_power = state.get_unit_power(check_prov_id)
             rc = check_order_alliance(state, own_power_idx, check_prov_id,
                                       own_power_idx, dest_power)
             if rc != 0:
                 return rc
-        dispatch_single_order(state, own_power_idx, order_seq)
+        if commit:
+            dispatch_single_order(state, own_power_idx, order_seq)
         return 0
 
     if order_type == 'CTO':
@@ -505,7 +532,8 @@ def validate_and_dispatch_order(
                                       own_power_idx, dest_power)
             if rc != 0:
                 return rc
-        dispatch_single_order(state, own_power_idx, order_seq)
+        if commit:
+            dispatch_single_order(state, own_power_idx, order_seq)
         return 0
 
     if order_type == 'CVY':
@@ -545,7 +573,8 @@ def validate_and_dispatch_order(
                                       own_power_idx, dest_power)
             if rc != 0:
                 return rc
-        dispatch_single_order(state, own_power_idx, order_seq)
+        if commit:
+            dispatch_single_order(state, own_power_idx, order_seq)
         return 0
 
     # WVE / BLD and any unrecognised token — C: return -0x15f91 (lines 529–541)

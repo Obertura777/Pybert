@@ -153,7 +153,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
     # "Partial support" (demand>0): threshold *= 0.75
     for _ in range(3):
         for prov in range(256):
-            if state.get_unit_type(prov) != 'FLT':
+            if state.get_unit_type(prov) != 'F':
                 continue
 
             move_prob = float(state.g_UnitMoveProb[prov])
@@ -839,7 +839,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # ClearConvoyState() — STUB (per-trial reset at Phase 1a covers observable effect)
 
         # Determine unit type at src (AMY vs FLT)
-        is_army = (state.unit_info.get(src, {}).get('type') == 'AMY')
+        is_army = (state.unit_info.get(src, {}).get('type') == 'A')
 
         # BuildOrder_CTO_Ring(gamestate, src, dst, coast)
         # OrderedSet_FindOrInsert(this+0x2450, &src): insert src into active-unit set.
@@ -1040,6 +1040,11 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # Mirrors the loop over 0..numProvinces zeroing DAT_00baedac fields.
         state.g_OrderTable[:num_provinces, :] = 0.0
         state.g_OrderTable[:num_provinces, _F_DEST_COAST] = -1.0   # 0xffffffff
+        # g_SupportScoreLo/Hi (fields 18/19) use -1.0 as "unset" sentinel
+        # to match C's (lo & hi) == 0xffffffff AssignSupportOrder check.
+        # Fixed 2026-04-14 — was 0.0, which conflated "zero score" with "unset".
+        state.g_OrderTable[:num_provinces, 18] = -1.0
+        state.g_OrderTable[:num_provinces, 19] = -1.0
         state.g_ConvoySourceProv[:num_provinces]  = -1.0  # g_SupportAssignmentMap sentinel
         state.g_ConvoyActiveFlag[:num_provinces]  = 0
         state.g_ProvinceScoreTrial[:num_provinces] = 0
@@ -1057,7 +1062,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             utyp = unit.get('type', '')
             state.g_UnitPresence[p_u, prov] = 0
 
-            if p_u == power_index and utyp == 'AMY':
+            if p_u == power_index and utyp == 'A':
                 for adj in state.get_unit_adjacencies(prov):
                     state.g_ArmyAdjCount[adj] += 1
 
@@ -1265,8 +1270,11 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     if is_ally_a and (trust_lo != 0 or trust_hi != 0):
                         continue
                     if 0 <= probe_lo < num_powers:
-                        # g_AllyHistoryCount threshold > 9; approximated as 0 (not yet decoded).
-                        history = 0
+                        # g_AllyHistoryCount threshold: `> 9` = trusted ally.
+                        # Fixed 2026-04-14 — DAT_00634e90 is g_RelationScore
+                        # (formerly labeled g_AllyHistoryCount); state.py has
+                        # both names but only g_RelationScore is populated.
+                        history = int(state.g_RelationScore[power_index, probe_lo])
                         if history > 9 or power_index == own_power:
                             trust_lo = float(state.g_AllyTrustScore[power_index, probe_lo])
                             trust_hi = int(state.g_AllyTrustScore_Hi[power_index, probe_lo])

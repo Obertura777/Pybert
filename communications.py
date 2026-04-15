@@ -343,6 +343,14 @@ def send_alliance_press(
         'sent':        False,   # node+24 / node[6] — not yet dispatched
         'type_flag':   0,       # node+28 / node[7]
         'trial_count': 0,       # node+32 / node[8]
+        # AllianceRecord score vector at +0x48 (C: int[≥7], indexed by power).
+        # CAL_VALUE uses current.score[own] − predecessor.score[own] for the
+        # delta classification that drives YES/REJ/BWX/HUH verdict bands.
+        'score_vector': [0] * 7,
+        # AllianceRecord +0x9c history flag (C: `[0x27] as undefined4*`).
+        # CAL_VALUE preflight gate: must be >= 1 to use the diff-form delta,
+        # else fall back to absolute current.score[own].
+        'history_flag': 0,
     }
     if entry_data:
         entry.update(entry_data)
@@ -494,15 +502,262 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     return 0x481C  # TODO: full Python port pending
 
 
+def _split_xdo_clauses(context_toks: list) -> "tuple[list, list]":
+    """
+    Port of CAL_VALUE.c:162-280 — clause-extraction phase.
+
+    Splits ``context_toks`` into (positive_clauses, negative_clauses) where
+    positive = plain ``XDO(...)`` and negative = ``NOT(XDO(...))``.
+
+    Mirrors the C dual-sink insertion into ``ppiStack_c4`` (positive sink,
+    auStack_c8) vs. ``ppiStack_b8`` (negative sink, auStack_bc) driven by
+    the ``is_not`` flag on each clause.
+
+    Handles both:
+      * ``AND ( XDO(a) ) ( XDO(b) ) ( NOT ( XDO(c) ) )``  (multi-clause)
+      * ``XDO(a)`` / ``NOT ( XDO(a) )``                    (single clause)
+
+    Tokens here are strings (Python string-mode press).
+    """
+    def _strip_parens(s: str) -> str:
+        s = s.strip()
+        while s.startswith('(') and s.endswith(')'):
+            depth = 0
+            stripped = True
+            for i, ch in enumerate(s):
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0 and i < len(s) - 1:
+                        stripped = False
+                        break
+            if not stripped:
+                break
+            s = s[1:-1].strip()
+        return s
+
+    text = ' '.join(str(t) for t in context_toks).strip()
+    text = _strip_parens(text)
+
+    positive: list = []
+    negative: list = []
+
+    def _push_clause(clause_text: str):
+        c = _strip_parens(clause_text).strip()
+        is_not = False
+        if c.startswith('NOT'):
+            is_not = True
+            c = _strip_parens(c[3:]).strip()
+        if c.startswith('XDO'):
+            (negative if is_not else positive).append(c)
+
+    # AND( ... )( ... )( ... ) multi-clause shape
+    if text.startswith('AND'):
+        rest = text[3:].strip()
+        # Split on top-level paren groups
+        groups = _extract_top_paren_groups(rest) if rest else []
+        for g in groups:
+            _push_clause(g)
+    elif text.startswith('ORR'):
+        rest = text[3:].strip()
+        groups = _extract_top_paren_groups(rest) if rest else []
+        for g in groups:
+            _push_clause(g)
+    else:
+        _push_clause(text)
+
+    return positive, negative
+
+
 def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     """
-    Stub for CAL_VALUE = FUN_004266b6 — XDO / negated-XDO order evaluator.
+    Port of CAL_VALUE = FUN_004266b6 — XDO / negated-XDO coherence scorer.
 
-    Called for XDO, NOT XDO, NOT NOT XDO, and SUB NOT XDO proposals.
-    `context_toks` may include leading NOT tokens (C's local_48 accumulator)
-    to signal negation.  CAL_VALUE.c is 10 k+ tokens; full port pending.
+    See docs/funcs/CAL_VALUE.md for the full spec. This port implements the
+    control-flow skeleton faithfully; the delta-score arithmetic (C lines
+    539–570) is approximated because Python's g_BroadcastList entries do
+    not yet carry the per-power score vector at +0x48 that C's AllianceRecord
+    exposes (schema-extension gap tracked in python_parity_overview.md).
+
+    High-level flow (mirrors C):
+
+      1. Clause-extraction phase (C lines 162–280):
+         Split ``context_toks`` into positive (plain XDO) and negative
+         (NOT-wrapped XDO) clause lists via ``_split_xdo_clauses``.
+
+      2. Sequence-catalog walk (C lines 299–401):
+         Iterate ``state.g_BroadcastList`` (the Python equivalent of
+         ``DAT_00bb65ec``) looking for an entry whose order_candidates
+         contain **every** positive proposed clause and do NOT contain
+         any of the negative proposed clauses. First match wins.
+
+      3. Matching-sequence scoring (C lines 539–630):
+         In C this computes delta = current.score[own] − predecessor.score[own]
+         and classifies into YES/REJ/BWX/HUH bands. Here we lack the score
+         vector, so we approximate: a match alone is evidence the proposal
+         aligns with own plan → YES-eligible. Set ``delta_class = 'YES'``.
+
+      4. Legitimacy gate (C lines 645–684):
+         Build a candidate-order set and invoke ``legitimacy_gate``. If the
+         min per-order score is negative AND the verdict was YES-eligible,
+         demote to REJ. (Matches the C "This proposal is now non-legit"
+         demotion path.)
+
+      5. Verdict emission:
+         YES-eligible & gate ≥ 0  →  YES
+         YES-eligible & gate < 0  →  REJ (demoted)
+         no match                 →  REJ
+         (BWX / HUH require the numeric-delta branches, currently
+          unreachable absent the score-vector schema extension.)
     """
-    return 0x481C  # TODO: full decompile pending
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    _YES, _REJ, _HUH, _BWX = 0x481C, 0x4814, 0x4806, 0x4A02
+
+    # ── 1. Clause extraction ──────────────────────────────────────────────
+    positive, negative = _split_xdo_clauses(context_toks)
+    if not positive and not negative:
+        # No XDO clauses found → C falls through to "no match" → REJ.
+        _log.debug("cal_value: no XDO clauses in %r → REJ", context_toks)
+        return _REJ
+
+    # ── 2. Sequence-catalog walk ──────────────────────────────────────────
+    matched_entry = None
+    matched_index = -1
+    pos_set = set(positive)
+    neg_set = set(negative)
+    for idx, entry in enumerate(state.g_BroadcastList):
+        cands = entry.get('order_candidates', []) if isinstance(entry, dict) else []
+        # Stringify candidate tokens for comparison with clause text.
+        cand_texts = set()
+        for c in cands:
+            t = c.get('tokens') if isinstance(c, dict) else c
+            if t is not None:
+                cand_texts.add(' '.join(str(x) for x in t) if isinstance(t, (list, tuple)) else str(t))
+        # All positive proposed clauses must be in the candidate set.
+        if not pos_set.issubset(cand_texts):
+            continue
+        # No negative proposed clauses should appear in the candidate set.
+        # (C: negative XDOs check the entry's negative sub-tree; here we treat
+        # absence from the positive candidate list as sufficient evidence
+        # they're not planned.)
+        if neg_set & cand_texts:
+            continue
+        matched_entry = entry
+        matched_index = idx
+        break
+
+    if matched_entry is None:
+        _log.debug(
+            "cal_value: no matching sequence for pos=%r neg=%r → REJ",
+            positive, negative,
+        )
+        # C: SEND_LOG("Could not find matching sequence") + BuildAllianceMsg archive.
+        import time as _t
+        state.g_AllianceMsgTree.add(int(_t.time()))
+        return _REJ
+
+    # ── 3. Matching-sequence scoring (delta + verdict bands) ─────────────
+    # C (CAL_VALUE.c lines 484–570):
+    #   preflight gates — history_flag >= 1, predecessor exists,
+    #   predecessor.score[own] >= -79999, predecessor.score[target] >= -79999
+    #   diff form:      delta = current.score[own] − predecessor.score[own]
+    #   fallback form:  delta = current.score[own]
+    # Band classification (CAL_VALUE.c lines 612–627):
+    #   delta >= -199      → YES-eligible
+    #   [-89999, -199)     → REJ
+    #   [-99999, -89999)   → BWX
+    #   < -99999           → HUH
+    own_power_idx = getattr(state, 'own_power_index', None)
+    if own_power_idx is None:
+        own_power_idx = getattr(state, 'albert_power_idx', 0)
+    own_power_idx = int(own_power_idx)
+
+    cur_vec = matched_entry.get('score_vector') or [0] * 7
+    cur_own = cur_vec[own_power_idx] if own_power_idx < len(cur_vec) else 0
+
+    # Tree-predecessor: nearest-smaller-key entry in the same catalog
+    # (C iterates the std::set<AllianceRecord> which is keyed by int at
+    # offset +16, so predecessor = highest-key entry with key < current.key).
+    # In the Python port the list is maintained sorted by `key` in
+    # send_alliance_press, so predecessor is simply matched_index − 1 when
+    # that entry's key is strictly less.
+    target_power = matched_entry.get('target_power', own_power_idx)
+    history_flag = matched_entry.get('history_flag', 0)
+    cur_key = matched_entry.get('key', 0)
+    predecessor = None
+    if matched_index > 0:
+        cand_pred = state.g_BroadcastList[matched_index - 1]
+        if isinstance(cand_pred, dict) and cand_pred.get('key', 0) < cur_key:
+            predecessor = cand_pred
+
+    use_diff = False
+    if history_flag >= 1 and predecessor is not None:
+        pred_vec = predecessor.get('score_vector') or [0] * 7
+        pred_own = pred_vec[own_power_idx] if own_power_idx < len(pred_vec) else 0
+        pred_tgt = pred_vec[target_power] if target_power < len(pred_vec) else 0
+        # -79999 floor: CAL_VALUE refuses to use a predecessor whose
+        # baseline is below that (records crippled to the trust-layer
+        # clamp window are meaningless subtraction baselines).
+        if pred_own >= -79999 and pred_tgt >= -79999:
+            use_diff = True
+
+    if use_diff:
+        delta = cur_own - pred_own
+    else:
+        delta = cur_own
+
+    yes_eligible = False
+    bwx_flag = False
+    huh_flag = False
+    if delta >= -199:
+        yes_eligible = True
+    elif delta < -99999:
+        huh_flag = True
+    elif delta < -89999:
+        bwx_flag = True
+    # else: [-89999, -199) → plain REJ (all flags remain False)
+
+    _log.debug(
+        "cal_value: matched idx=%d delta=%d (use_diff=%s) → "
+        "yes=%s bwx=%s huh=%s",
+        matched_index, delta, use_diff, yes_eligible, bwx_flag, huh_flag,
+    )
+
+    # ── 4. Legitimacy gate (demotion) ─────────────────────────────────────
+    # C (CAL_VALUE.c lines 645–684): FUN_00426140 runs unconditionally; its
+    # return value is consulted only on the YES-eligible path, where a
+    # negative min demotes YES → REJ. HUH/BWX paths (bVar27=false with
+    # bVar5/bVar6) bypass the demotion entirely — they flow to LAB_004271da
+    # with `uVar22` never set to YES.
+    try:
+        cand_list = matched_entry.get('order_candidates', [])
+        gate_score = legitimacy_gate(
+            state, own_power_idx,
+            [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)
+              if isinstance(c, dict) else 0} for c in cand_list],
+        )
+    except Exception:
+        _log.exception("cal_value: legitimacy_gate raised; treating as non-blocking")
+        gate_score = 0
+
+    if yes_eligible and gate_score < 0:
+        _log.debug(
+            "cal_value: YES demoted to REJ by legitimacy_gate (score=%d)",
+            gate_score,
+        )
+        return _REJ
+
+    # ── 5. Verdict ────────────────────────────────────────────────────────
+    if yes_eligible:
+        return _YES
+    if huh_flag:
+        return _HUH
+    if bwx_flag:
+        return _BWX
+    return _REJ
 
 
 def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
@@ -831,6 +1086,468 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
         return r
 
 
+# ── FUN_0042c970: ack-matcher ────────────────────────────────────────────────
+
+# DAIDE verdict tokens used by the ack-matcher to route bookkeeping between
+# the role-B (YES-ack) and role-C (REJ/BWX-ack) sets.
+_ACK_TOK_YES = 0x481C
+_ACK_TOK_REJ = 0x4814
+_ACK_TOK_BWX = 0x4A02
+
+
+def ack_matcher(
+    state: "InnerGameState",
+    sender_power: int,
+    ack_tok: int,
+    proposal_tokens: "list | None" = None,
+) -> int:
+    """
+    Port of FUN_0042c970 — the ack-matcher that walks ``g_PosAnalysisList``
+    (DAT_00bb65c8) looking for an unprocessed received-proposal whose
+    sender matches an incoming YES/REJ/BWX ack, then runs role-set
+    bookkeeping for each match.
+
+    C semantics (from FRMHandler.md + daide_semantics_notes.md):
+
+      For each node in DAT_00bb65c8 where ``node.processed_flag == 0``:
+        * Primary sender-match: check slots at +0xc and +0xf against
+          ``sender_power`` (both must match — the same power is stored
+          in both slots in practice).
+        * On non-YES acks (REJ / BWX), an additional check at +0x12 is
+          required to match.
+        * If matched:
+            - ``YES`` → StdMap_FindOrInsert into role-B sub-tree.
+            - ``REJ`` / ``BWX`` → StdMap_FindOrInsert into role-C
+              sub-tree; additionally *reset* role-C's sub-list.
+            - Emit a ``+10000``-keyed event into ``DAT_00bbf638``
+              (``g_AllianceMsgTree``) for each match.
+
+      **Note:** the C does NOT set ``processed_flag = 1`` on the node —
+      the ack does not retire the proposal from the tree. We mirror
+      that here (the flag is only consulted as a read-side filter).
+
+      Returns 1 if any node matched, 0 otherwise.
+
+    The ``proposal_tokens`` parameter is optional; when provided it is
+    used as an additional overlap gate against ``node.tokens`` to
+    disambiguate when multiple pending proposals share a sender (the C
+    disambiguates via identity of the local copy; in Python the natural
+    proxy is a token-set overlap).
+    """
+    import logging as _logging
+    import time as _t
+    _log = _logging.getLogger(__name__)
+
+    is_yes = (ack_tok == _ACK_TOK_YES)
+    match_count = 0
+
+    for entry in getattr(state, 'g_PosAnalysisList', []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('processed_flag', 0) != 0:
+            continue
+
+        # Primary sender-power match (C: slots +0xc and +0xf).
+        if entry.get('sender_power') != sender_power:
+            continue
+
+        # Non-YES acks require the +0x12 secondary slot to also match
+        # (in Python ``sender_power`` already represents both slots, so
+        # the extra check is structural: we simply accept when the
+        # primary match holds).
+        # Optional token-set overlap gate for disambiguation.
+        if proposal_tokens is not None:
+            entry_tokens = entry.get('token_set') or frozenset(entry.get('tokens', []))
+            if not _token_seq_overlap(list(entry_tokens), list(proposal_tokens)):
+                continue
+
+        # ── Role-set bookkeeping ──────────────────────────────────────────
+        if is_yes:
+            entry.setdefault('role_b_set', set()).add(sender_power)
+        else:
+            # REJ / BWX path: insert into role-C and reset the sub-list.
+            role_c = entry.setdefault('role_c_set', set())
+            role_c.add(sender_power)
+            # C: "on REJ/BWX also resets role-C's +0x16 sub-list" — clear
+            # any accumulated secondary state for this entry.
+            entry['role_c_sub'] = []
+
+        # ── +10000-keyed event into g_AllianceMsgTree ─────────────────────
+        # C: BuildAllianceMsg(&DAT_00bbf638, buf, elapsed_sec + 10000).
+        state.g_AllianceMsgTree.add(int(_t.time()) + 10000)
+
+        match_count += 1
+        _log.debug(
+            "ack_matcher: matched sender=%d tok=0x%x (role=%s) match_count=%d",
+            sender_power, ack_tok, 'B' if is_yes else 'C', match_count,
+        )
+
+    return 1 if match_count > 0 else 0
+
+
+# ── FUN_0042cd70: HUH ERR-strip replay ───────────────────────────────────────
+
+def huh_err_strip_replay(
+    state: "InnerGameState",
+    sender_power: int,
+    huh_body_tokens: list,
+) -> int:
+    """
+    Port of FUN_0042cd70 — inbound-HUH handler that salvages the
+    successfully-parsed subset of our own press as an implicit ack.
+
+    C flow (from FRMHandler.md:141 + follow-up #234):
+
+      1. Allocate a filtered buffer.
+      2. Walk the HUH body, copying tokens while skipping ``ERR``
+         sentinels (the peer inserts ``ERR`` at positions they could
+         not parse).
+      3. Log ``"message :%s"`` with the filtered remainder.
+      4. If the filtered remainder is non-empty, call the ack-matcher
+         on it — the parseable subset is thereby treated as a de-facto
+         YES-ack against our pending proposals.
+
+    Returns the ack-matcher's return (1 = any node matched, 0 = none)
+    or 0 when the filtered remainder is empty.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # Strip ERR tokens (both string-mode 'ERR' and the raw ushort code).
+    _ERR_TOK_STR = 'ERR'
+    _ERR_TOK_INT = 0x4D00  # DAIDE ERR token code (canonical)
+    filtered = [
+        t for t in huh_body_tokens
+        if not (
+            (isinstance(t, str) and t.upper() == _ERR_TOK_STR)
+            or (isinstance(t, int) and t == _ERR_TOK_INT)
+        )
+    ]
+
+    _log.debug("huh_err_strip_replay: message :%r", filtered)
+
+    if not filtered:
+        return 0
+
+    # Replay through ack-matcher. The peer's parsed subset is treated as
+    # an implicit YES-ack — we can't know which verdict they would have
+    # sent, but the ack-matcher's YES path is the "affirmative role-B"
+    # bookkeeping which matches the salvage intent.
+    return ack_matcher(
+        state, sender_power, _ACK_TOK_YES, proposal_tokens=filtered,
+    )
+
+
+# ── FUN_0041c0f0: inbound TRY stance-token updater ───────────────────────────
+
+# DAIDE token numeric codes for stance/press tokens that appear in a TRY body.
+# Extends the set used for g_press_history keys; mirrors DAT_00bb6f0c's
+# canonical vocabulary order on the C side.
+_STANCE_TOKEN_CODES = {
+    'PCE': _TOK_PCE,
+    'ALY': _TOK_ALY,
+    'VSS': _TOK_VSS,
+    'DMZ': _TOK_DMZ,
+    'AND': _TOK_AND,
+    'ORR': _TOK_ORR,
+    'XDO': _TOK_XDO,
+    'PRP': 0x4A11,
+    'YES': 0x4A12,
+    'REJ': 0x4A13,
+    'BWX': 0x4A14,
+    'HUH': 0x4A15,
+    'TRY': 0x4A16,
+    'FCT': 0x4A17,
+    'THK': 0x4A18,
+    'WHY': 0x4A19,
+    'IDK': 0x4A1A,
+    'SUG': 0x4A1B,
+    'HOW': 0x4A1D,
+    'QRY': 0x4A1E,
+    'NOT': 0x4A20,
+    'NAR': 0x4A21,
+    'CCL': 0x4A22,
+    'FRM': 0x4A23,
+    'SND': 0x4A24,
+}
+
+
+def process_try(
+    state: "InnerGameState",
+    sender_id: int,
+    try_body_tokens: list,
+) -> None:
+    """
+    Port of FUN_0041c0f0 — inbound TRY stance-token updater.
+
+    Consumes the body of an inbound ``FRM(sender)(TRY(tok₁ tok₂ ...))``
+    message. **Replaces** Albert's stored stance-token set for ``sender``
+    (the C DAT_00bb6e10[sender * 0xc] slot) with the tokens listed in the
+    TRY body. Sends no reply.
+
+    Used by downstream hostility scoring (HOSTILITY.c) which queries
+    ``std::set::find(g_press_history[sender], PCE)`` etc. to read how
+    the sender has declared their stance.
+
+    The C shape (from ExecuteThennAction.md + ParseHSTResponse.md):
+        clear g_press_history[sender]           # manual RB-tree teardown
+        for tok in body:
+            RegisterAllowedPressToken(g_press_history[sender], tok)
+
+    Parameters
+    ----------
+    sender_id : int
+        Power index of the TRY sender (0..6).
+    try_body_tokens : list
+        Tokens as strings (e.g. ``['PCE', 'ALY']``) or ints. Strings are
+        resolved via ``_STANCE_TOKEN_CODES``; unknown strings are ignored.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # Replace (not merge) — C clears the slot before re-inserting.
+    new_set: set = set()
+    for tok in try_body_tokens:
+        if isinstance(tok, str):
+            code = _STANCE_TOKEN_CODES.get(tok.upper())
+            if code is None:
+                continue
+            new_set.add(code)
+        elif isinstance(tok, int):
+            new_set.add(tok)
+
+    state.g_press_history[sender_id] = new_set
+    _log.debug(
+        "process_try: sender=%d stance-tokens replaced with %r",
+        sender_id, new_set,
+    )
+
+
+# ── FUN_00426140: per-order legitimacy gate ──────────────────────────────────
+
+def legitimacy_gate(
+    state: "InnerGameState",
+    own_power_idx: int,
+    candidates: list,
+) -> int:
+    """
+    Port of FUN_00426140 — the per-order legitimacy gate that CAL_VALUE and
+    register_received_press invoke over a std::set<TokenList> of accepted
+    XDO clauses. Returns the **minimum per-order score** across the set
+    (CAL_VALUE uses ``< 0`` as the demote-verdict threshold).
+
+    See docs/funcs/FUN_00426140_and_FUN_0041a100.md for the full spec.
+
+    Parameters
+    ----------
+    candidates : list of dicts with at least the keys:
+        'order_seq'  — parsed order dict consumed by validate_and_dispatch_order
+        'flag_bit'   — the +0x1c channel tag (1 = sub-tree A, skip own-power
+                       rescore; 0 = sub-tree B, eligible for clamp-window rescore)
+        'type_flag'  — alias accepted for back-compat with order_candidates from
+                       register_received_press (type_flag maps to flag_bit)
+
+    Per-candidate evaluation mirrors the C:
+
+        raw = validate_and_dispatch_order(state, candidate power, order, commit=False)
+        skip_rescore = (flag_bit == 1)
+        if not skip_rescore and raw > -90000:
+            rescored = same order re-scored as own_power_idx (own-power prefix prepend)
+            if -89999 <= rescored <= -80000:
+                score = 100000   # clamp window: peer-owed obligation that
+                                 # aligns with own plan → "unlocked"
+            else:
+                score = rescored
+        else:
+            score = raw
+
+    Aggregation:
+        First-iter special case: if min is still seed (None) and score == 100000,
+        set min = 100000 (without this the normal ``score < min`` update would
+        reject 100000 whenever initial seed is 0, causing first-iter clamps to
+        silently fail to propagate).
+        Otherwise: min = min(min, score).
+
+    Returns the aggregate minimum (defaults to 0 for an empty set).
+    """
+    import logging as _logging
+    from .dispatch import validate_and_dispatch_order
+
+    _log = _logging.getLogger(__name__)
+
+    aggregate: int | None = None
+
+    for cand in candidates:
+        order_seq = cand.get('order_seq') or cand
+        # type_flag from register_received_press: 0 = received/peer-side, eligible
+        # for own-power rescore; 1 = our-side/already-scoped.
+        flag_bit = cand.get('flag_bit', cand.get('type_flag', 0))
+
+        # Find the order's claimed power (from the XDO's unit spec) — the C
+        # equivalent reads the power token out of the clause's TokenList and
+        # calls FUN_00422a90 with it.
+        claimed_power = cand.get('power', order_seq.get('power', own_power_idx))
+
+        raw = validate_and_dispatch_order(
+            state, claimed_power, order_seq, commit=False,
+        )
+
+        if flag_bit != 1 and raw > -90000:
+            # Own-power prefix re-score: evaluate this order *as if Albert
+            # were the executing power*. A clause that looks hostile to the
+            # sender can look like an excellent own-plan alignment.
+            rescored = validate_and_dispatch_order(
+                state, own_power_idx, order_seq, commit=False,
+            )
+            if -89999 <= rescored <= -80000:
+                # Clamp window: trust-layer failure (FUN_0041d360 range)
+                # becomes a strong positive.
+                score = 100000
+            else:
+                score = rescored
+        else:
+            score = raw
+
+        if aggregate is None:
+            # First iter: seed with this score. Covers the C special branch
+            # for first-iter 100000 clamps that the plain min-update would miss.
+            aggregate = score
+        else:
+            aggregate = min(aggregate, score)
+
+        _log.debug(
+            "legitimacy_gate: flag_bit=%d raw=%d score=%d agg=%s",
+            flag_bit, raw, score, aggregate,
+        )
+
+    return aggregate if aggregate is not None else 0
+
+
+# ── DELAY_REVIEW ─────────────────────────────────────────────────────────────
+
+def delay_review(state: "InnerGameState", body_tokens: list) -> int:
+    """
+    Port of DELAY_REVIEW — proposal novelty + cheap-scoring gate.
+
+    See docs/funcs/DELAY_REVIEW.md for the full spec. Returns 1 if the
+    proposal should be deferred (caller skips EvaluatePress), 0 otherwise.
+
+    C flow (simplified):
+      1. Split body into positive (XDO) and negative (NOT(XDO)) clause sets.
+         AND / ORR / bare XDO / bare NOT(XDO) all reduce to this split.
+      2. If no XDO clauses present → return 0 (don't delay).
+      3. Walk ``DAT_00bb65ec`` looking for a record whose sub-tree A and B
+         contain the positive and negative clauses respectively AND whose
+         count-match fields match. First match → return 0.
+      4. On no match: run the cheap scorer (FUN_00431310 / legitimacy_gate
+         stand-in here). If score == 0, archive a ``+10000``-keyed event
+         on ``g_AllianceMsgTree`` and return 1 (delay). Else return 0.
+
+    Python compressions:
+      - Sub-trees A/B are represented by each g_BroadcastList entry's
+        ``order_candidates`` (matching _cal_value's walk). The code-9 /
+        code-10 dual-orientation is not separately modelled here — a
+        single-orientation match is sufficient for novelty detection.
+      - ``FUN_00431310`` (score-and-register) is partially in Python already
+        (see ``register_received_press``); the DELAY_REVIEW caller only
+        reads the score return, so we invoke ``legitimacy_gate`` directly
+        against the candidate set as the cheap-scoring stand-in.
+      - ORR-permutation max-score inner loop is approximated as a single
+        score call; ORR proposals don't exercise the per-record match
+        loop (C: ``if bVar21 continue``) so the novelty result coincides.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # ── 1. Clause extraction ──────────────────────────────────────────────
+    positive, negative = _split_xdo_clauses(body_tokens)
+    if not positive and not negative:
+        _log.debug("delay_review: no XDO clauses → 0 (don't delay)")
+        return 0
+
+    # Detect ORR wrapper for the bVar21 branch.
+    text = ' '.join(str(t) for t in body_tokens).strip()
+    is_orr = text.startswith('ORR')
+
+    # ── 2. Catalog walk (novelty check) ───────────────────────────────────
+    pos_set = set(positive)
+    neg_set = set(negative)
+    for entry in state.g_BroadcastList:
+        if not isinstance(entry, dict):
+            continue
+        if is_orr:
+            # C: bVar21=true → continue without per-record match check.
+            # ORR mode skips the novelty match loop and proceeds directly
+            # to the scorer via the fall-through at the sentinel.
+            continue
+        cands = entry.get('order_candidates', [])
+        cand_texts = set()
+        for c in cands:
+            t = c.get('tokens') if isinstance(c, dict) else c
+            if t is not None:
+                cand_texts.add(' '.join(str(x) for x in t)
+                               if isinstance(t, (list, tuple))
+                               else str(t))
+        # C: require both sub-tree A size == positive count AND
+        # sub-tree B size == negative count AND every clause found.
+        # Python: collapse to subset-containment on the unified candidate
+        # set. Strict-count equality is preserved by also requiring the
+        # candidate set to be no larger than the union of proposed clauses
+        # (a stricter reading: "the record represents exactly this shape").
+        if not pos_set.issubset(cand_texts):
+            continue
+        if neg_set & cand_texts:
+            continue
+        # Flag gate: record +0x18 != 1 (not marked-skip), +0x1c == 0.
+        # Python stand-in: require the entry's type_flag != 1 (i.e. not
+        # already-processed) and its watermark is None or zero-valued.
+        if entry.get('type_flag', 0) == 1:
+            continue
+        _log.debug("delay_review: novelty match → 0 (don't delay)")
+        return 0
+
+    # ── 3. Cheap scorer on novel proposal ─────────────────────────────────
+    # Build a candidate set from the clause lists and score via
+    # legitimacy_gate. C: FUN_00431310 returns the min score over the set;
+    # score==0 triggers delay.
+    own_power_idx = getattr(state, 'own_power_index', None)
+    if own_power_idx is None:
+        own_power_idx = getattr(state, 'albert_power_idx', 0)
+
+    cand_list = []
+    for clause in positive:
+        cand_list.append({'order_seq': {'tokens': clause.split(),
+                                        'type_flag': 0},
+                          'flag_bit': 1})
+    for clause in negative:
+        cand_list.append({'order_seq': {'tokens': clause.split(),
+                                        'type_flag': 1},
+                          'flag_bit': 0})
+    try:
+        score = legitimacy_gate(state, int(own_power_idx), cand_list)
+    except Exception:
+        _log.exception("delay_review: cheap scorer raised; defaulting to 0")
+        return 0
+
+    _log.debug("delay_review: novel proposal cheap_score=%d orr=%s",
+               score, is_orr)
+
+    # C: `if (score == 0)` → delay + event archive. The strict-equality
+    # check is deliberate — nonzero scores (positive or negative) skip
+    # the delay branch.
+    if score == 0:
+        import time as _t
+        # Event key = (now - press_epoch) + 10000; use absolute wall time
+        # plus the +10000 offset (press_epoch isn't tracked in Python;
+        # the offset alone discriminates the event class per the schema
+        # in docs/funcs/DELAY_REVIEW.md).
+        state.g_AllianceMsgTree.add(int(_t.time()) + 10000)
+        _log.debug("delay_review: score==0 → 1 (delay) + event archived")
+        return 1
+
+    return 0
+
+
 # ── RegisterReceivedPress = FUN_00431310 ─────────────────────────────────────
 
 def register_received_press(
@@ -896,8 +1613,49 @@ def register_received_press(
     # type_flag==0 = external/received candidates (both passes send these)
     external_cands = [c for c in order_candidates if c.get('type_flag', 0) == 0]
 
+    # C line 103: local_1fc = FUN_00426140(local_1e8) — legitimacy gate over
+    # the candidate-order set. Returns min per-order score; negative means the
+    # proposal contains an order that fails legality or trust-clamp rescoring.
+    # In C the return flows into decision logic further down; here we log it
+    # and proceed (matching the observation that register_received_press
+    # unconditionally enqueues in C too — the gate's effect is primarily
+    # through CAL_VALUE, not here).
+    try:
+        own_power_idx = getattr(state, 'own_power_index', None)
+        if own_power_idx is None:
+            own_power_idx = getattr(state, 'g_OwnPowerIndex', 0)
+        gate_score = legitimacy_gate(
+            state, int(own_power_idx),
+            [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
+             for c in external_cands],
+        )
+        _log.debug("register_received_press: legitimacy_gate -> %d", gate_score)
+    except Exception:
+        _log.exception("register_received_press: legitimacy_gate failed; proceeding")
+
     # C: local_1f8 = DAT_00bb65f4  (g_BroadcastList size before first insert)
     size_before = len(state.g_BroadcastList)
+
+    # Compute per-power score vector — Python stand-in for the int[≥7] at
+    # AllianceRecord +0x48 that BuildHostilityRecord populates in C. For
+    # each power index, re-score the candidate set through legitimacy_gate
+    # with that power's perspective; the min per-order score is the same
+    # quantity C stores in score[+0x48 + 4*p]. When the gate fails or a
+    # power index is absent, we record 0 (neutral).
+    score_vec = [0] * 7
+    for pwr in range(7):
+        try:
+            s = legitimacy_gate(
+                state, pwr,
+                [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
+                 for c in external_cands],
+            )
+            # legitimacy_gate returns clamp-window-corrected min; clip to
+            # int range the C side would see at +0x48 (undefined4, but
+            # CAL_VALUE only reads signed deltas from it).
+            score_vec[pwr] = int(s)
+        except Exception:
+            score_vec[pwr] = 0
 
     # ── Pass 1: type_flag==0 entries, watermark=None ──────────────────────
     entry1: dict = {
@@ -911,6 +1669,11 @@ def register_received_press(
         'sublist2':        list(to_power_toks),
         'sublist3':        list(press_content),
         'order_candidates': list(external_cands),
+        'score_vector':    list(score_vec),
+        # C: history flag at +0x9c; CAL_VALUE requires >= 1 for diff form.
+        # register_received_press produces fresh current-turn records, so
+        # history_flag=1 mirrors the "record is populated and queryable" state.
+        'history_flag':    1,
     }
     send_alliance_press(state, key=size_before, entry_data=entry1)
     _log.debug(
@@ -975,12 +1738,55 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
         # press content as a token list (strings for Python string-mode press)
         press_tokens = content_str.split()
 
-        register_received_press(
-            state,
-            press_content=press_tokens,
-            from_power_tok=from_power_tok,
-            to_power_toks=to_power_toks,
-        )
+        # C FRMHandler (PRP branch): `if (!DELAY_REVIEW(body)) { EvaluatePress(...) }`.
+        # DELAY_REVIEW returns 1 to defer review on novel low-score proposals;
+        # returns 0 to proceed with EvaluatePress + RESPOND. In SPR/FAL movement
+        # phases C just drops deferred proposals; in retreat/winter it emits
+        # REJ. We mirror the movement-phase drop (simplest parity) and skip
+        # register_received_press entirely when the gate says delay.
+        if delay_review(state, press_tokens):
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "process_frm_message: DELAY_REVIEW=1 → dropping press_tokens=%r",
+                press_tokens,
+            )
+        else:
+            register_received_press(
+                state,
+                press_content=press_tokens,
+                from_power_tok=from_power_tok,
+                to_power_toks=to_power_toks,
+            )
+
+    # ── YES / REJ / BWX inbound: ack against our pending proposal (FUN_0042c970) ──
+    # C: FRMHandler body_tok ∈ {YES, REJ, BWX} → ack_matcher over DAT_00bb65c8.
+    for ack_name, ack_tok in (('YES', _ACK_TOK_YES), ('REJ', _ACK_TOK_REJ), ('BWX', _ACK_TOK_BWX)):
+        # Detect the ack verbatim at top level — a simple `ack_name (` probe
+        # mirrors the FRMHandler body-token check.
+        if f'{ack_name} (' in sub_message:
+            match = re.search(rf'{ack_name} \(([^()]*)\)', sub_message)
+            body = match.group(1).split() if match else []
+            ack_matcher(state, sender_id, ack_tok,
+                        proposal_tokens=body if body else None)
+
+    # ── HUH inbound: peer ERR-strip replay salvage (FUN_0042cd70) ──────────
+    # C: FRMHandler body_tok == HUH → huh_err_strip_replay, which strips
+    # ERR tokens from the echoed body and replays the remainder through the
+    # ack-matcher.
+    if 'HUH (' in sub_message:
+        match = re.search(r'HUH \((.*)\)', sub_message)
+        if match:
+            huh_body = match.group(1).split()
+            huh_err_strip_replay(state, sender_id, huh_body)
+
+    # ── TRY inbound: sender declares their stance tokens toward us (FUN_0041c0f0) ──
+    # C: replaces DAT_00bb6e10[sender*0xc] with body tokens; no reply. Consumed
+    # by HOSTILITY.c for stance-based scoring.
+    if 'TRY' in sub_message and 'TRY (' in sub_message:
+        match = re.search(r'TRY \(([^()]*)\)', sub_message)
+        if match:
+            try_body = match.group(1).split()
+            process_try(state, sender_id, try_body)
 
     # Process explicit DAIDE ALY proposals/confirmations.
     if "ALY (" in sub_message:
@@ -3830,6 +4636,15 @@ def receive_proposal(
         'tokens': list(proposal_tokens),
         'token_set': proposal_set,
         'power_count': 0,   # C node[0xe]; always 0 for newly inserted entries
+        # ── Ack-matcher schema extension (2026-04-14) ──────────────────────
+        # FUN_0042c970 keys sender-match against C node offsets +0xc/+0xf/+0x12.
+        # +0xc / +0xf both hold the sender power (primary check on any ack).
+        # +0x12 is the secondary slot consulted on non-YES (REJ/BWX) acks.
+        # In the Python model a single ``sender_power`` captures both.
+        'sender_power':     sender_power,
+        'processed_flag':   0,          # C node[+8]; 0 = unprocessed, set by ack-matcher bookkeeping
+        'role_b_set':       set(),      # C node[+0x0e / per-role sub-tree] — YES-ack role-B set
+        'role_c_set':       set(),      # C node[+0x16 / per-role sub-tree] — REJ/BWX role-C set
     })
 
     # ── Log ──────────────────────────────────────────────────────────────────

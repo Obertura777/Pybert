@@ -6,5 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
-    "diplomacy @ git+https://github.com/ALLAN-DIP/diplomacy.git@dev",
+    "diplomacy",
 ]
+
+[tool.uv.sources]
+diplomacy = { git = "https://github.com/ALLAN-DIP/diplomacy.git", rev = "dev" }
+
+[tool.ty.environment]
+root = [".."]
