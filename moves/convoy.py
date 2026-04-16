@@ -216,6 +216,108 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
             state.g_ProvinceScoreTrial[adj] = 1
 
 
+def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
+    """
+    Narrow port of ProcessTurn's convoy-chain BFS
+    (Source/ProcessTurn.c:1425-1929 - per-trial convoy route table init
+    plus the fleet-chain walk that threads armies across water).
+
+    For each army owned by ``power_idx``, finds the *shortest* fleet chain
+    (1, 2, or 3 fleets) that can convoy that army off its coast to some
+    reachable destination, and records it in
+    ``state.g_ConvoyRoute[army_src]``.  Armies with no viable chain are
+    absent from the dict.
+
+    This is a destination-blind chain: the readers in ``build_convoy_orders``
+    and ``monte_carlo/trial.py`` combine the stored chain with a dst
+    supplied by the order-generation pipeline.  In the C, the reachability
+    table is keyed per-destination (stride 0x14 at +0x214); here we choose
+    one chain per source because the existing Python reader contract uses
+    ``g_ConvoyRoute[src]`` as the lookup key.
+
+    TODO(fidelity): full C semantics would key by (src, dst) so that an
+    army with two candidate destinations requiring different chains picks
+    the right fleets for each.  See ProcessTurn.c:1628 etc. for the
+    per-destination writes.  That port also needs the reader sites updated.
+
+    Mutates only ``state.g_ConvoyRoute``.
+    """
+    for src_prov, unit_data in list(state.unit_info.items()):
+        if unit_data.get('power') != power_idx:
+            continue
+        if unit_data.get('type') != 'A':
+            continue
+
+        chain = _find_shortest_convoy_chain(state, src_prov)
+        if chain is None:
+            # No viable chain - clear any stale entry from prior trials.
+            state.g_ConvoyRoute.pop(src_prov, None)
+            continue
+
+        state.g_ConvoyRoute[src_prov] = {
+            'fleet_count': len(chain),
+            'fleets':      list(chain),
+        }
+
+
+def _find_shortest_convoy_chain(state: InnerGameState, army_src: int):
+    """
+    BFS over fleet units starting from fleets adjacent to ``army_src``.
+    Returns the shortest fleet chain (up to 3 fleets) that touches a
+    non-fleet coastal destination other than the army's source, or
+    ``None`` if no such chain exists.
+
+    Depth-1 seeds are fleets directly adjacent to the army.  Each step
+    either lands (terminal fleet is adjacent to a non-fleet, non-source
+    province = returnable chain) or extends through another adjacent
+    fleet.  Visited fleets are tracked so we never loop, and the BFS
+    caps at depth 3 (matching the C struct's three convoy-leg slots at
+    +0x218, +0x21c, +0x220).
+    """
+    MAX_CHAIN = 3
+
+    depth_1_fleets = [
+        adj for adj in state.get_unit_adjacencies(army_src)
+        if state.get_unit_type(adj) == 'F'
+    ]
+    if not depth_1_fleets:
+        return None
+
+    frontier = [(f,) for f in depth_1_fleets]
+    visited_fleets = set(depth_1_fleets)
+
+    for depth in range(1, MAX_CHAIN + 1):
+        next_frontier: list = []
+        for chain in frontier:
+            terminal = chain[-1]
+            # Does the terminal fleet touch a viable landing square?
+            for adj in state.get_unit_adjacencies(terminal):
+                if adj == army_src:
+                    continue
+                if state.get_unit_type(adj) == 'F':
+                    continue
+                # Any non-fleet, non-source adjacency counts as a
+                # potential landing; higher-level scoring decides whether
+                # the resulting move is desirable.  This matches the
+                # destination-blind shape of option-1 narrow port.
+                return chain
+
+            # No direct landing - extend through another fleet.
+            if depth < MAX_CHAIN:
+                for adj in state.get_unit_adjacencies(terminal):
+                    if state.get_unit_type(adj) != 'F':
+                        continue
+                    if adj in visited_fleets:
+                        continue
+                    visited_fleets.add(adj)
+                    next_frontier.append(chain + (adj,))
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return None
+
+
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int) -> None:
     """
     Port of FUN_0044b760 = BuildConvoyOrders.

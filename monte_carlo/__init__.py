@@ -3,7 +3,7 @@ import random
 import numpy as np
 from ..state import InnerGameState
 from ..heuristics import score_order_candidates_all_powers
-from ..moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals, assign_support_order, register_convoy_fleet, build_convoy_orders
+from ..moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach, build_support_opportunities, build_support_proposals, assign_support_order, register_convoy_fleet, build_convoy_orders, populate_convoy_routes
 
 from ._flags import (
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,

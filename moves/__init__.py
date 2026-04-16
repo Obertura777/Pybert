@@ -22,4 +22,5 @@ from .convoy import (
     enumerate_convoy_reach,
     register_convoy_fleet,
     build_convoy_orders,
+    populate_convoy_routes,
 )

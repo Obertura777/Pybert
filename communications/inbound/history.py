@@ -30,17 +30,31 @@ def process_hst(state: InnerGameState, message: str):
         lvl = int(lvl_match.group(1) or lvl_match.group(2))
         state.g_HistoryCounter = lvl
 
-    # Parse MTL 
+    # Parse MTL
+    # C: DAT_00624ef4 = *puVar7  (ParseHSTResponse) — the canonical name is
+    # g_MoveTimeLimitSec (see research.md:1484, docs/GlobalDataRefs.md:79).
+    # Consumers (communications/scheduling.py:132,133,160,
+    # communications/inbound/respond.py:345) all read g_MoveTimeLimitSec, and
+    # state.__init__ declares it as `self.g_MoveTimeLimitSec: int = 0`.
+    # Previously wrote the phantom name g_MoveTimeLimit, so the HST value
+    # never reached the press-scheduling code.
     mtl_match = re.search(r'MTL(?:\s*\(\s*(\d+)\s*\)|.*?(\d+))', message)
     if mtl_match:
         mtl = int(mtl_match.group(1) or mtl_match.group(2))
-        state.g_MoveTimeLimit = mtl
+        state.g_MoveTimeLimitSec = mtl
 
     # Initialize per-game press threshold randomization (0-98)
     state.g_PressThreshRandom = random.randrange(50) + random.randrange(50)
     
-    # Force press level config override if needed
-    if getattr(state, 'g_ForceDisablePress', 0) == 1:
+    # Force press level config override if needed.
+    # C: DAT_00baed40 (g_MinimalPressMode) — set to 1 by the `-G`/`-g` CLI arg
+    # (docs/funcs/ParseCommandLineArg.md:11) for "guaranteed mode".  Read in
+    # ParseHSTResponse.c:99 to force g_HistoryCounter = 0.  The Python port
+    # doesn't parse a CLI arg so this branch is normally dead; retained for
+    # fidelity.  Also accept the older `g_ForceDisablePress` Python name as a
+    # fallback for any caller that sets it programmatically.
+    if (int(getattr(state, 'g_MinimalPressMode', 0)) == 1
+            or int(getattr(state, 'g_ForceDisablePress', 0)) == 1):
         state.g_HistoryCounter = 0
 
     # Populate per-power allowed-press-type maps (DAT_00bb6e10[p*0xc]).

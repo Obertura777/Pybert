@@ -20,6 +20,7 @@ from ..state import InnerGameState
 from ..moves import (
     enumerate_hold_orders,
     enumerate_convoy_reach,
+    populate_convoy_routes,
     compute_safe_reach,
     build_support_opportunities,
 )
@@ -216,5 +217,11 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     for p in range(NUM_POWERS):
         enumerate_hold_orders(state, p)
         enumerate_convoy_reach(state, p)
+        # Populates state.g_ConvoyRoute[army_src] for each army of p with a
+        # shortest fleet chain (option-1 narrow port of ProcessTurn's convoy
+        # route BFS — see moves/convoy.py:populate_convoy_routes).  Without
+        # this, the CTO branches in trial.py:553 and :1046 silently fall
+        # back to direct moves and no CVY orders are ever emitted.
+        populate_convoy_routes(state, p)
     compute_safe_reach(state)
     build_support_opportunities(state)
