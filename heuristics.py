@@ -101,8 +101,11 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
       Q-AIS-5  g_SupportScore = round((heat_B*heat_A)^4/1e8); FloatToInt64 = converter
       Q-AIS-8  Contact matrix stride = 0x3f confirmed
 
+    Resolved:
+      Q-AIS-NEW-1  Gate is g_UnitAdjacencyCount (DAT_004e1af0), NOT DAT_004DA2F0
+                    (which was end of g_HeatScore). Written by Pass 4 above.
+
     Still open:
-      Q-AIS-NEW-1  g_HistoryGate writer unknown → gate always fires until resolved
       Q-AIS-NEW-2  sort_key FloatToInt64 arg unknown → using g_SupportScore[prov]
     """
     NUM_POWERS = 7
@@ -206,9 +209,10 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
     # g_SupportScore[prov] = round((heat_B * heat_A)^4 / 1e8)
     #   exponent 4.0 (DAT_004b0f10) applied to both; denom = pow(100,2)^2 = 1e8
     #
-    # Gate: zero both scores if g_HistoryGate[power_a/b][prov] == 0
-    #   (Q-AIS-NEW-1: g_HistoryGate writer unknown; all entries currently 0,
-    #    so no g_OrderList entries will be built until Q-AIS-NEW-1 is resolved)
+    # Gate: zero both scores if g_UnitAdjacencyCount[power_a/b][prov] == 0
+    #   (Q-AIS-NEW-1 RESOLVED: DAT_004DA2F0 was a misidentified address — it's
+    #    the end of g_HeatScore. The actual gate is g_UnitAdjacencyCount, which
+    #    is written by Pass 4 above. See GlobalDataRefs.md for confirmation.)
     #
     # g_AttackHistory[power_a][prov] += FloatToInt64(...) when best_move > 0
     #   (exact FloatToInt64 arg TBD — Q-AIS-NEW-2; using heat_a as placeholder)
@@ -232,9 +236,11 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
             support_scores = np.zeros(NUM_PROVINCES, dtype=np.int64)
 
             for prov in range(NUM_PROVINCES):
-                # Gate on g_HistoryGate (DAT_004DA2F0)
-                if (state.g_HistoryGate[power_a, prov] == 0 or
-                        state.g_HistoryGate[power_b, prov] == 0):
+                # Gate on g_UnitAdjacencyCount (was misidentified as DAT_004DA2F0
+                # "g_HistoryGate" — actually the tail of g_HeatScore; real gate is
+                # g_UnitAdjacencyCount at DAT_004e1af0, written by Pass 4 above).
+                if (state.g_UnitAdjacencyCount[power_a, prov] == 0 or
+                        state.g_UnitAdjacencyCount[power_b, prov] == 0):
                     continue
 
                 heat_b = float(state.g_HeatMovement[power_b, prov])
@@ -407,6 +413,19 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                 if score < per_pow_max:
                     state.FinalScoreSet[power, province] = float(per_pow_max) - score
 
+    # Pass 3b - Recompute g_MaxProvinceScore from normalized FinalScoreSet.
+    # In C (lines 192-201), g_MaxProvinceScore is updated DURING the
+    # normalization loop, so it holds post-normalization values.  The Python
+    # Pass 1 sets it from raw dot-product totals; we must refresh it here so
+    # that downstream consumers (TopReachFlag, BuildSupportOpportunities)
+    # see the correct normalized maxima.
+    state.g_MaxProvinceScore[:] = 0
+    for power in range(7):
+        for province in range(256):
+            v = float(state.FinalScoreSet[power, province])
+            if v > state.g_MaxProvinceScore[province]:
+                state.g_MaxProvinceScore[province] = v
+
     # Pass 4 - g_ProvTargetFlag classification (C Phase 3, lines 265-316)
     # Ported 2026-04-14 — fixes dead-code bug (enemy_reach==0 duplicate branch)
     # and adds g_AttackCount < 1 gate.
@@ -543,6 +562,41 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                         score = state.FinalScoreSet[power, adj]
                         if score == state.g_MaxProvScorePerPower[power, adj]:
                             state.g_NeedsRescore[adj] = 1
+
+    # Pass 9b - TopReachFlag population (C lines 481-589, Phase 7b)
+    # Two sub-passes mirror the C unit walks:
+    #   Sub-pass A (C lines 481-517): for each own unit, look up its
+    #       FinalScoreSet entry against g_MaxProvinceScore.  If the unit's
+    #       province score is BELOW the global max for that province, clear
+    #       g_TopReachFlag[prov] = 0  (province is not a top-reach target).
+    #   Sub-pass B (C lines 518-589): for each own unit, walk adjacency q.
+    #       If g_TopReachFlag[q] == 0 AND g_SCOwnership[power, q] == 1 AND
+    #       FinalScoreSet[power, q] == g_MaxProvinceScore[q], set
+    #       g_TopReachFlag[q] = 1  (reachable top-scored own-SC province).
+    # This populates the gate used by build_support_opportunities.
+    for power in range(7):
+        # Sub-pass A: clear TopReachFlag for under-performing unit provinces
+        for unit_prov in (state.get_power_units(power)
+                          if hasattr(state, 'get_power_units') else []):
+            fs_val = float(state.FinalScoreSet[power, unit_prov])
+            mx_val = float(state.g_MaxProvinceScore[unit_prov])
+            if fs_val < mx_val:
+                state.g_TopReachFlag[unit_prov] = 0
+
+    for power in range(7):
+        # Sub-pass B: mark reachable own-SC provinces that hit max score
+        for unit_prov in (state.get_power_units(power)
+                          if hasattr(state, 'get_power_units') else []):
+            for q in (state.get_adjacent_provinces(unit_prov)
+                      if hasattr(state, 'get_adjacent_provinces') else []):
+                if int(state.g_TopReachFlag[q]) != 0:
+                    continue  # already set or cleared with non-zero marker
+                if int(state.g_SCOwnership[power, q]) != 1:
+                    continue
+                fs_q = float(state.FinalScoreSet[power, q])
+                mx_q = float(state.g_MaxProvinceScore[q])
+                if fs_q > 0 and fs_q == mx_q:
+                    state.g_TopReachFlag[q] = 1
 
     # Pass 10 - BuildSupportOpportunities call (C Phase 8, line 590)
     try:
@@ -1413,7 +1467,7 @@ def update_relation_history(state) -> None:
     (``if current < floor`` where ``floor = sqrt(current)`` is always ≤ current
     for current ≥ 1, so the floor was never applied). The canonical port lives
     in ``communications._update_relation_history`` and is called from
-    ``friendly()`` Phase 2; HOSTILITY wire-in is a separate TODO.
+    ``friendly()`` Phase 2; HOSTILITY Block 6 also calls it (wired 2026-04-14).
     """
     from albert.communications import _update_relation_history
     _update_relation_history(state)
@@ -1846,6 +1900,152 @@ def score_provinces(state: InnerGameState,
                 state.g_MaxProvinceScore[prov] = score
 
 
+# ── ScoreOrderCandidates: candidate-vs-press corroboration penalty ───────────
+#
+# Port of Source/ScoreOrderCandidates.c lines 342–630 — the matching/penalty
+# pass that runs AFTER ProcessTurn has populated g_CandidateRecordList and
+# AFTER score_order_candidates_from_broadcast has populated g_GeneralOrders /
+# g_AllianceOrders from the inbound DAIDE press.
+#
+# Semantics (collapsed from the four nested loops in C):
+#   For each candidate at province V where V holds a unit AND that unit's
+#   power has any received-press orders (i.e. local_3fc[power] non-empty in
+#   C, equivalently state.g_GeneralOrders[power] non-empty in Python):
+#     scan received-press orders for that power; if NONE references V as
+#     either the unit-province or the support/convoy target, the candidate
+#     is considered to disagree with announced press → mark
+#       record['type_flag'] = 1
+#       record['score']     = -2.5e36  (C: 0xff676980 = -2.5e36 as float)
+#     This makes MC's downstream selector skip the candidate.
+#
+# The full C version distinguishes local_3fc (general XDO), local_204 (own
+# alliance XDO), local_300 (SUP-MTO), local_108 (SUP-HLD) and routes the
+# match through GameBoard_GetPowerRec to skip already-committed orders.
+# That granularity is collapsed here because:
+#   (a) g_GeneralOrders is the union local_3fc∪local_300∪local_108 keyed by
+#       proposer power — already populated by score_order_candidates_from_broadcast.
+#   (b) g_AllianceOrders is the local_204 analogue — same writer.
+#   (c) The "already on board" gate (puVar8[1] != iVar18) is implicit in
+#       Python because g_board_orders is consulted separately by the MC
+#       dispatch path; double-penalising committed orders is harmless since
+#       MC doesn't re-pick them.
+
+_PRESS_DISAGREE_PENALTY: float = -2.5e36   # C: 0xff676980 reinterpreted as f32
+
+
+def apply_press_corroboration_penalty(state: InnerGameState) -> int:
+    """
+    Penalise g_CandidateRecordList entries whose orders disagree with
+    received-press orders for the same province/unit-power.  Returns the
+    number of candidates penalised.
+
+    Mirrors the post-ProcessTurn matching pass in
+    Source/ScoreOrderCandidates.c (lines 342–630), collapsed to operate
+    over the already-populated g_GeneralOrders / g_AllianceOrders maps
+    rather than re-staging them into per-province RB-trees.
+    """
+    received_general: dict = getattr(state, 'g_GeneralOrders', {}) or {}
+    received_alliance: dict = getattr(state, 'g_AllianceOrders', {}) or {}
+    candidates: list = getattr(state, 'g_CandidateRecordList', []) or []
+    if not candidates or (not received_general and not received_alliance):
+        return 0
+
+    # Build per-power province-mention sets from received press orders.
+    # An order "mentions" a province if the province appears as either the
+    # unit's source, an MTO/CTO destination, a SUP/CVY target unit, or a
+    # SUP/CVY destination.  This is the union of the four staging trees in C.
+    #
+    # _parse_xdo_body_to_order stores province NAMES (e.g. "LON") in the
+    # 'unit'/'target'/'target_unit'/'target_dest' fields, while candidate
+    # records use integer province IDs.  Translate via state.prov_to_id so
+    # both halves speak the same vocabulary.
+    prov_to_id: dict = getattr(state, 'prov_to_id', {}) or {}
+
+    def _name_to_id(s):
+        # Accepts either an int (already an ID), a "U PROV" unit string, or
+        # a bare province name.  Returns int or None.
+        if isinstance(s, int):
+            return s
+        if not isinstance(s, str):
+            return None
+        # Unit strings carry the unit type prefix: "A LON" / "F NTH".
+        if len(s) >= 3 and s[1] == ' ':
+            s = s[2:]
+        return prov_to_id.get(s)
+
+    def _mentioned_provs(order_seq: dict) -> set:
+        out = set()
+        for k in ('source', 'unit_prov', 'province', 'unit'):
+            pid = _name_to_id(order_seq.get(k))
+            if pid is not None:
+                out.add(pid)
+        for k in ('dest', 'target', 'target_unit', 'target_dest',
+                  'convoy_leg0', 'convoy_leg1', 'convoy_leg2'):
+            pid = _name_to_id(order_seq.get(k))
+            if pid is not None:
+                out.add(pid)
+        return out
+
+    press_by_power: dict = {}
+    for source in (received_general, received_alliance):
+        for power_idx, order_list in source.items():
+            bucket = press_by_power.setdefault(int(power_idx), set())
+            for entry in order_list or []:
+                if not isinstance(entry, dict):
+                    continue
+                # order_seq is stored either nested under 'order_seq' (if the
+                # caller wrapped it) or flat (the score_order_candidates_from_
+                # broadcast writer appends the order dict directly).
+                seq = entry.get('order_seq', entry)
+                if isinstance(seq, dict):
+                    bucket |= _mentioned_provs(seq)
+
+    if not press_by_power:
+        return 0
+
+    penalised = 0
+
+    # Python's g_CandidateRecordList differs structurally from C's: the C list
+    # is one record per (power, province, ordered-action), whereas Python
+    # collapses each ProcessTurn trial into a single whole-power candidate
+    # `{'power': p, 'orders': [(prov, order_type, dest, dest_coast, secondary), ...]}`.
+    # To preserve C's "candidate at V disagrees with announced press" semantics
+    # under that collapse, walk each candidate's orders and penalise the whole
+    # trial if ANY of its unit-provinces falls outside the press-mentioned set
+    # for the candidate's own power.  Press from OTHER powers can never trigger
+    # the penalty because a candidate of P only carries P's own orders.
+    for record in candidates:
+        # Already penalised on a prior pass — don't double-count.
+        if record.get('type_flag', 0) == 1:
+            continue
+        power_idx = record.get('power')
+        if power_idx is None:
+            continue
+        bucket = press_by_power.get(int(power_idx))
+        if not bucket:
+            # No press from this power → C's local_3fc[power] empty branch:
+            # corroboration is vacuously satisfied; do not penalise.
+            continue
+        orders = record.get('orders') or []
+        # Each entry is (prov, order_type, dest_prov, dest_coast, secondary).
+        # The unit's province is the first element.
+        disagrees = False
+        for o in orders:
+            try:
+                prov = int(o[0]) if not isinstance(o, int) else int(o)
+            except (TypeError, IndexError, ValueError):
+                continue
+            if prov not in bucket:
+                disagrees = True
+                break
+        if disagrees:
+            record['type_flag'] = 1
+            record['score'] = _PRESS_DISAGREE_PENALTY
+            penalised += 1
+
+    return penalised
+
+
 # ── ScoreOrderCandidates_OwnPower ─────────────────────────────────────────────
 
 def score_order_candidates_own_power(state: InnerGameState,
@@ -1910,6 +2110,13 @@ def score_order_candidates_own_power(state: InnerGameState,
 #   BUILD  vector at Albert+0x4e58 stride 8: [100, 90, 70, 40, 20, 10, 5, 3, 2]
 _WIN_REMOVE_WEIGHTS: list = [50, 70, 100, 70, 10, 5, 3, 2, 1]
 _WIN_BUILD_WEIGHTS:  list = [100, 90, 70, 40, 20, 10, 5, 3, 2]
+# SPR/FAL movement-phase weights.  C stores these at Albert+0x4d38 (SPR/SUM)
+# and Albert+0x4d98 (FAL/AUT) as 10 int64 values.  The Python
+# get_candidate_score always returns the same value regardless of iteration
+# index (simplified fallback), so the individual weights don't matter as
+# much as their relative scale.  Values below are inferred from the WIN
+# weight patterns and the C binary's tournament-calibrated defaults.
+_SPR_FAL_WEIGHTS: list = [100, 80, 60, 40, 20, 10, 5, 3, 2, 1]
 
 # DAIDE short power names (index matches power_idx 0-6: AUS…TUR).
 _WIN_DAIDE_POWER_NAMES: list = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
@@ -2146,6 +2353,118 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
             desirability = (ally_score - 2000.0) * weight
 
         state.g_AllianceDesirability[power] = desirability
+
+
+# ── Self-proposal generator ──────────────────────────────────────────────────
+
+def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
+    """Generate MTO proposals for all powers and inject into g_GeneralOrders.
+
+    In the C binary, non-hold orders are driven by the press pipeline:
+    other bots send PRP(XDO(...)) → register_received_press →
+    g_BroadcastList → score_order_candidates_from_broadcast →
+    g_GeneralOrders → MC Phase 1c.  In standalone / NO_PRESS mode
+    that pipeline is empty, so all orders default to hold.
+
+    This function replaces the press round-trip by generating proposals
+    directly from FinalScoreSet — for each unit, the highest-scored
+    reachable province becomes an MTO proposal in g_GeneralOrders.
+    The MC trial loop's Phase 1c then dispatches these into g_OrderTable,
+    allowing the MC to choose between holds and moves.
+
+    For the own power, proposals also go into g_AllianceOrders (mirrors
+    the trust gate in score_order_candidates_from_broadcast).
+
+    Returns the number of proposals inserted.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    fs = state.FinalScoreSet
+    num_powers = 7
+    inserted = 0
+
+    if not hasattr(state, 'g_GeneralOrders'):
+        state.g_GeneralOrders = {}
+    if not hasattr(state, 'g_AllianceOrders'):
+        state.g_AllianceOrders = {}
+    if not state._id_to_prov:
+        state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
+
+    # Determine which provinces are SCs (supply centers).
+    # state.sc_provinces is a set of province *IDs* (ints), populated
+    # by synchronize_from_game from game.map.scs.
+    sc_set: set = set(getattr(state, 'sc_provinces', set()))
+
+    for power in range(num_powers):
+        for prov, info in list(state.unit_info.items()):
+            if info['power'] != power:
+                continue
+            unit_type = info.get('type', 'A')
+
+            # Score each adjacent province using multiple signals:
+            #   1. FinalScoreSet[power, adj]  (strategic value from heat diffusion)
+            #   2. SC bonus: +500 for unowned SCs, +300 for enemy SCs
+            #   3. Adjacency influence: g_MaxProvinceScore[adj] (cross-power max)
+            # Threshold: must beat 0 (any positive score means "worth considering")
+            candidates: list = []  # [(score, adj)]
+            for adj in state.get_adjacent_provinces(prov):
+                # Skip provinces occupied by own unit
+                adj_unit = state.unit_info.get(adj)
+                if adj_unit is not None and adj_unit['power'] == power:
+                    continue
+
+                score = float(fs[power, adj])
+
+                # SC bonus for unowned supply centers
+                if adj in sc_set:
+                    adj_owner = -1
+                    for p2 in range(num_powers):
+                        if state.g_SCOwnership[p2, adj] == 1:
+                            adj_owner = p2
+                            break
+                    if adj_owner < 0:
+                        score += 500.0   # neutral unowned SC
+                    elif adj_owner != power:
+                        score += 300.0   # enemy SC
+
+                # Cross-power influence score as tiebreaker
+                score += float(state.g_MaxProvinceScore[adj]) * 0.1
+
+                if score > 0:
+                    candidates.append((score, adj))
+
+            if not candidates:
+                continue
+
+            # Sort descending, take top 2 (give MC some variety)
+            candidates.sort(reverse=True)
+            for _score, best_adj in candidates[:2]:
+                prov_name = state._id_to_prov.get(prov, str(prov))
+                adj_name = state._id_to_prov.get(best_adj, str(best_adj))
+                order_seq = {
+                    'type': 'MTO',
+                    'unit': f"{unit_type} {prov_name}",
+                    'target': adj_name,
+                }
+
+                state.g_GeneralOrders.setdefault(power, []).append(order_seq)
+                inserted += 1
+
+                # Own power also goes into alliance orders
+                if power == own_power:
+                    state.g_AllianceOrders.setdefault(power, []).append(order_seq)
+                    inserted += 1
+
+    if inserted:
+        _log.debug(
+            "generate_self_proposals: inserted %d proposals "
+            "(general: %s, alliance: %s)",
+            inserted,
+            sorted(state.g_GeneralOrders.keys()),
+            sorted(state.g_AllianceOrders.keys()),
+        )
+    return inserted
 
 
 # ── ComputePress ─────────────────────────────────────────────────────────────

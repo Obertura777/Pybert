@@ -374,6 +374,114 @@ def send_alliance_press(
     return entry
 
 
+# ── XDO proposal emission ────────────────────────────────────────────────────
+
+def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
+    """
+    Convert accumulated g_XdoPressProposals into g_BroadcastList entries.
+
+    In the C binary, BuildSupportProposals (FUN_0043e370) both builds the
+    proposal records AND emits them as XDO(SUP(...)) token sequences into the
+    broadcast list (via FUN_00466f80(&XDO, ...) + AppendList, lines 396–427).
+    The Python port splits these concerns: ``build_support_proposals``
+    populates ``g_XdoPressProposals`` and this function performs the emission.
+
+    Each proposal dict has::
+
+        {'type': 'XDO_SUP', 'supporter_prov': int, 'supporter_power': int,
+         'mover_prov': int, 'dest': int, 'from_power': int, 'to_power': int,
+         'priority': int, 'key': int}
+
+    We convert these into g_BroadcastList entries with ``order_candidates``
+    lists whose tokens follow the DAIDE XDO(SUP ...) pattern that
+    ``_parse_xdo_body_to_order`` can consume downstream.
+
+    Returns the number of proposals emitted.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    proposals = getattr(state, 'g_XdoPressProposals', None)
+    if not proposals:
+        return 0
+
+    _POWER_NAMES = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
+    id_to_prov = state._id_to_prov
+    if not id_to_prov:
+        id_to_prov = {v: k for k, v in state.prov_to_id.items()}
+
+    emitted = 0
+    for prop in proposals:
+        if prop.get('type') != 'XDO_SUP':
+            continue
+
+        sup_prov  = int(prop['supporter_prov'])
+        sup_power = int(prop['supporter_power'])
+        mov_prov  = int(prop['mover_prov'])
+        dest_prov = int(prop['dest'])
+        from_pow  = int(prop['from_power'])
+
+        # Resolve province names
+        sup_name = id_to_prov.get(sup_prov, str(sup_prov))
+        mov_name = id_to_prov.get(mov_prov, str(mov_prov))
+        dst_name = id_to_prov.get(dest_prov, str(dest_prov))
+
+        # Determine unit types
+        sup_info = state.unit_info.get(sup_prov, {})
+        mov_info = state.unit_info.get(mov_prov, {})
+        sup_type = 'FLT' if sup_info.get('type') == 'F' else 'AMY'
+        mov_type = 'FLT' if mov_info.get('type') == 'F' else 'AMY'
+
+        # Power tokens
+        sup_pow_tok = _POWER_NAMES[sup_power] if 0 <= sup_power < 7 else 'UNO'
+        from_pow_tok = _POWER_NAMES[from_pow] if 0 <= from_pow < 7 else 'UNO'
+
+        # Build DAIDE XDO(SUP_MTO) token sequence:
+        # XDO ( ( POWER UNIT_TYPE PROV ) SUP ( POWER UNIT_TYPE PROV ) MTO DEST )
+        tokens = [
+            'XDO', '(',
+            '(', sup_pow_tok, sup_type, sup_name, ')',
+            'SUP',
+            '(', from_pow_tok, mov_type, mov_name, ')',
+            'MTO', dst_name,
+            ')',
+        ]
+
+        # Build g_BroadcastList entry (matches format consumed by
+        # score_order_candidates_from_broadcast).
+        key = prop.get('key', sup_prov * 1000000 + mov_prov * 1000 + dest_prov)
+        entry = {
+            'key':              key,
+            'sent':             True,
+            'type_flag':        1,       # 1 = self-generated (vs 0 = received)
+            'trial_count':      0,
+            'score_vector':     [0] * 7,
+            'history_flag':     0,
+            'order_candidates': [{'tokens': tokens, 'type_flag': 1}],
+        }
+
+        bl = state.g_BroadcastList
+        # Insert sorted by key (C: lower_bound insertion)
+        insert_pos = len(bl)
+        for i, node in enumerate(bl):
+            if node.get('key', 0) >= key:
+                insert_pos = i
+                break
+        bl.insert(insert_pos, entry)
+        emitted += 1
+
+    if emitted:
+        _log.debug(
+            "emit_xdo_proposals: emitted %d SUP proposals into g_BroadcastList "
+            "(list now %d entries)",
+            emitted, len(state.g_BroadcastList),
+        )
+
+    # Clear consumed proposals (they've been emitted).
+    state.g_XdoPressProposals.clear()
+    return emitted
+
+
 # ── RegisterReceivedPress helpers ────────────────────────────────────────────
 
 def _extract_top_paren_groups(text: str) -> list:
@@ -409,23 +517,327 @@ def _parse_xdo_candidates(content_str: str) -> list:
             xdo_tokens = ['XDO']
             idx += 1
             depth = 0
+            opened = False  # have we entered the body's outer paren yet?
             while idx < len(tokens):
                 t = tokens[idx]
+                xdo_tokens.append(t)
                 if t == '(':
                     depth += 1
-                    xdo_tokens.append(t)
+                    opened = True
                 elif t == ')':
-                    if depth == 0:
-                        break
                     depth -= 1
-                    xdo_tokens.append(t)
-                else:
-                    xdo_tokens.append(t)
                 idx += 1
+                # End of this XDO body: opened the outer paren and
+                # closed it (depth back to 0). Without `opened`, a
+                # zero-depth start would terminate before consuming
+                # anything; without the post-decrement break, multiple
+                # XDOs in a single press body get concatenated.
+                if opened and depth == 0:
+                    break
             candidates.append({'tokens': xdo_tokens, 'type_flag': 0})
         else:
             idx += 1
     return candidates
+
+
+# ── DAIDE XDO body → order_seq translator ────────────────────────────────────
+#
+# Bridge between the inbound press registry (g_BroadcastList, populated by
+# register_received_press) and the MC reader (state.g_GeneralOrders[power] /
+# state.g_AllianceOrders[power] consumed by monte_carlo.process_turn at sub-
+# pass 1c).
+#
+# This is the Python equivalent of the writer loop inside ScoreOrderCandidates
+# (Source/ScoreOrderCandidates.c, lines 217–294): for each broadcast entry
+# that survives the legitimacy gate, parse each XDO order_record, identify
+# the proposer power, and insert the order into that power's general /
+# alliance set.
+#
+# The C binary tracks a std::set<order_record> per power keyed on the unit
+# province; in Python we use a plain list (de-duplication absorbed; the MC
+# reader's per-trial state reset makes duplicates harmless).
+
+_DAIDE_TO_ORDER_TYPE_TAG = {
+    'HLD': 'HLD',
+    'MTO': 'MTO',
+    'SUP': 'SUP',
+    'CTO': 'CTO',
+    'CVY': 'CVY',
+}
+
+
+def _split_top_level_groups(tokens: list) -> list:
+    """
+    Walk a flat DAIDE token list and yield top-level items, where each item is
+    either a bare token (str) or a sub-list of the inner tokens of a balanced
+    paren group (list[str]).
+
+    Outer parens are consumed; nested parens inside groups are preserved
+    verbatim so callers can recurse with the same function.
+    """
+    items: list = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        t = tokens[i]
+        if t == '(':
+            depth = 1
+            j = i + 1
+            while j < n and depth > 0:
+                if tokens[j] == '(':
+                    depth += 1
+                elif tokens[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            # Inner (does NOT include the outer parens themselves).
+            items.append(tokens[i + 1:j])
+            i = j + 1
+        elif t == ')':
+            # Stray close paren — should not happen on a balanced input.
+            i += 1
+        else:
+            items.append(t)
+            i += 1
+    return items
+
+
+def _parse_unit_triple(triple: list) -> "tuple[int, str, str] | None":
+    """
+    Parse a (POWER UNIT_TYPE PROV) DAIDE sub-list.
+
+    Returns (power_idx, unit_type_letter, prov_name) or None on malformed input.
+    UNIT_TYPE is normalised to 'A' or 'F' (DAIDE uses AMY / FLT).
+    """
+    if len(triple) < 3:
+        return None
+    p_idx = _pow_idx(triple[0])
+    if p_idx is None:
+        return None
+    utyp = str(triple[1]).upper()
+    if utyp in ('AMY', 'A'):
+        unit_chr = 'A'
+    elif utyp in ('FLT', 'F'):
+        unit_chr = 'F'
+    else:
+        return None
+    prov = str(triple[2]).upper()
+    return p_idx, unit_chr, prov
+
+
+def _parse_destination(item) -> "tuple[str, str]":
+    """
+    Resolve a destination item — either a bare province token or a
+    (PROV COAST) sub-list — into a (prov_name, coast_str) pair.
+    """
+    if isinstance(item, list):
+        prov = str(item[0]).upper() if item else ''
+        coast = str(item[1]).upper() if len(item) > 1 else ''
+        return prov, coast
+    return str(item).upper(), ''
+
+
+def _parse_xdo_body_to_order(xdo_tokens: list) -> "tuple[int, dict] | None":
+    """
+    Parse a single XDO token list into (proposer_power_idx, order_seq_dict).
+
+    The order_seq_dict matches the schema consumed by
+    dispatch.dispatch_single_order — keys: 'type', 'unit', and command-
+    specific fields (target/coast/target_unit/target_dest/target_coast).
+
+    Supported commands: HLD, MTO, SUP (HLD and MTO forms), CTO, CVY.
+    Returns None for malformed or unsupported sequences (caller should
+    skip-with-debug-log).
+
+    Token shape (DAIDE press as emitted by python-diplomacy):
+        XDO ( ( POWER UTYP PROV ) CMD ... )
+    """
+    if not xdo_tokens or xdo_tokens[0] != 'XDO':
+        return None
+
+    # Strip the leading XDO; the remainder must be a single top-level paren
+    # group containing the order body.
+    outer = _split_top_level_groups(xdo_tokens[1:])
+    if not outer or not isinstance(outer[0], list):
+        return None
+    body = _split_top_level_groups(outer[0])
+    if not body or not isinstance(body[0], list):
+        return None
+
+    unit_info = _parse_unit_triple(body[0])
+    if unit_info is None:
+        return None
+    power_idx, unit_chr, prov_name = unit_info
+    unit_str = f"{unit_chr} {prov_name}"
+
+    # Order command is the next bare token after the unit triple.
+    cmd_idx = 1
+    if cmd_idx >= len(body) or isinstance(body[cmd_idx], list):
+        return None
+    cmd = str(body[cmd_idx]).upper()
+    tag = _DAIDE_TO_ORDER_TYPE_TAG.get(cmd)
+    if tag is None:
+        return None
+
+    order: dict = {'type': tag, 'unit': unit_str}
+
+    if tag == 'HLD':
+        return power_idx, order
+
+    if tag == 'MTO':
+        if cmd_idx + 1 >= len(body):
+            return None
+        target, coast = _parse_destination(body[cmd_idx + 1])
+        order['target'] = target
+        order['coast'] = coast
+        return power_idx, order
+
+    if tag == 'SUP':
+        # Next item must be the supported unit's (POWER UTYP PROV) sub-list.
+        if cmd_idx + 1 >= len(body) or not isinstance(body[cmd_idx + 1], list):
+            return None
+        sup_info = _parse_unit_triple(body[cmd_idx + 1])
+        if sup_info is None:
+            return None
+        _, sup_chr, sup_prov = sup_info
+        order['target_unit'] = f"{sup_chr} {sup_prov}"
+        # Optional MTO tail: ... MTO dest [or (dest coast)]
+        rest = body[cmd_idx + 2:]
+        if rest and isinstance(rest[0], str) and rest[0].upper() == 'MTO':
+            if len(rest) < 2:
+                return None
+            dest, coast = _parse_destination(rest[1])
+            order['target_dest']  = dest
+            order['target_coast'] = coast
+        return power_idx, order
+
+    if tag == 'CTO':
+        # CTO dest VIA ( prov+ )  — destination is the next token.
+        if cmd_idx + 1 >= len(body):
+            return None
+        dest, _ = _parse_destination(body[cmd_idx + 1])
+        order['target_dest'] = dest
+        return power_idx, order
+
+    if tag == 'CVY':
+        # CVY ( POWER UTYP PROV ) CTO dest
+        if cmd_idx + 1 >= len(body) or not isinstance(body[cmd_idx + 1], list):
+            return None
+        cvy_info = _parse_unit_triple(body[cmd_idx + 1])
+        if cvy_info is None:
+            return None
+        _, cvy_chr, cvy_prov = cvy_info
+        order['target_unit'] = f"{cvy_chr} {cvy_prov}"
+        rest = body[cmd_idx + 2:]
+        if len(rest) >= 2 and isinstance(rest[0], str) and rest[0].upper() == 'CTO':
+            dest, _ = _parse_destination(rest[1])
+            order['target_dest'] = dest
+        return power_idx, order
+
+    return None
+
+
+def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
+    """
+    Python port of ScoreOrderCandidates' writer loop
+    (Source/ScoreOrderCandidates.c, lines 217–294).
+
+    Walks state.g_BroadcastList (DAT_00bb65ec) and projects each entry's
+    parsed XDO order_candidates into:
+
+      * state.g_GeneralOrders[power]   (≡ DAT_00bb6cf8 + power*0xc) —
+        unconditional general-orders set; consulted by MC sub-pass 1c
+        unconditional second pass.
+      * state.g_AllianceOrders[power]  (≡ DAT_00bb65f8 + power*0xc) —
+        alliance-orders set; consulted by MC sub-pass 1c first pass when
+        the proposer is the own power or a trusted ally.
+
+    Trust gate for the alliance set mirrors the dispatch_first_pass
+    decision in monte_carlo.process_turn (~line 1091): own power, or
+    g_AllyTrustScore_Hi > 0, or (Hi >= 0 and Lo > 2).
+
+    Returns the number of order_records inserted (sum across both sets).
+    Designed to be safe to call multiple times — callers that want
+    fresh state should clear g_GeneralOrders / g_AllianceOrders first.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    bl = getattr(state, 'g_BroadcastList', None)
+    if not bl:
+        return 0
+
+    if not hasattr(state, 'g_GeneralOrders'):
+        state.g_GeneralOrders = {}
+    if not hasattr(state, 'g_AllianceOrders'):
+        state.g_AllianceOrders = {}
+
+    own_power = getattr(state, 'own_power_index', None)
+    if own_power is None:
+        own_power = getattr(state, 'albert_power_idx', 0)
+    own_power = int(own_power)
+
+    inserted = 0
+    seen_keys: set = set()  # de-dup absorption of the C std::set semantics
+    for entry in bl:
+        if not isinstance(entry, dict):
+            continue
+        cands = entry.get('order_candidates') or []
+        for cand in cands:
+            tokens = cand.get('tokens') if isinstance(cand, dict) else None
+            if not tokens:
+                continue
+            parsed = _parse_xdo_body_to_order(tokens)
+            if parsed is None:
+                _log.debug(
+                    "score_order_candidates: skipped unparseable XDO %r",
+                    tokens,
+                )
+                continue
+            power_idx, order_seq = parsed
+
+            # De-dup key: (power, type, unit, target?, target_unit?, target_dest?)
+            key = (
+                power_idx,
+                order_seq.get('type'),
+                order_seq.get('unit'),
+                order_seq.get('target'),
+                order_seq.get('target_unit'),
+                order_seq.get('target_dest'),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            state.g_GeneralOrders.setdefault(power_idx, []).append(order_seq)
+            inserted += 1
+
+            # Alliance gate.
+            is_ally_first_pass = False
+            if power_idx == own_power:
+                is_ally_first_pass = True
+            else:
+                try:
+                    trust_lo = int(state.g_AllyTrustScore[own_power, power_idx])
+                    trust_hi = int(state.g_AllyTrustScore_Hi[own_power, power_idx])
+                    if trust_hi > 0 or (trust_hi >= 0 and trust_lo > 2):
+                        is_ally_first_pass = True
+                except Exception:
+                    pass
+            if is_ally_first_pass:
+                state.g_AllianceOrders.setdefault(power_idx, []).append(order_seq)
+                inserted += 1
+
+    if inserted:
+        _log.debug(
+            "score_order_candidates: inserted %d order_records "
+            "(general slots: %s, alliance slots: %s)",
+            inserted,
+            sorted(state.g_GeneralOrders.keys()),
+            sorted(state.g_AllianceOrders.keys()),
+        )
+    return inserted
 
 
 # ── EvaluatePress = FUN_0042fc40 ──────────────────────────────────────────────
@@ -476,30 +888,276 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     return _BWX
 
 
+# ── Helpers shared by DMZ / ALY / NOT-DMZ evaluators ─────────────────────────
+
+def _flatten_section(section) -> list:
+    """Return ``section`` as a flat list of tokens.
+
+    DAIDE sub-lists arrive as nested Python lists/tuples (string-mode press)
+    or as flat token streams.  Both are normalised to a flat list.
+    """
+    if isinstance(section, (list, tuple)):
+        out: list = []
+        for tok in section:
+            if isinstance(tok, (list, tuple)):
+                out.extend(_flatten_section(tok))
+            else:
+                out.append(tok)
+        return out
+    return [section]
+
+
+def _extract_powers(section) -> list:
+    """Extract a list of 0-based power indices from a DAIDE power sub-list."""
+    out: list = []
+    for tok in _flatten_section(section):
+        p = _pow_idx(tok)
+        if p is not None:
+            out.append(p)
+    return out
+
+
+def _extract_provs(state: "InnerGameState", section) -> list:
+    """Extract province IDs (state.prov_to_id) from a DAIDE province sub-list.
+
+    Tokens may be raw province names ('MUN'), DAIDE province ints, or already
+    resolved IDs.  Returns the list in input order, dropping unknown tokens.
+    """
+    p2id = getattr(state, 'prov_to_id', {}) or {}
+    out: list = []
+    for tok in _flatten_section(section):
+        if isinstance(tok, int):
+            # Already a province ID, or a DAIDE prov token; accept the ID
+            # path (DAIDE-int → name resolution is server-mode and not
+            # plumbed through string-mode press).
+            if tok in getattr(state, '_id_to_prov', {}) or 0 <= tok < 256:
+                out.append(int(tok))
+            continue
+        name = str(tok).upper()
+        if name in p2id:
+            out.append(int(p2id[name]))
+    return out
+
+
+def _ally_trust_ok(state: "InnerGameState", own: int, other: int) -> bool:
+    """Replicate the bVar2 ally-trust check used by _eval_dmz.
+
+    C (_eval_dmz.c lines 173-185):
+      Forward (own→other):
+        Hi[own,other] >= 0 AND (Hi > 0 OR Lo[own,other] > 2)
+      Reverse (other→own):
+        Hi[other,own] >= 0 AND (Hi > 0 OR Lo[other,own] != 0)
+        AND NOT enemy_flag[other]
+        AND relation_score[own,other] >= 0
+        AND (press_mode == 0
+             OR diplomacy_state_b[other] > 0
+             OR (diplomacy_state_b[other] >= 0 AND diplomacy_state_a[other] > 1))
+    """
+    try:
+        hi_fwd = int(state.g_AllyTrustScore_Hi[own, other])
+        lo_fwd = int(state.g_AllyTrustScore[own, other])
+    except Exception:
+        return False
+    if hi_fwd < 0 or (hi_fwd == 0 and lo_fwd <= 2):
+        return False
+    try:
+        hi_rev = int(state.g_AllyTrustScore_Hi[other, own])
+        lo_rev = int(state.g_AllyTrustScore[other, own])
+    except Exception:
+        return False
+    if hi_rev < 0 or (hi_rev == 0 and lo_rev == 0):
+        return False
+    if int(getattr(state, 'g_EnemyFlag', [0] * 7)[other]) == 1:
+        return False
+    try:
+        rel = int(state.g_RelationScore[own, other])  # DAT_00634e90
+    except Exception:
+        rel = 0
+    if rel < 0:
+        return False
+    press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
+    if press_mode:
+        try:
+            ds_b = int(getattr(state, 'g_DiplomacyStateB', [0] * 8)[other])  # DAT_004d5484
+            ds_a = int(getattr(state, 'g_DiplomacyStateA', [0] * 8)[other])  # DAT_004d5480
+        except Exception:
+            ds_a = ds_b = 0
+        if not (ds_b > 0 or (ds_b >= 0 and ds_a > 1)):
+            return False
+    return True
+
+
 def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     """
-    Stub for FUN_0041f090 — DMZ (demilitarise) proposal evaluator.
+    Port of FUN_0041f090 — DMZ (demilitarise) proposal evaluator.
 
-    C: verifies that every province in the DMZ power-province list has no
-    Albert order crossing it, using a g_OrderList BST walk.  Checks ally
-    trust scores for all non-own powers in the DMZ-with list.
-    Full decompile available (_eval_dmz.c); Python port pending due to
-    g_OrderList BST struct mapping.
+    Proposal shape after the leading ``DMZ`` token has been stripped:
+        rest = [(powers_sublist), (provinces_sublist)]
+
+    C semantics (_eval_dmz.c):
+      * Build a set of DMZ powers from sublist-1 (``local_48``).  Set
+        ``own_in_dmz`` if Albert is named in that set.
+      * For ``from_power`` (sublist-0 in C is the from-power singleton):
+          - If ``from_power == own``: trivial accept (skip province check).
+          - Else: run the ally-trust gate (``_ally_trust_ok``).  Failure → REJ.
+      * For each province in sublist-2: walk ``g_OrderList`` looking for an
+        entry whose ``province`` and ``ally_power`` both match.  An entry
+        "justifies" the DMZ when:
+            entry.flag1 is True (alliance order)
+            NOT (entry.flag3 is False AND own_in_dmz)
+            from_power is NOT in the DMZ-powers list
+        If no qualifying entry exists for some province → REJ.
+
+    Return: YES (0x481C) on accept, REJ (0x4814) on reject.
+
+    NOTE: The C inner BST loop's last gate inspects a StdMap value-pointer
+    via GameBoard_GetPowerRec(local_48,...) that has uncertain Python
+    semantics (the map's value type is never explicitly written).  We
+    interpret it as "from_power is in the DMZ-powers list" — which matches
+    the observed behaviour that own-proposed DMZ is trivially accepted and
+    third-party DMZ requires an Albert/ally order to justify it.
     """
-    return 0x481C  # TODO: full Python port pending
+    _YES, _REJ = 0x481C, 0x4814
+    own = int(state.albert_power_idx)
+
+    # Section split — rest[0] = powers list, rest[1] = provinces list.
+    powers_section   = rest[0] if len(rest) >= 1 else []
+    provs_section    = rest[1] if len(rest) >= 2 else []
+
+    dmz_powers = _extract_powers(powers_section)
+    own_in_dmz = own in dmz_powers
+
+    # Trivial-accept: Albert's own DMZ proposals don't get province-checked
+    # (mirrors C line 109: province validation gated on ``local_78 != uVar15``).
+    if from_power == own:
+        return _YES
+
+    if not _ally_trust_ok(state, own, from_power):
+        return _REJ
+
+    prov_ids = _extract_provs(state, provs_section)
+    order_list = getattr(state, 'g_OrderList', []) or []
+    from_in_dmz = from_power in dmz_powers
+
+    for prov in prov_ids:
+        # Walk g_OrderList for a node justifying DMZ on this province.
+        found_qualifying = False
+        for entry in order_list:
+            if entry.get('province') != prov:
+                continue
+            if entry.get('ally_power') != from_power:
+                continue
+            # Match candidate; apply the three gating checks from the BST loop.
+            if not entry.get('flag1', False):
+                continue
+            if not entry.get('flag3', False) and own_in_dmz:
+                continue
+            if from_in_dmz:
+                # Last gate: presence in the dmz-powers std::map (local_48)
+                # disqualifies this match.  See NOTE above.
+                continue
+            found_qualifying = True
+            break
+        if not found_qualifying:
+            return _REJ
+
+    return _YES
 
 
 def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     """
-    Stub for FUN_0041e2d0 — ALY proposal evaluator.
+    Port of FUN_0041e2d0 — ALY proposal evaluator.
 
-    C: ALY (powers) VSS (powers) — 4-token proposal.  Checks:
-      bVar1 = own in ALY list, bVar2 = from_power in ALY list,
-      bVar3 = no VSS-power already in g_AllyMatrix,
-      bVar4 = no existing ally of ALY powers is in the VS list.
-    Full decompile available (_eval_aly.c); Python port pending.
+    DAIDE proposal shape: ``ALY (powers) VSS (powers)``.  After the leading
+    ALY token is stripped by ``_eval_single_xdo``:
+        rest = [(aly_powers_sublist), VSS_token, (vss_powers_sublist)]
+
+    C demands all four conditions (_eval_aly.c lines 229):
+      bVar1 = own  power in ALY list
+      bVar2 = from-power in ALY list
+      bVar3 = no VSS-side power has any existing ALY-side power in
+              ``local_88`` (the ally-side StdMap built earlier)
+      bVar4 = for each (aly_power, vss_power) pair, the per-pair compatibility
+              gate passes — checks ally trust, enemy flags, relation score,
+              proximity (g_MutualEnemyTable), proposal counter (g_RelationScore),
+              and press-mode gates.
+
+    Returns YES iff (bVar1 && bVar2 && bVar3 && bVar4); else REJ.
+
+    NOTE: The C code only enters the validation block when
+    ``len(full_input) == 4`` (line 76 ``uVar6 == 4``) — the four DAIDE tokens
+    of ``ALY (..) VSS (..)``.  ``_eval_single_xdo`` strips the leading ALY,
+    so we accept ``len(rest) == 3`` (powers, VSS, powers).  Anything else REJ.
     """
-    return 0x481C  # TODO: full Python port pending
+    _YES, _REJ = 0x481C, 0x4814
+    own = int(state.albert_power_idx)
+
+    if len(rest) != 3:
+        return _REJ
+
+    aly_section = rest[0]
+    # rest[1] should be the VSS token; we ignore its identity and use its
+    # presence as a structural gate (the dispatcher already verified ALY).
+    vss_section = rest[2]
+
+    aly_powers = _extract_powers(aly_section)
+    vss_powers = _extract_powers(vss_section)
+
+    bVar1 = own in aly_powers
+    bVar2 = from_power in aly_powers
+    if not (bVar1 and bVar2):
+        return _REJ
+
+    # bVar3: no VSS power may already be in our ALY-side relationship.  The C
+    # builds local_88 by walking aly_powers and inserting each as a key, then
+    # looks up each vss_power; a hit means "the proposed enemy is already on
+    # the ally side" → reject.
+    aly_set = set(aly_powers)
+    if any(v in aly_set for v in vss_powers):
+        return _REJ
+
+    # bVar4: per-pair compatibility.  This is the bulk of _eval_aly.c.
+    # We capture the sub-checks that are deterministic from current Albert
+    # state and skip the press-mode "promise queue" checks (DAT_004d5480/4
+    # = g_DiplomacyStateA/B), which are also gated on press_mode == 1.
+    press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
+    enemy_flag = getattr(state, 'g_EnemyFlag', None)
+    rel        = state.g_RelationScore           # DAT_00634e90
+    ally_mat   = state.g_AllyMatrix              # DAT_006340c0/g_AllyMatrix overlap
+    mutual_en  = getattr(state, 'g_MutualEnemyTable', None)  # DAT_00b9fdd8
+
+    for aly_p in aly_powers:
+        if aly_p == own:
+            continue
+        for vss_p in vss_powers:
+            # Forward enemy/relation gate.
+            if press_mode:
+                ef = int(enemy_flag[aly_p]) if enemy_flag is not None else 0
+                if ef == 0 and int(rel[own, aly_p]) >= 0:
+                    # vss must be a real opponent we're not already allied with
+                    is_v_friendly_now = (
+                        int(rel[own, vss_p]) >= 0
+                        and (enemy_flag is None or int(enemy_flag[vss_p]) != 1)
+                    )
+                    already_allied = int(ally_mat[aly_p, vss_p]) >= 1
+                    if not is_v_friendly_now and not already_allied:
+                        if not _ally_trust_ok(state, own, aly_p):
+                            return _REJ
+                        if mutual_en is not None and int(mutual_en[aly_p]) != vss_p:
+                            return _REJ
+                        continue
+                return _REJ
+            else:
+                # Non-press path (line 185+): VSS must not already be allied
+                # to ALY power, and trust gate must pass.
+                if int(ally_mat[aly_p, vss_p]) >= 1:
+                    return _REJ
+                if not _ally_trust_ok(state, own, aly_p):
+                    return _REJ
+                if mutual_en is not None and int(mutual_en[aly_p]) != vss_p:
+                    return _REJ
+
+    return _YES
 
 
 def _split_xdo_clauses(context_toks: list) -> "tuple[list, list]":
@@ -810,8 +1468,7 @@ def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     Port of FUN_0040d310 — NOT PCE / SUB PCE evaluator.
 
     C logic (from _eval_not_pce.c):
-      bVar4 = (len(power_list) < 3) AND FUN_0040d0a0 returns 0
-              → approximated as: len(rest) < 3  (FUN_0040d0a0 stubbed False)
+      bVar4 = (len(power_list) < 3) AND NOT _has_duplicate_powers(power_list)
       bVar2 = own power in list, bVar3 = from_power in list.
       Returns:
         YES  if bVar2 AND bVar3 AND bVar4
@@ -821,7 +1478,12 @@ def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     """
     _BWX = 0x4A02
     own = state.albert_power_idx
-    bVar4 = (len(rest) < 3)   # FUN_0040d0a0 stub: assume returns 0
+    # FUN_0040d0a0: returns 1 if any two elements in the list share the
+    # same first byte (= same power token), 0 if all unique.
+    # bVar4 = short list AND no duplicate powers.
+    power_tokens = [_pow_idx(t) for t in rest if _pow_idx(t) is not None]
+    has_dup = len(power_tokens) != len(set(power_tokens))
+    bVar4 = (len(rest) < 3) and not has_dup
     bVar2 = bVar3 = False
     for tok in rest:
         p = _pow_idx(tok)
@@ -840,13 +1502,134 @@ def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> i
 
 def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     """
-    Stub for FUN_0041f5a0 — NOT DMZ / SUB DMZ evaluator.
+    Port of FUN_0041f5a0 — NOT DMZ / SUB DMZ evaluator.
 
-    C: complex multi-BST walk comparing current vs. previous board ownership
-    (DAT_00bb7028/bb6f28) with ally trust checks.
-    Full decompile available (_eval_not_dmz.c); Python port pending.
+    Proposal shape (after stripping NOT/SUB wrapper): ``(DMZ (powers) (provinces))``
+    so ``rest = [powers_section, provs_section]``.
+
+    Algorithm (mirrors C lines 105-281 of _eval_not_dmz.c):
+
+      Phase A — extract DMZ powers and provinces; build local_cc as a set
+                from the DMZ-powers list (StdMap_FindOrInsert at line 109).
+
+      Phase B (lines 113-148) — validation walk over (every power, every
+                province): probe g_ally_counter_list[p] then g_ally_promise_list[p].
+                Pure validation; no flag side-effects captured by the Python view.
+
+      Phase C (lines 149-243) — per (q in iter_powers, d in provinces) where
+                q != own:
+                  • If q == from_power AND (q,d) is recorded in NEITHER counter
+                    NOR promise lists → ``bVar3 = False`` (no rejection signal
+                    came from the proposer's own ledgers).
+                  • If (q,d) is recorded in BOTH counter AND promise AND q is
+                    in the DMZ-powers set → ``bVar4 = False``.
+                  • If (q,d) is recorded in counter but NOT in promise AND
+                    g_NearEndGameFactor < 3.0 → ``bVar4 = False``.
+
+      Phase D (lines 244-250) — ally-trust gate using own,from_power scores.
+                If iter_powers > 2 and trust gates fail → ``bVar4 = False``.
+
+      Verdict (lines 251-281):
+                bVar3 still True   → REJ if !bVar4 else YES
+                bVar3 False        → BWX path: returns BWX unless count<3 and
+                                     local_cc DOES NOT contain from_power, in
+                                     which case fall through to YES/REJ.
+
+    NOTE: The C constructs ``local_7c`` from FUN_00466480 calls on a separate
+    caller-provided list (likely ALY relations of own and from_power). That
+    arg is not plumbed through to the Python dispatcher, so we use the
+    DMZ-powers list itself as the iteration set — sufficient to exercise the
+    DMZ-membership and per-pair gates correctly.
+
+    Reference: ``_eval_not_dmz.c``  (FUN_0041f5a0)
     """
-    return 0x481C  # TODO: full Python port pending
+    _YES, _REJ, _BWX = 0x481C, 0x4814, 0x4A02
+
+    own = int(state.albert_power_idx)
+    from_p = int(from_power)
+
+    # ── Phase A: extract DMZ shape ────────────────────────────────────────
+    powers_section = rest[0] if len(rest) >= 1 else []
+    provs_section  = rest[1] if len(rest) >= 2 else []
+    dmz_powers = _extract_powers(powers_section)         # local_5c → local_cc set
+    dmz_provs  = _extract_provs(state, provs_section)    # local_6c
+    dmz_set    = set(dmz_powers)
+    iter_powers = list(dmz_powers)                       # local_7c surrogate (see NOTE)
+
+    # ── helpers: dest_prov membership in promise / counter dicts ──────────
+    promise_map = getattr(state, 'g_ally_promise_list', {}) or {}
+    counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
+
+    def _has(map_: dict, p: int, prov: int) -> bool:
+        recs = map_.get(p) or []
+        for r in recs:
+            if isinstance(r, dict):
+                if int(r.get('dest_prov', -1)) == prov:
+                    return True
+            else:
+                # Tolerate plain-int storage.
+                try:
+                    if int(r) == prov:
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    near_end = float(getattr(state, 'g_NearEndGameFactor', 0.0))
+
+    bVar3 = True   # REJ-eligibility flag (becomes False when from_power's ledger is silent)
+    bVar4 = True   # YES-eligibility flag (cleared by DMZ-conflict or NearEnd-counter check)
+
+    # ── Phase C: per (power_q, province_d) walk ───────────────────────────
+    for q in iter_powers:
+        if q == own:
+            continue
+        for d in dmz_provs:
+            in_counter = _has(counter_map, q, d)
+            in_promise = _has(promise_map, q, d)
+
+            # Sub-check A (lines 162-184): from_power's own ledgers are silent.
+            if q == from_p and (not in_counter) and (not in_promise):
+                bVar3 = False
+
+            # Sub-check B (lines 186-213): both ledgers record (q,d) AND q ∈ DMZ.
+            if in_counter and in_promise and (q in dmz_set):
+                bVar4 = False
+
+            # Sub-check C (lines 215-232): counter says yes, promise says no,
+            # and we're still in the early/mid game.
+            if in_counter and (not in_promise) and near_end < 3.0:
+                bVar4 = False
+
+    # ── Phase D: ally-trust gate (lines 244-250) ──────────────────────────
+    # if Hi < 1 AND (Hi < 0 OR Lo < 2) AND iter_powers > 2: bVar4 = False
+    try:
+        hi = int(state.g_AllyTrustScore_Hi[own, from_p])
+        lo = int(state.g_AllyTrustScore[own, from_p])
+    except Exception:
+        hi, lo = 0, 0
+    if (hi < 1) and ((hi < 0) or (lo < 2)) and (len(iter_powers) > 2):
+        bVar4 = False
+
+    # ── Verdict (lines 251-281) ───────────────────────────────────────────
+    if bVar3:
+        # No "from_power silent" signal → straight YES/REJ.
+        return _YES if bVar4 else _REJ
+
+    # bVar3 False: BWX path with from_power-in-DMZ override.
+    n_iter = len(iter_powers)
+    from_in_dmz = (from_p in dmz_set)
+    if n_iter < 3:
+        # For n_iter > 1 OR (n_iter == 1 AND from_p ∈ DMZ): emit BWX.
+        if n_iter > 1:
+            if from_in_dmz:
+                return _BWX
+            # Fall through to YES/REJ when from_power is not in DMZ-set.
+            return _YES if bVar4 else _REJ
+        if n_iter == 1 and from_in_dmz:
+            return _BWX
+        return _YES if bVar4 else _REJ
+    return _BWX
 
 
 def _eval_sub_xdo(rest: list) -> int:
@@ -984,7 +1767,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
           else → single proposal: call FUN_0042c040 directly.
       - On YES: registers accepted tokens in DAT_00bb65d4 (g_AcceptedProposals).
 
-    CAL_VALUE (FUN_004266b6) stub: returns YES unconditionally.
+    CAL_VALUE (FUN_004266b6): wired to _cal_value() for multi-XDO AND coherence.
     FUN_0042c040 = _eval_single_xdo: type dispatcher (PCE/DMZ/ALY/XDO/SLO/DRW/NOT/SUB).
     """
     import random as _random
@@ -1022,10 +1805,12 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
 
         result_ok = True
 
-        # CAL_VALUE: stub → always YES for multi-XDO compound proposals.
+        # CAL_VALUE: coherence check for multi-XDO compound proposals.
         # C: if (1 < local_80): psVar5 = CAL_VALUE(this, &uStack_7a)
         if xdo_count > 1:
-            pass  # result_ok stays True
+            cal_verdict = _cal_value(state, press)
+            if cal_verdict != _YES:
+                result_ok = False
 
         if result_ok:
             for cand in order_cands:
@@ -1842,16 +2627,26 @@ from .monte_carlo import check_time_limit
 
 def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
     """
-    Port of FUN_004424e0 = DispatchScheduledPress (renamed from PrepareOrderGenState).
+    Port of FUN_004424e0 = ScheduledPressDispatch.
 
-    Iterates g_MasterOrderList and sends any enqueued press messages whose
-    scheduled delivery time has elapsed since g_SessionStartTime.
+    Iterates g_MasterOrderList (DAT_00bb65bc/c0) and sends any enqueued press
+    messages whose scheduled delivery time has elapsed since g_turn_start_time
+    (DAT_00ba2880/84).
 
     For each due entry:
-      - press_type == 'SND' → call send_fn(data), then invoke per-power ally press
-      - press_type == 'THN' → extract first arg and execute the THEN action
+      - press_type == 'SND' → call send_fn(data), accumulate target_power into
+        a running power-list, then call SendAllyPressByPower for every power in
+        the cumulative list (C: local_58 accumulator + inner count loop).
+      - press_type == 'THN' → extract first data element (power index) and call
+        ExecuteThennAction (FUN_00439c30).
 
     After dispatching, removes the entry from the list.
+
+    The C binary walks the linked list front-to-back in a do/while(true) loop,
+    calling AdvanceAndRemoveListNode after each dispatch.  Python materialises
+    the list up front and rebuilds the remainder, which is functionally
+    equivalent since dispatch callbacks never re-entrant-append to the same
+    list within a single flush cycle.
 
     Research.md §5271.
 
@@ -1862,14 +2657,25 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
-    _send = send_fn if send_fn is not None else (lambda data: _log.debug("DispatchScheduledPress: SND %r", data))
+    _send = send_fn if send_fn is not None else (
+        lambda data: _log.debug("DispatchScheduledPress: SND %r", data)
+    )
 
-    elapsed = _time.time() - float(getattr(state, 'g_SessionStartTime', 0.0))
+    # C: __time64(0) - CONCAT44(DAT_00ba2884, DAT_00ba2880)
+    # DAT_00ba2880 is g_turn_start_time, set at the top of
+    # GenerateAndSubmitOrders (bot.py Step 1).
+    turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
+    elapsed = _time.time() - turn_start
+
     remaining: list = []
+    # C: local_58 — accumulates target-power bytes across all dispatched SND
+    # entries so that SendAllyPressByPower is called for every recipient seen
+    # so far (not just the current entry's recipient).
+    cumulative_snd_powers: list = []
 
     for entry in list(getattr(state, 'g_MasterOrderList', [])):
         scheduled_time = float(entry.get('scheduled_time', 0.0))
-        if elapsed <= scheduled_time:
+        if elapsed < scheduled_time:
             remaining.append(entry)
             continue
 
@@ -1877,13 +2683,24 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
         data       = entry.get('data', [])
 
         if press_type == 'SND':
+            # C: SendDM(param_1, node+6) — send the press message.
             _send(data)
-            # Send per-power ally press for each power byte in results
-            for power_byte in entry.get('results', []):
-                _send_ally_press_by_power(state, int(power_byte))
+
+            # C: GetSubList(node+6, local_38, 2) → power bytes from position
+            # 2+ in the token sequence.  In Python, the enqueued SND entry
+            # stores the target power as 'target_power' (single int).
+            target = entry.get('target_power')
+            if target is not None:
+                cumulative_snd_powers.append(int(target))
+
+            # C: for i in 0..len(local_58): SendAllyPressByPower(local_58[i])
+            # Uses the cumulative list (all SND recipients so far).
+            for pwr in cumulative_snd_powers:
+                _send_ally_press_by_power(state, pwr)
 
         elif press_type == 'THN':
-            # Execute THEN action: first element of data is the power index
+            # C: GetSubList(node+6, local_28, 1) → first data element
+            # ExecuteThennAction(param_1, *first_arg)
             if data:
                 _execute_then_action(state, int(data[0]))
         # entry consumed — do NOT add to remaining
@@ -1923,7 +2740,8 @@ def _send_ally_press_by_power(state: InnerGameState, power: int) -> None:
 
     _prepare_ally_press_entry(state, power)
 
-    elapsed = _time.time() - float(getattr(state, 'g_SessionStartTime', 0.0))
+    turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
+    elapsed = _time.time() - turn_start
 
     if not int(getattr(state, 'g_PressInstant', 0)):
         # C: uVar4 = (rand() / 0x17) % 0xf  →  0–14 integer
@@ -3111,7 +3929,7 @@ def dispatch_press_and_fallback_gof(state: InnerGameState,
     Global mapping:
       DAT_00bb65c4  → state.g_processing_active   (nonzero while game processes)
       DAT_00baed47  → state.g_cancel_press_sent    (1 = fallback GOF still needed)
-      DAT_00ba2880/84 → state.g_SessionStartTime   (int64 reference timestamp)
+      DAT_00ba2880/84 → state.g_turn_start_time     (int64 reference timestamp)
       DAT_00ba2858/5c → state.g_base_wait_time     (int64 base threshold seconds)
       DAT_00ba2860/64 → state.g_elapsed_press_time (int64 recorded elapsed time)
 
@@ -3146,7 +3964,7 @@ def dispatch_press_and_fallback_gof(state: InnerGameState,
 
     # ── Phase 2: poll until fallback GOF conditions are met ──────────────────
     # C: do { ... } while(true)
-    session_start = float(getattr(state, 'g_SessionStartTime', 0.0))
+    session_start = float(getattr(state, 'g_turn_start_time', 0.0))
     base_wait     = float(getattr(state, 'g_base_wait_time',   0.0))
 
     while True:
@@ -3357,7 +4175,8 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
     if changed:
         powers_str = ' '.join(str(p) for p in pce_powers)
         _log.debug("Recalculating: Because we have applied a peace deal %s", powers_str)
-        # BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x66) — not yet ported
+        # C: BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x66)
+        build_alliance_msg(state, 0x66)
 
     # ── All-powers-accepted check (only when g_PressFlag == 1) ───────────────
     # C: if (DAT_00baed68 == '\x01') { ... if (bVar3) goto LAB_0041deab; ... }
@@ -3384,7 +4203,8 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
         if not not_all_accepted:
             # All powers accepted — restore trust from DiplomacyState snapshot
             _log.debug("ALL powers have accepted PCE: return to original plan")
-            # BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x65) — not yet ported
+            # C: BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x65)
+            build_alliance_msg(state, 0x65)
 
             # C: puVar11 = &g_AllyTrustScore + uVar4*0x2a; copies DAT_004d5480/4 into it
             if dipl_a_arr is not None and dipl_b_arr is not None:
@@ -3537,8 +4357,8 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
         _log.debug(
             "Recalculating: Because we have applied an ALY: (%s)", aly_str
         )
-        # BuildAllianceMsg(&DAT_00bbf638, apuStack_68, (int*)&puStack_7c=0x66)
-        # Not yet ported — stub omitted intentionally.
+        # C: BuildAllianceMsg(&DAT_00bbf638, apuStack_68, (int*)&puStack_7c=0x66)
+        build_alliance_msg(state, 0x66)
 
     return changed
 
@@ -3755,7 +4575,8 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
         _log.debug(
             "Recalculating: Because we have applied a DMZ: (%s)", prov_str
         )
-        # BuildAllianceMsg(&DAT_00bbf638, ..., 0x66) — not yet ported (stub)
+        # C: BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
+        build_alliance_msg(state, 0x66)
 
     return changed
 
@@ -3973,9 +4794,10 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
                     args=(dest_prov, dest_prov),
                 )
 
-    # ── Step 7: log + BuildAllianceMsg stub ──────────────────────────────────
+    # ── Step 7: log + BuildAllianceMsg ───────────────────────────────────────
     _log.debug("Recalculating: Because we have applied a XDO: (%s)", ' '.join(str(t) for t in tokens[1:]))
-    # BuildAllianceMsg(&DAT_00bbf638, ..., 0x66) — not yet ported (stub)
+    # C: BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
+    build_alliance_msg(state, 0x66)
 
     # ── Step 8: clear candidate list (in_stack_00000018 freed by caller) ─────
     # C: SerializeOrders(local_78, ...) — clears local sentinel set (no-op)
@@ -4239,8 +5061,8 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
             "Recalculating: Because we are CANCELLING: (%s)",
             ' '.join(str(p) for p in pce_powers),
         )
-        # BuildAllianceMsg(&DAT_00bbf638, ..., 0x66) — stub
-        # (BuildAllianceMsg is unchecked; no Python port yet)
+        # C: BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
+        build_alliance_msg(state, 0x66)
 
     return changed
 
@@ -4408,7 +5230,8 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
         _log.debug(
             "Recalculating: Because we removed a DMZ: (%s)", prov_str
         )
-        # BuildAllianceMsg(&DAT_00bbf638, ..., 0x66) — stub (unchecked)
+        # C: uStack_74 = 0x66; BuildAllianceMsg(&DAT_00bbf638, ..., &uStack_74)
+        build_alliance_msg(state, 0x66)
 
     return changed
 
@@ -4505,13 +5328,14 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
             xdo_content,
         )
 
-    # ── Post-loop: log + BuildAllianceMsg stub ────────────────────────────────
+    # ── Post-loop: log + BuildAllianceMsg ─────────────────────────────────────
     # C: FUN_0046b050 → serialize token list → SEND_LOG("... NOT XDO: (%s)")
     _log.debug(
         "Recalculating: Because we have applied a NOT XDO: (%s)",
         ' '.join(str(t) for t in tokens[1:]),
     )
-    # BuildAllianceMsg(&DAT_00bbf638, ..., 0x66) — stub (unchecked)
+    # C: BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
+    build_alliance_msg(state, 0x66)
 
     # ── Cleanup: clear candidate list (SerializeOrders + _free) ──────────────
     # C: SerializeOrders(&stack14,...) + _free(in_stack_00000018)
@@ -4854,7 +5678,7 @@ def respond(
                 best_score_lo = lo_val
 
     # ── Compute target send time ──────────────────────────────────────────────
-    elapsed: float = _time.time() - float(getattr(state, 'g_SessionStartTime', 0.0))
+    elapsed: float = _time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
 
     if not tournament_mode:
         # C: uVar17 = (rand() / 0x17) & 0x80000007  → 0-7 (mod-8 random)

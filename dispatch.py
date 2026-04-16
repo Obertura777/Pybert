@@ -221,7 +221,8 @@ def check_order_alliance(
     return 0
 
 
-def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int) -> bool:
+def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int,
+                   unit_type: str = '') -> bool:
     """
     Port of FUN_00460b30 — adjacency gate for MTO orders.
 
@@ -236,18 +237,19 @@ def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int) -> 
       4. Returns 1 (legal) if the sub-list contains the destination, 0
          (illegal) otherwise.
 
-    Python translation: delegates to state.can_reach() which uses adj_matrix
-    built from game.map.abut_list() — a province-level general-adjacency
-    graph.  Unit-type filtering (army vs fleet) and coast disambiguation are
-    encoded in the map topology: armies never appear in sea provinces and
-    fleets never in landlocked ones, so cross-type illegal moves are absent
-    from adj_matrix in practice.
+    Python translation: checks province adjacency via adj_matrix AND enforces
+    unit-type terrain rules:
+      - Fleets cannot move to LAND (landlocked) provinces.
+      - Armies cannot move to WATER (sea) provinces.
+      - COAST provinces are accessible by both.
 
     Callees absorbed (infrastructure only — no separate port needed):
       AdjacencyList_LowerBound  — lower-bound on outer adjacency list
       SubList_LowerBound_Coast  (FUN_00460ac0) — coast-aware sub-list search
       AssertFail                (FUN_0047a948) — error handler
     """
+    if unit_type:
+        return state.can_reach_by_type(src_prov_id, dst_prov_id, unit_type)
     return state.can_reach(src_prov_id, dst_prov_id)
 
 
@@ -368,10 +370,12 @@ def validate_and_dispatch_order(
         MTO → target present; _is_legal_mto adjacency gate (FUN_00460b30);
               check_order_alliance (FUN_0041d360) → dispatch_single_order.
         SUP → target_unit present; FUN_004619f0 convoy/legality check
-              (stubbed True); two check_order_alliance calls for SUP-MTO, one for
+              (ported as is_convoy_reachable); supporter-side adjacency
+              check; two check_order_alliance calls for SUP-MTO, one for
               SUP-HLD → dispatch_single_order.
-        CTO → target_dest present; FUN_004619f0 (stubbed True);
-              check_order_alliance → dispatch_single_order.
+        CTO → target_dest present; FUN_004619f0 (ported as
+              is_convoy_reachable); check_order_alliance →
+              dispatch_single_order.
         CVY → target_unit (army) validated; FUN_004619f0 convoy reachability
               (army prov → dest); check_order_alliance → dispatch_single_order.
         other → return _ERR_UNKNOWN_ORDER  (C: return -0x15f91).
@@ -432,8 +436,9 @@ def validate_and_dispatch_order(
         if not target:
             return _ERR_NO_TARGET
         dest_prov_id = state.prov_to_id.get(target.split('/')[0].upper())
-        # FUN_00460b30: adjacency / legal-move gate.
-        if dest_prov_id is None or not _is_legal_mto(state, prov_id, dest_prov_id):
+        # FUN_00460b30: adjacency / legal-move gate (with unit-type filtering).
+        moving_unit_type = unit_data.get('type', '') if unit_data else ''
+        if dest_prov_id is None or not _is_legal_mto(state, prov_id, dest_prov_id, moving_unit_type):
             logger.debug(
                 "validate_and_dispatch_order: MTO adjacency check failed "
                 "%r → %r", prov_raw, target,
@@ -455,11 +460,10 @@ def validate_and_dispatch_order(
         # IsLegalMove on source, FUN_004619f0 convoy-reachability (ported,
         # not a stub — see is_convoy_reachable above). Two check_order_alliance
         # calls for SUP-MTO (lines 515+537); one via LAB_00423083 for SUP-HLD.
-        # KNOWN GAP: supporter-side adjacency check not yet wired.
-        #   SUP-MTO: C requires IsLegalMove(supporter, dest); Python doesn't check.
-        #   SUP-HLD: C requires IsLegalMove(supporter, supported.province); Python
-        #   doesn't check. Both map to error -0x186c1 / -0x186c3. These are plain
-        #   adjacency (not convoy), so is_convoy_reachable is not the right tool.
+        # Supporter-side adjacency check (was KNOWN GAP; now wired at L489-501):
+        #   SUP-MTO: supporter must reach target_dest (plain adjacency).
+        #   SUP-HLD: supporter must reach supported unit's province.
+        #   Both map to error -0x186c1 / -0x186c3; checked below.
         target_unit = order_seq.get('target_unit', '')
         if not target_unit:
             return _ERR_NO_SUP_UNIT
@@ -635,10 +639,14 @@ def dispatch_single_order(state: InnerGameState, power_index: int, order_seq: di
     else:
         logger.warning(f"Unknown DAIDE dispatch token branch: {token_head}")
 
-    # Accumulate finalized python sequence strings for submit_orders handler in bot.py
-    if not hasattr(state, 'g_OrderList'):
-        state.g_OrderList = []
-        
+    # Accumulate finalized python sequence strings for submit_orders handler in bot.py.
+    # NB: this is *not* the C g_OrderList (a std::map of dict-shaped entries used
+    # by ComputeOrderDipFlags / ProposeDMZ in communications.py).  We use a
+    # distinct name to avoid feeding plain strings into the dict-iterating call
+    # sites — see communications.py compute_order_dip_flags / ProposeDMZ.
+    if not hasattr(state, 'g_SubmittedOrders'):
+        state.g_SubmittedOrders = []
+
     if formatted_order:
-        state.g_OrderList.append(formatted_order)
+        state.g_SubmittedOrders.append(formatted_order)
         logger.debug(f"Pushed to generalized SUB sequence: {formatted_order}")

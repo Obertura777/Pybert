@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import random
 import time
@@ -29,6 +30,7 @@ from .heuristics import (
     post_process_orders, compute_press, compute_influence_matrix,
     _safe_pow,
     score_provinces,
+    score_order_candidates_all_powers,
     score_order_candidates_own_power,
     populate_build_candidates,
     populate_remove_candidates,
@@ -36,6 +38,7 @@ from .heuristics import (
     compute_win_removes,
     _WIN_BUILD_WEIGHTS,
     _WIN_REMOVE_WEIGHTS,
+    _SPR_FAL_WEIGHTS,
 )
 from .dispatch import validate_and_dispatch_order
 from .utils import dipnet_order  # noqa: F401 — re-exported for callers
@@ -905,7 +908,7 @@ def _hostility(state: InnerGameState) -> None:
 
     Block 1 — enemy activation: random roll gates g_EnemyDesired (= g_StabbedFlag).
     Block 2 — CAL_BOARD + mutual-enemy table (press_on or FAL/WIN).
-    Block 3 — FUN_004113d0 (ComputeOrderDipFlags) — always; not yet ported, skipped.
+    Block 3 — FUN_004113d0 (ComputeOrderDipFlags) — always; ported.
     Block 4 — press-on initialisation (SPR/FAL): trust from proximity, random ally.
     Block 5 — enemy-desired trust management (SPR/FAL): betrayal counter, peace overtures.
     Block 6 — UpdateRelationHistory when press off or near-end (embedded in friendly()).
@@ -1251,10 +1254,10 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     draw_vote = compute_draw_vote(state, friendly_powers)
     extra_draw_flags = getattr(state, 'g_draw_flags', [])
     if draw_vote or any(extra_draw_flags):
-        logger.info("Draw vote: proposing DRW")
+        logger.info("Draw vote: will accept DRW proposals (voting YES)")
         state.g_draw_sent = 1
     else:
-        logger.info("Draw vote: sending NOT DRW")
+        logger.debug("Draw vote: will reject DRW proposals (no vote sent)")
         state.g_draw_sent = 0
 
 
@@ -1602,7 +1605,8 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
     # param_2[0..3] = {province, coast, power, unit_type}
     power_idx  = unit_data.get('power', 0)
     power_name = _DAIDE_POWER_NAMES[power_idx] if 0 <= power_idx < len(_DAIDE_POWER_NAMES) else 'UNO'
-    unit_chr   = 'AMY' if unit_data.get('type', 'AMY') == 'AMY' else 'FLT'
+    _utype = unit_data.get('type', 'A')
+    unit_chr   = 'AMY' if _utype in ('A', 'AMY') else 'FLT'
     prov_name  = id_to_prov.get(prov, str(prov))
     unit_coast = unit_data.get('coast', '')
     if unit_coast:
@@ -1628,7 +1632,8 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
             return None
         tp = td.get('power', 0)
         tn = _DAIDE_POWER_NAMES[tp] if 0 <= tp < len(_DAIDE_POWER_NAMES) else 'UNO'
-        tc = 'AMY' if td.get('type', 'AMY') == 'AMY' else 'FLT'
+        _ttype = td.get('type', 'A')
+        tc = 'AMY' if _ttype in ('A', 'AMY') else 'FLT'
         tp_name = id_to_prov.get(target_prov, str(target_prov))
         tcoast  = td.get('coast', '')
         if tcoast:
@@ -1735,7 +1740,8 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
     power_idx = node.get('power', 0)
     power_name = _DAIDE_POWER_NAMES[power_idx] if 0 <= power_idx < len(_DAIDE_POWER_NAMES) else 'UNO'
-    unit_chr = 'AMY' if node.get('unit_type', 'AMY') == 'AMY' else 'FLT'
+    _utype = node.get('unit_type', 'A')
+    unit_chr = 'AMY' if _utype in ('A', 'AMY') else 'FLT'
     prov_name = state._id_to_prov.get(node.get('province', 0), str(node.get('province', 0)))
     unit_coast = node.get('unit_coast', '')
     # FUN_00465aa0 wraps the unit seq in parens at the end of FUN_0045ffa0,
@@ -1768,6 +1774,142 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
 
     # All other order types: C returns param_1 unchanged (no entry appended)
     return None
+
+
+# ── Retreat-phase order population ──────────────────────────────────────────
+
+# Coast suffix → DAIDE coast token (reverse of _DAIDE_COAST_TO_STR)
+_COAST_STR_TO_DAIDE = {
+    'NC': 0x4600, 'NE': 0x4602, 'EC': 0x4604,
+    'SC': 0x4606, 'WC': 0x460C, 'NW': 0x460E,
+}
+
+
+def _populate_retreat_orders(
+    state: 'InnerGameState',
+    game: 'Game',
+    power_name: str,
+    own_power_idx: int,
+) -> list:
+    """
+    Build g_retreat_order_list entries for the current retreat phase.
+
+    For each dislodged own-power unit (from game.powers[power_name].retreats),
+    evaluate possible retreat destinations using g_GlobalProvinceScore and pick
+    the best one.  If no valid retreat exists, order a disband (DSB).
+
+    Returns a list of dicts matching the schema at state.py line 539:
+        {'province': int, 'unit_type': str, 'unit_coast': str,
+         'power': int, 'order_type': int,
+         'dest_province': int, 'dest_coast': int}
+    where order_type 7 = RTO, 8 = DSB.
+    """
+    power = game.powers.get(power_name)
+    if power is None or not power.retreats:
+        return []
+
+    prov_to_id = state.prov_to_id
+    scores = state.g_GlobalProvinceScore  # [256] float array from generate_orders
+
+    result = []
+    for unit_spec, destinations in power.retreats.items():
+        # unit_spec: 'A TYR' or 'F STP/NC'
+        parts = unit_spec.split()
+        if len(parts) < 2:
+            continue
+        u_type = parts[0]              # 'A' or 'F'
+        u_loc  = parts[1]              # 'TYR' or 'STP/NC'
+
+        # Resolve province ID and coast for the source
+        src_base = u_loc.split('/')[0].upper()
+        src_id = prov_to_id.get(u_loc, prov_to_id.get(src_base, -1))
+        src_coast = ''
+        if '/' in u_loc:
+            src_coast = u_loc.split('/')[1].upper()
+
+        if src_id < 0:
+            logger.warning(
+                "Retreat: cannot resolve province %r → skipping", u_loc)
+            continue
+
+        # Evaluate each destination by g_GlobalProvinceScore
+        best_score = -1e30
+        best_dest_id = -1
+        best_dest_coast = 0
+        for dest in destinations:
+            # dest: 'BOH' or 'SPA/SC'
+            dest_base = dest.split('/')[0].upper()
+            d_id = prov_to_id.get(dest, prov_to_id.get(dest_base, -1))
+            if d_id < 0:
+                continue
+            d_score = float(scores[d_id]) if 0 <= d_id < len(scores) else 0.0
+            if d_score > best_score:
+                best_score = d_score
+                best_dest_id = d_id
+                best_dest_coast = 0
+                if '/' in dest:
+                    coast_str = dest.split('/')[1].upper()
+                    best_dest_coast = _COAST_STR_TO_DAIDE.get(coast_str, 0)
+
+        if best_dest_id >= 0:
+            # RTO — retreat to best destination
+            node = {
+                'province':      src_id,
+                'unit_type':     u_type,
+                'unit_coast':    src_coast,
+                'power':         own_power_idx,
+                'order_type':    7,           # RTO
+                'dest_province': best_dest_id,
+                'dest_coast':    best_dest_coast,
+            }
+        else:
+            # DSB — no valid retreat destination
+            node = {
+                'province':      src_id,
+                'unit_type':     u_type,
+                'unit_coast':    src_coast,
+                'power':         own_power_idx,
+                'order_type':    8,           # DSB
+                'dest_province': 0,
+                'dest_coast':    0,
+            }
+        result.append(node)
+
+    return result
+
+
+def _format_retreat_commands(state: 'InnerGameState') -> list:
+    """
+    Convert g_retreat_order_list entries into diplomacy-lib order strings.
+
+    Returns a list like ['A TYR R VEN', 'F SPA/SC R MAO'] or ['A TYR D'].
+    These are passed to game.set_orders() to commit the retreat decisions.
+    """
+    if not state._id_to_prov:
+        state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
+    id_to_prov = state._id_to_prov
+
+    commands = []
+    for node in state.g_retreat_order_list:
+        u_type = node.get('unit_type', 'A')
+        u_chr = 'A' if u_type in ('A', 'AMY') else 'F'
+        src_name = id_to_prov.get(node.get('province', 0), '???')
+        src_coast = node.get('unit_coast', '')
+        src_str = f"{src_name}/{src_coast}" if src_coast else src_name
+
+        order_type = node.get('order_type', -1)
+        if order_type == 7:  # RTO
+            dest_id = node.get('dest_province', 0)
+            dest_name = id_to_prov.get(dest_id, '???')
+            dest_coast_tok = node.get('dest_coast', 0)
+            dest_coast_str = _DAIDE_COAST_TO_STR.get(dest_coast_tok, '')
+            dest_str = (f"{dest_name}/{dest_coast_str}"
+                        if dest_coast_str else dest_name)
+            commands.append(f"{u_chr} {src_str} R {dest_str}")
+        elif order_type in (0, 8):  # DSB
+            commands.append(f"{u_chr} {src_str} D")
+
+    return commands
 
 
 def get_sub_list(press_seq: 'str | list[str]', index: int) -> list:
@@ -2042,8 +2184,29 @@ def _evaluate_order_proposals_and_send_gof(
                 # equivalent; the C list is a singly-linked structure that is
                 # rebuilt each time.  Skip.
 
-                # C: SerializeOrders + RegisterProposalOrders with node's XDO
-                # sub-list.  No Python equivalent at this stage; skip.
+                # C: SerializeOrders + RegisterProposalOrders(DAT_00bb65e0,
+                #    puVar5+0xc) — clears the staging set then deep-copies the
+                #    proposal's XDO sub-tree into it so the downstream
+                #    GameBoard_GetPowerRec lookups (and CAL_MOVE) see the
+                #    proposed orders as the "current" set.
+                #
+                # Cross-domain note: DAT_00bb65e0 is the same global the DMZ
+                # handler uses (state.g_DmzOrderList).  C accepts the collision
+                # — both writers clear-and-rewrite — and the DMZ handler
+                # refreshes the list on its next call.  Faithful port keeps the
+                # same semantics.
+                try:
+                    if not hasattr(state, 'g_DmzOrderList') or state.g_DmzOrderList is None:
+                        state.g_DmzOrderList = []
+                    state.g_DmzOrderList.clear()
+                    state.g_DmzOrderList.extend(
+                        copy.deepcopy(sub) for sub in sub_entries
+                    )
+                except Exception:
+                    logger.exception(
+                        "RegisterProposalOrders staging copy raised; continuing"
+                        " with empty g_DmzOrderList"
+                    )
 
                 # ── Inner press-entry loop (node+0x15/0x16 sub-list) ──────────
                 # C: FUN_00405090 + FUN_00465f60(auStack_a8, inner+0xc)
@@ -2086,7 +2249,7 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
     id_to_prov = state._id_to_prov
 
-    unit_chr = 'A' if unit_data['type'] == 'AMY' else 'F'
+    unit_chr = ('A' if unit_data['type'] in ('A', 'AMY') else 'F')
     prov_name = id_to_prov.get(prov, str(prov))
     coast = unit_data.get('coast', '')
     loc_str = f"{prov_name}/{coast}" if coast else prov_name
@@ -2120,14 +2283,14 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
     elif order_type == _ORDER_CTO:
         sec_data = state.unit_info.get(sec_id)
         if sec_data:
-            sec_chr = 'A' if sec_data['type'] == 'AMY' else 'F'
+            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
             seq['target_unit'] = f"{sec_chr} {sec_name}"
         seq['target_dest'] = dest_name
 
     elif order_type == _ORDER_SUP_MTO:
         sec_data = state.unit_info.get(sec_id)
         if sec_data:
-            sec_chr = 'A' if sec_data['type'] == 'AMY' else 'F'
+            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
             seq['target_unit'] = f"{sec_chr} {sec_name}"
         seq['target_dest']  = dest_name
         seq['target_coast'] = dest_coast
@@ -2135,7 +2298,7 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
     elif order_type == _ORDER_SUP_HLD:
         sec_data = state.unit_info.get(sec_id)
         if sec_data:
-            sec_chr = 'A' if sec_data['type'] == 'AMY' else 'F'
+            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
             seq['target_unit'] = f"{sec_chr} {sec_name}"
 
     elif order_type == _ORDER_CVY:
@@ -2146,11 +2309,36 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
 
 # ── Main bot class ───────────────────────────────────────────────────────────
 
+def _game_phase(game) -> str:
+    """Return the current short-phase string for either an engine.Game or NetworkGame."""
+    if hasattr(game, 'get_phase'):
+        return game.get_phase()
+    # diplomacy library: use the property `current_short_phase` (e.g. 'S1901M')
+    return getattr(game, 'current_short_phase', '') or ''
+
+
+def _game_status(game) -> str:
+    """Return game status ('forming'|'active'|'paused'|'completed'|'canceled')."""
+    return getattr(game, 'status', '') or ''
+
+
 class AlbertClient:
-    def __init__(self, power_name: str, host: str, port: int):
+    # DONE(api): #4 — play() uses NetworkGame notification callbacks
+    #   (GameProcessed, GameStatusUpdate, GameMessageReceived) with a 30s
+    #   heartbeat safety-net poll instead of 2s blind polling.
+    # DONE(api): #5 — _validate_orders() checks submitted orders against
+    #   game.get_all_possible_orders() before every set_orders() call.
+    #   Logs warnings for illegal orders without blocking submission.
+    # DONE(api): #6 — send_is_bot() and set_comm_status() called after join.
+    def __init__(self, power_name: str, host: str, port: int, *,
+                 username: str | None = None, password: str = 'password',
+                 game_id: str | None = None):
         self.power_name = power_name
         self.host = host
         self.port = port
+        self.username = username or f'Albert_{power_name}'
+        self.password = password
+        self.target_game_id = game_id   # None = auto-pick first available
         self.state = InnerGameState()
         self.connection = None
         self.game = None
@@ -2159,34 +2347,136 @@ class AlbertClient:
     async def play(self):
         """
         Main event loop connecting to the diplomacy server.
+
+        Uses NetworkGame notification callbacks (GameProcessed,
+        GameStatusUpdate, GameMessageReceived) for reactive phase handling
+        instead of a fixed-interval poll loop.  A lightweight 30s heartbeat
+        poll remains as a safety net (catches missed notifications or
+        server reconnects).
         """
         self.connection = await connect(self.host, self.port)
         channel = await self.connection.authenticate(
-            username=f'Albert_{self.power_name}',
-            password='password'
+            username=self.username,
+            password=self.password,
         )
 
-        logger.info(f"Albert successfully authenticated as {self.power_name}")
+        logger.info(f"Albert successfully authenticated as {self.power_name}"
+                     f" (user={self.username!r})")
 
-        games = await channel.list_games()
-        if not games:
-            logger.warning("No active games found on the server.")
-            return
+        if self.target_game_id:
+            target_game_id = self.target_game_id
+        else:
+            games = await channel.list_games()
+            if not games:
+                logger.warning("No active games found on the server.")
+                return
+            # `list_games()` returns DataGameInfo records (attribute access),
+            # but older builds returned plain dicts. Support both.
+            first = games[0]
+            target_game_id = first['game_id'] if isinstance(first, dict) else first.game_id
 
-        target_game_id = games[0]['game_id']
         logger.info(f"Joining game: {target_game_id}")
 
-        self.game = await channel.join_game(target_game_id, power_name=self.power_name)
+        self.game = await channel.join_game(game_id=target_game_id, power_name=self.power_name)
 
-        while True:
-            await asyncio.sleep(2)
-            game_state = self.game.get_state()  # noqa: F841 — consumed by on_game_update
-            phase = self.game.get_phase()
+        # ── Announce bot metadata to server ──────────────────────────────
+        try:
+            if hasattr(self.game, 'send_is_bot'):
+                self.game.send_is_bot(is_bot=True)
+            if hasattr(self.game, 'set_comm_status'):
+                self.game.set_comm_status(comm_status='ready')
+            logger.info("Announced bot metadata to server.")
+        except Exception as exc:
+            logger.debug("Bot metadata announcement failed (non-fatal): %s", exc)
 
-            if self.current_phase != phase:
-                self.current_phase = phase
-                logger.info(f"New phase: {phase}")
+        # ── Register notification callbacks ──────────────────────────────
+        done_event = asyncio.Event()
+
+        def _on_game_processed(game, notification):
+            """Called by the diplomacy lib after each phase processes."""
+            phase = _game_phase(game)
+            if phase == self.current_phase:
+                return  # duplicate notification
+            self.current_phase = phase
+            logger.info(f"[notification] New phase: {phase}")
+            try:
+                self.on_game_update(game)
+            except Exception as exc:
+                logger.exception(f"on_game_update raised: {exc}")
+
+        def _on_game_status_update(game, notification):
+            """Called when game status changes (completed, canceled, etc.)."""
+            status = getattr(notification, 'status', '') or ''
+            logger.info(f"[notification] Game status: {status}")
+            if status in ('completed', 'canceled'):
+                done_event.set()
+
+        def _on_message_received(game, notification):
+            """Called when a press message arrives between phases."""
+            msg = getattr(notification, 'message', None)
+            if msg is None:
+                return
+            sender = getattr(msg, 'sender', '') or ''
+            if sender == self.power_name:
+                return  # skip own messages
+            body = getattr(msg, 'message', '') or ''
+            logger.debug("[notification] press from %s: %r", sender, body)
+            try:
+                self.on_message_received(sender, body)
+            except Exception:
+                logger.exception("on_message_received raised for %r", body)
+
+        if hasattr(self.game, 'add_on_game_processed'):
+            self.game.add_on_game_processed(_on_game_processed)
+            self.game.add_on_game_status_update(_on_game_status_update)
+            self.game.add_on_game_message_received(_on_message_received)
+            logger.info("Registered notification callbacks (reactive mode).")
+        else:
+            logger.info("NetworkGame notifications not available; using poll mode.")
+
+        # ── Process the initial phase (game may already be in progress) ──
+        phase = _game_phase(self.game)
+        status = _game_status(self.game)
+        if status in ('completed', 'canceled'):
+            logger.info("Game already finished — exiting.")
+            return
+        if phase and phase != 'FORMING':
+            self.current_phase = phase
+            logger.info(f"Initial phase: {phase}")
+            try:
                 self.on_game_update(self.game)
+            except Exception as exc:
+                logger.exception(f"on_game_update raised on initial phase: {exc}")
+
+        # ── Wait for game end, with a heartbeat safety-net poll ──────────
+        HEARTBEAT = 30  # seconds between fallback polls
+        while not done_event.is_set():
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=HEARTBEAT)
+            except asyncio.TimeoutError:
+                pass  # heartbeat tick — check for missed phase changes
+
+            # Safety-net: detect phase changes the notification may have missed
+            try:
+                phase = _game_phase(self.game)
+                status = _game_status(self.game)
+            except Exception as exc:
+                logger.exception(f"Albert heartbeat: error reading state: {exc}")
+                continue
+
+            if status in ('completed', 'canceled'):
+                logger.info("Game finished (heartbeat) — exiting Albert loop")
+                return
+
+            if phase and phase != self.current_phase:
+                self.current_phase = phase
+                logger.info(f"Missed-notification catch-up: {phase}")
+                try:
+                    self.on_game_update(self.game)
+                except Exception as exc:
+                    logger.exception(f"on_game_update raised: {exc}")
+
+        logger.info("Game finished — exiting Albert loop")
 
     # ── NOW-handler entry point ──────────────────────────────────────────────
 
@@ -2194,11 +2484,53 @@ class AlbertClient:
         """
         Triggered when NOW or SCO received (or state polled).
         Mirrors the NOW handler → vtable+0xe8 → GenerateAndSubmitOrders call chain.
-        """
-        self.state.synchronize_from_game(game_object)
 
-        if game_object.get_phase() != 'COMPLETED':
+        Also drains inbound game.messages and feeds each new one to
+        on_message_received between synchronize_from_game and order generation.
+        synchronize_from_game intentionally does NOT clear g_BroadcastList
+        (matching the C binary's accumulate-forever semantics), so press
+        registered here survives into the translator/corroboration pass.
+        """
+        self.game = game_object
+        self.state.synchronize_from_game(game_object)
+        self._drain_incoming_press(game_object)
+
+        if _game_phase(game_object) != 'COMPLETED' and _game_status(game_object) != 'completed':
             self.generate_and_submit_orders()
+
+    def _drain_incoming_press(self, game_object) -> None:
+        """Walk new game.messages and dispatch each through on_message_received.
+
+        Tracks (time_sent, sender, recipient) tuples to dedupe across polls.
+        Skips messages we sent ourselves.
+        """
+        if not hasattr(self, '_seen_msg_ids') or self._seen_msg_ids is None:
+            self._seen_msg_ids = set()
+        msgs = getattr(game_object, 'messages', None)
+        if msgs is None:
+            return
+        try:
+            seq = list(msgs.values()) if hasattr(msgs, 'values') else list(msgs)
+        except Exception:
+            return
+        for m in seq:
+            msg_id = (
+                getattr(m, 'time_sent', None),
+                getattr(m, 'sender', None),
+                getattr(m, 'recipient', None),
+            )
+            if msg_id in self._seen_msg_ids:
+                continue
+            self._seen_msg_ids.add(msg_id)
+            sender = getattr(m, 'sender', '') or ''
+            if sender == self.power_name:
+                continue
+            body = getattr(m, 'message', '') or ''
+            logger.debug("[albert<-press] from %s: %r", sender, body)
+            try:
+                self.on_message_received(sender, body)
+            except Exception:
+                logger.exception("on_message_received raised for %r", body)
 
     # ── GenerateAndSubmitOrders ──────────────────────────────────────────────
 
@@ -2347,6 +2679,31 @@ class AlbertClient:
         from .monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
 
+        # ── ScoreProvinces + ScoreOrderCandidates_AllPowers ──────────────────
+        # C binary (send_GOF.c lines 56–62): for SPR/FAL movement phases,
+        # ScoreProvinces computes per-province strategic scores, then
+        # ScoreOrderCandidates_AllPowers uses g_CandidateScores (populated by
+        # generate_orders Phase 1f) to compute FinalScoreSet — the per-power
+        # per-province value that the MC trial loop's _build_order_mto reads
+        # when scoring MTO orders.  Without this call FinalScoreSet stays all
+        # zeros and every MTO gets a zero convoy-chain score, making the MC
+        # unable to distinguish good moves from bad ones.
+        if movement_phase:
+            try:
+                score_provinces(self.state, 0, 0, own_power_idx)
+            except Exception:
+                logger.exception(
+                    "score_provinces raised; continuing with default scores"
+                )
+            try:
+                score_order_candidates_all_powers(
+                    self.state, _SPR_FAL_WEIGHTS, own_power_idx)
+            except Exception:
+                logger.exception(
+                    "score_order_candidates_all_powers raised; continuing"
+                    " with empty FinalScoreSet"
+                )
+
         # Step 1 — clear per-power g_CandidateList2 trees (FUN_00410cf0 per power)
         # C: for each power, FUN_00410cf0(root) post-order frees the RB-tree,
         # then resets the sentinel.  Python: clear each power's g_GeneralOrders
@@ -2355,7 +2712,55 @@ class AlbertClient:
             for _p in range(num_powers):
                 _destroy_candidate_tree(self.state.g_GeneralOrders.get(_p))
             self.state.g_GeneralOrders = {}
+        # Mirror the wipe for g_AllianceOrders — ScoreOrderCandidates' C
+        # writer (Source/ScoreOrderCandidates.c lines 79–85) reconstructs all
+        # four sibling 21×12B arrays per call, so a fresh translator pass needs
+        # an empty alliance set too.
+        if hasattr(self.state, 'g_AllianceOrders'):
+            self.state.g_AllianceOrders = {}
         self.state.g_CandidateRecordList = []
+
+        # Translate inbound press registry → per-power general / alliance order
+        # sets so MC sub-pass 1c can dispatch received-XDO orders.  Without
+        # this call the binary's press-driven MTO/SUP path is unreachable in
+        # Python (g_GeneralOrders stays empty → 1c second pass is a no-op →
+        # MC produces only default-HLD output).  See communications.py for the
+        # ScoreOrderCandidates writer-loop port.
+        # The C binary never clears DAT_00bb65ec (g_BroadcastList), so received
+        # press accumulates for the lifetime of the game and the translator
+        # rebuilds g_GeneralOrders / g_AllianceOrders from the accumulated set
+        # on every call.  That, plus the per-phase wipe above, is what gives
+        # press its multi-phase commitment semantics — no separate archive
+        # needed.  See state.synchronize_from_game for the matching no-clear
+        # rationale.
+        from .communications import score_order_candidates_from_broadcast
+        try:
+            score_order_candidates_from_broadcast(self.state)
+        except Exception:
+            logger.exception(
+                "score_order_candidates_from_broadcast raised; continuing"
+                " with empty g_GeneralOrders/g_AllianceOrders"
+            )
+
+        # Self-proposal fallback: when g_BroadcastList is empty (NO_PRESS
+        # or standalone mode), generate MTO proposals from FinalScoreSet
+        # and inject them into g_GeneralOrders so MC Phase 1c can dispatch
+        # non-hold orders.  This replaces the press round-trip that normally
+        # populates these tables via score_order_candidates_from_broadcast.
+        # Only fires when g_GeneralOrders is still empty after the broadcast
+        # pass — in a press game with active proposals, this is a no-op.
+        if movement_phase and not self.state.g_GeneralOrders:
+            from .heuristics import generate_self_proposals
+            try:
+                n_self = generate_self_proposals(self.state, own_power_idx)
+                if n_self:
+                    logger.debug(
+                        "Self-proposal fallback: generated %d proposals", n_self)
+            except Exception:
+                logger.exception(
+                    "generate_self_proposals raised; continuing without "
+                    "self-proposals"
+                )
 
         # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_UnitCount)
         # g_TrialScale = DAT_004c6bb8 = difficulty*2+60 (default difficulty=100 → 260)
@@ -2363,15 +2768,78 @@ class AlbertClient:
         trial_scale: int = getattr(self.state, 'g_TrialScale', 260)
         press_cap: int = getattr(self.state, 'g_PressProposalsCap', 30)
         unit_count = getattr(self.state, 'g_UnitCount', np.zeros(num_powers, dtype=np.int32))
-        general_orders_present = getattr(
-            self.state, 'g_GeneralOrdersPresent', np.zeros(num_powers, dtype=np.int32))
-        for p in range(num_powers):
-            if int(unit_count[p]) > 0 and int(general_orders_present[p]) != 0:
+
+        # ── 10-round ProcessTurn loop with support-opportunity re-pass ───────
+        # C binary (send_GOF.c lines 114–169): runs ProcessTurn 10 rounds.
+        # Each round: for every power with sc_count > 0, run ProcessTurn with
+        # g_RingConvoyEnabled=0.  Then scan g_SupportOpportunitiesSet for
+        # matching-power entries; for each hit, copy the ring provinces from
+        # the opportunity into the state, set g_RingConvoyEnabled=1, and run
+        # ProcessTurn AGAIN.  This second pass generates ring-convoy MTO
+        # patterns (A→B→C→A) that are the primary mechanism for non-hold
+        # orders even in NO_PRESS mode.
+        #
+        # In a full-press game the 10-round loop also accumulates proposal-
+        # driven candidates that get refined by later BuildAndSendSUB passes.
+        MC_ROUNDS = 10 if movement_phase else 1
+        for _mc_round in range(MC_ROUNDS):
+            for p in range(num_powers):
+                if int(unit_count[p]) <= 0:
+                    continue
                 if press_cap == 0 and p != own_power_idx:
                     n_trials = 1
                 else:
                     n_trials = (int(unit_count[p]) * trial_scale + 10) // 10
+
+                # Primary pass: g_RingConvoyEnabled = 0
+                self.state.g_RingConvoyEnabled = 0
                 process_turn(self.state, p, num_trials=n_trials)
+
+                # Support-opportunity re-pass: scan for matching entries and
+                # run ProcessTurn again with ring convoy enabled.
+                sup_opps = getattr(self.state, 'g_SupportOpportunitiesSet', None)
+                if sup_opps:
+                    for opp in sup_opps:
+                        if int(opp.get('power', -1)) != p:
+                            continue
+                        # Copy ring provinces from the opportunity entry.
+                        # C: memcpy(DAT_00bbf668, entry+0x10, 28); DAT_00baed5c=1
+                        self.state.g_RingProv_A = int(opp.get('mover_prov', -1))
+                        self.state.g_RingProv_B = int(opp.get('target_prov', -1))
+                        self.state.g_RingProv_C = int(opp.get('supporter_prov', -1))
+                        self.state.g_RingConvoyEnabled = 1
+                        # Trial count for re-pass: sc_count[p] * 10 / 10 = sc_count[p]
+                        re_trials = max(int(self.state.sc_count[p]), 1)
+                        if press_cap == 0 and p != own_power_idx:
+                            re_trials = 1
+                        process_turn(self.state, p, num_trials=re_trials)
+        # Candidate-vs-press corroboration penalty
+        # (Source/ScoreOrderCandidates.c lines 342–630).  Marks candidates
+        # whose orders disagree with received-press XDOs with a -2.5e36
+        # score so MC's selector skips them.
+        #
+        # IMPORTANT: only fire when g_BroadcastList has actual received
+        # press — NOT when g_GeneralOrders was populated by
+        # generate_self_proposals.  Self-proposals are synthetic guidance
+        # to give MC some MTO candidates; penalising everything else would
+        # collapse the candidate set and re-produce all-holds.
+        has_real_press = bool(getattr(self.state, 'g_BroadcastList', None))
+        if has_real_press:
+            try:
+                from .heuristics import apply_press_corroboration_penalty
+                n_penalised = apply_press_corroboration_penalty(self.state)
+                if n_penalised:
+                    logger.debug(
+                        "Press corroboration: penalised %d candidate(s) "
+                        "for disagreeing with received XDOs",
+                        n_penalised,
+                    )
+            except Exception:
+                logger.exception(
+                    "apply_press_corroboration_penalty raised; continuing"
+                    " without press-corroboration penalty"
+                )
+
         best_orders = self.state.g_CandidateRecordList  # populated by process_turn
 
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
@@ -2381,6 +2849,27 @@ class AlbertClient:
         # 5h — ComputePress if press mode is active this turn
         if self.state.g_PressFlag == 1:
             _compute_press(self.state)
+
+        # 5h.1 — Emit accumulated XDO support proposals into g_BroadcastList.
+        # build_support_proposals (called per MC trial in process_turn Step 5)
+        # accumulates proposals in g_XdoPressProposals.  Emit them now so
+        # that BuildAndSendSUB's broadcast-list pass can see them, and so
+        # that future calls to score_order_candidates_from_broadcast pick
+        # them up.  This mirrors the C emission at BuildSupportProposals.c
+        # lines 396–427 (FUN_00466f80 + AppendList inside the proposal loop).
+        if movement_phase and getattr(self.state, 'g_XdoPressProposals', None):
+            from .communications import emit_xdo_proposals_to_broadcast
+            try:
+                n_emitted = emit_xdo_proposals_to_broadcast(self.state)
+                if n_emitted:
+                    logger.debug(
+                        "Emitted %d XDO support proposals to g_BroadcastList",
+                        n_emitted,
+                    )
+            except Exception:
+                logger.exception(
+                    "emit_xdo_proposals_to_broadcast raised; continuing"
+                )
 
         # 5i — alliance-active block
         # Gate: ally[own_power] != 0 AND DAT_00baed33 == 0 (alliance debug flag off)
@@ -2408,6 +2897,12 @@ class AlbertClient:
             self._build_and_send_sub(best_orders)
 
             _prepare_draw_vote_set(self.state)
+
+            # Only send a draw vote to the server when Albert wants a draw.
+            # The server defaults to neutral (no draw), so we only need to
+            # send YES when g_draw_sent is set; no need to send NO/neutral.
+            if self.state.g_draw_sent and self.game is not None:
+                self._submit_draw_vote()
         else:
             # Retreat / adjustment phase — no SUB, but HOSTILITY runs in WIN
             if phase == 'WIN':
@@ -2419,7 +2914,18 @@ class AlbertClient:
                 #   FUN_00442040 (builds) or FUN_0044bd40 (removes)
                 self.state.g_build_order_list.clear()   # ResetPerTrialState
                 self.state.g_waive_count = 0
+
+                # Save real SC ownership before score_provinces clobbers it.
+                # score_provinces resets g_SCOwnership and repopulates it from
+                # unit positions (not center ownership), which breaks
+                # populate_build_candidates' eligibility check.
+                saved_sc_ownership = self.state.g_SCOwnership.copy()
+
                 score_provinces(self.state, 0, 0, own_power_idx)
+
+                # Restore real SC ownership for build/remove candidate selection.
+                self.state.g_SCOwnership[:] = saved_sc_ownership
+
                 # Count units directly from unit_info (mirrors FUN_0040ab10 which
                 # counts from the unit list rather than any cached counter).
                 # g_UnitCount is only refreshed by _analyze_position in movement
@@ -2443,7 +2949,38 @@ class AlbertClient:
                     compute_win_removes(self.state, units - sc)
                 # else sc == units: no builds/removes, no waives — empty GOF
 
+                # Submit build/remove/waive orders to the game engine.
+                self._submit_adjustment_orders()
+
             _phase_handler(self.state, 3)
+
+        # 5k — Retreat-phase order population (SUM/AUT only)
+        # In the C binary, ParseNOW populates the retreat unit list at +0x245c
+        # and order map at +0x24c0 directly from the NOW message.  The Python
+        # port bypasses DAIDE parsing; instead, we read dislodged units from
+        # game.powers[power].retreats and choose the best destination using
+        # g_GlobalProvinceScore (populated by generate_orders).
+        if phase in ('SUM', 'AUT') and self.game is not None:
+            self.state.g_retreat_order_list = _populate_retreat_orders(
+                self.state, self.game, self.power_name, own_power_idx)
+            # Also submit retreat orders to the diplomacy game engine so
+            # game.process() can advance to the next phase.
+            retreat_cmds = _format_retreat_commands(self.state)
+            if retreat_cmds:
+                logger.info("Retreat orders for %s: %s",
+                            self.power_name, retreat_cmds)
+                self._validate_orders(retreat_cmds)
+                try:
+                    self.game.set_orders(
+                        power_name=self.power_name, orders=retreat_cmds,
+                        wait=False)
+                except TypeError:
+                    # Older diplomacy lib doesn't support wait kwarg
+                    self.game.set_orders(
+                        power_name=self.power_name, orders=retreat_cmds)
+                except Exception:
+                    logger.exception(
+                        "Failed to submit retreat orders to game engine")
 
         # Step 6 — CleanupTurn + GOF
         _cleanup_turn(self.state)
@@ -2454,15 +2991,152 @@ class AlbertClient:
     def _send_dm(self, msg: object) -> None:
         """
         Send DAIDE direct-message using python-diplomacy NetworkGame API.
+
+        Per-power fan-out — Albert never broadcasts to ``GLOBAL``.  Even when
+        the underlying DAIDE press is logically a broadcast (GOF, BCC, an
+        XDO PRP intended for everyone), python-diplomacy treats GLOBAL as a
+        "system / all observers" channel that bypasses the per-power inbox
+        and shows up untargeted in the message log.  The C original always
+        addressed press to a specific recipient power; reproducing that here
+        means iterating ``self.game.powers`` and emitting one Message per
+        non-self power.
+
+        Three further things to get right:
+
+        * ``Message`` requires a ``phase`` field — python-diplomacy's
+          validator raises ``TypeException: Expected type <class 'str'>,
+          got type <class 'NoneType'>`` if it's omitted, and the per-phase
+          server log gives no hint which key was missing.
+
+        * On a NetworkGame the wire path is the async
+          ``game.send_game_message(message=...)`` — ``add_message`` is
+          a server-only API and asserts ``self.is_server_game()`` on a
+          client-side game.  ``send_game_message`` returns a tornado-wrapped
+          Future that's already in-flight on the connection's IO loop, so
+          we just attach an error callback rather than awaiting.
+
+        * Re-checking the phase before dispatch dodges the common race
+          where the server has already advanced past ``phase`` while
+          Albert was scoring trials.
         """
         logger.debug("SendDM: %r", msg)
-        if self.game is not None:
+        if self.game is None:
+            return
+        try:
+            from diplomacy import Message
+        except ImportError:
+            logger.warning("diplomacy.Message not available; cannot send DAIDE press.")
+            return
+
+        # Determine recipient set.  An explicit per-power recipient on the
+        # message object wins; otherwise fan out to every other power.
+        msg_recipient = getattr(msg, 'recipient', None)
+        powers_attr = getattr(self.game, 'powers', None) or {}
+        try:
+            all_powers = list(powers_attr.keys())
+        except AttributeError:
+            all_powers = list(powers_attr)
+        if msg_recipient and msg_recipient not in ('GLOBAL', 'ALL', None):
+            recipients = [msg_recipient]
+        else:
+            recipients = [p for p in all_powers if p != self.power_name]
+        if not recipients:
+            logger.debug("_send_dm: no recipients (powers=%r); dropping", all_powers)
+            return
+
+        # Phase-staleness guard: compare the phase Albert was scoring for
+        # (captured by play() into self.current_phase before on_game_update
+        # ran) against the server's now-current phase.  If the server has
+        # advanced — common when MC scoring takes longer than the deadline —
+        # drop the entire fan-out instead of paying N round-trip
+        # GamePhaseException rejections.
+        scoring_phase = getattr(self, 'current_phase', None) or ''
+        server_phase  = getattr(self.game, 'current_short_phase', None) or ''
+        if scoring_phase and server_phase and scoring_phase != server_phase:
+            logger.debug(
+                "_send_dm: skipping stale message (built for %s, server is"
+                " now at %s)", scoring_phase, server_phase,
+            )
+            return
+        # Use the server's current phase on the wire — Message validates
+        # phase against the live game state, so an off-by-one would be
+        # rejected even if scoring_phase == server_phase a moment ago.
+        phase = server_phase or scoring_phase
+
+        body = str(msg)
+        is_network = hasattr(self.game, 'send_game_message')
+        import asyncio as _asyncio
+
+        for recipient in recipients:
             try:
-                from diplomacy import Message
-                recipient = getattr(msg, 'recipient', 'ALL')
-                self.game.add_message(Message(sender=self.power_name, recipient=recipient, message=str(msg)))
-            except ImportError:
-                logger.warning("diplomacy.Message not available; cannot send DAIDE press.")
+                message_obj = Message(
+                    sender=self.power_name,
+                    recipient=recipient,
+                    phase=phase,
+                    message=body,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "_send_dm: Message validation failed (recipient=%r,"
+                    " phase=%r): %s: %s",
+                    recipient, phase, type(exc).__name__, exc,
+                )
+                continue
+
+            if is_network:
+                _SEND_RETRIES = 3
+                for _attempt in range(_SEND_RETRIES):
+                    try:
+                        fut = self.game.send_game_message(message=message_obj)
+                        if _asyncio.iscoroutine(fut):
+                            try:
+                                loop = _asyncio.get_running_loop()
+                                fut = loop.create_task(fut)
+                            except RuntimeError:
+                                _asyncio.run(fut)
+                                break
+                        if hasattr(fut, 'add_done_callback'):
+                            def _log_send_error(f, _r=recipient, _p=phase):
+                                try:
+                                    f.result()
+                                except Exception as exc:
+                                    logger.warning(
+                                        "_send_dm: send_game_message rejected"
+                                        " (recipient=%r, phase=%r): %s: %s",
+                                        _r, _p, type(exc).__name__, exc,
+                                    )
+                            fut.add_done_callback(_log_send_error)
+                        break  # dispatch succeeded
+                    except Exception as exc:
+                        if _attempt < _SEND_RETRIES - 1:
+                            _delay = 0.5 * (2 ** _attempt)
+                            logger.info(
+                                "_send_dm: send_game_message attempt %d/%d"
+                                " failed (recipient=%r, phase=%r): %s —"
+                                " retrying in %.1fs",
+                                _attempt + 1, _SEND_RETRIES,
+                                recipient, phase, exc, _delay,
+                            )
+                            import time as _time
+                            _time.sleep(_delay)
+                        else:
+                            logger.warning(
+                                "_send_dm: send_game_message failed after"
+                                " %d attempts (recipient=%r, phase=%r):"
+                                " %s: %s",
+                                _SEND_RETRIES, recipient, phase,
+                                type(exc).__name__, exc,
+                            )
+            else:
+                # Server-game / offline path (kept for unit tests).
+                try:
+                    self.game.add_message(message_obj)
+                except Exception as exc:
+                    logger.warning(
+                        "_send_dm: add_message rejected (recipient=%r,"
+                        " phase=%r): %s: %s",
+                        recipient, phase, type(exc).__name__, exc,
+                    )
 
     # ── BuildAndSendSUB helper ───────────────────────────────────────────────
 
@@ -2507,29 +3181,71 @@ class AlbertClient:
             logger.warning("MTL expired before BuildAndSendSUB — skipping SUB")
             return
 
-        if not best_orders:
-            logger.warning("MC selection produced no orders — nothing submitted")
-            return
+        # Pick the highest-scoring candidate for OUR power. process_turn
+        # appends one candidate record per (power, trial), so best_orders
+        # holds candidates for all 7 powers — we want our own.
+        own_candidates = [c for c in best_orders if c.get('power') == own_power_idx]
+        if own_candidates:
+            best = max(own_candidates, key=lambda c: float(c.get('score', 0.0)))
+            order_pairs = best.get('orders', [])
+        else:
+            best = None
+            order_pairs = []
 
-        # ── 3. Order submission ───────────────────────────────────────────────
-        # C: RegisterProposalOrders + ScoreOrderCandidates per trial in inner
-        # loop.  Python: MC already selected best_orders; build and submit
-        # directly.
-        best = best_orders[0]
-        order_pairs = best.get('orders', [])   # [(prov, order_type), ...]
-
-        self.state.g_OrderList = []
-        for prov, _order_type in order_pairs:
+        self.state.g_SubmittedOrders = []
+        # Restore g_OrderTable from the candidate snapshot for our own provinces.
+        # process_turn resets g_OrderTable per-trial and per-power, so by the
+        # time we read it here it reflects the *last* trial of the *last*
+        # power — not the trial that produced the chosen own-power candidate.
+        # The candidate carries the per-order field snapshot (see
+        # evaluate_order_proposal in monte_carlo.py); rehydrate the relevant
+        # rows before calling _build_order_seq_from_table.
+        from .monte_carlo import _F_SECONDARY as _MC_F_SECONDARY  # local import
+        for entry in order_pairs:
+            if len(entry) >= 5:
+                prov, order_type, dest_prov, dest_coast, secondary = entry[:5]
+                self.state.g_OrderTable[prov, _F_ORDER_TYPE] = float(order_type)
+                self.state.g_OrderTable[prov, _F_DEST_PROV]  = float(dest_prov)
+                self.state.g_OrderTable[prov, _F_DEST_COAST] = float(dest_coast)
+                self.state.g_OrderTable[prov, _MC_F_SECONDARY] = float(secondary)
+            else:
+                prov = entry[0]
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
                 validate_and_dispatch_order(self.state, own_power_idx, seq)
 
-        formatted = list(self.state.g_OrderList)
+        formatted = list(getattr(self.state, 'g_SubmittedOrders', []))
+
+        # Safety net: if MC still produced no usable orders for our units,
+        # default every own unit to a HOLD. process_turn now seeds
+        # g_OrderTable[prov, _F_ORDER_TYPE] = _ORDER_HLD for every own unit
+        # at trial start (Phase 1b'), so MC normally returns a non-empty
+        # candidate even on a fresh / no-press game. This branch only
+        # triggers if a trial bug or upstream reset clears the table after
+        # seeding — submitting HOLDs is strictly better than nothing
+        # (which would be civil disorder) and keeps the test harness alive.
+        if not formatted:
+            try:
+                state = self.game.get_state() if self.game is not None else {}
+                units = list(state.get('units', {}).get(self.power_name, []))
+            except Exception:
+                units = []
+            formatted = [f"{u} H" for u in units]
+            if formatted:
+                logger.info(
+                    "MC produced no orders for %s — defaulting %d units to HOLD",
+                    self.power_name, len(formatted),
+                )
         logger.info("SUB — %d orders for %s: %s",
                     len(formatted), self.power_name, formatted)
 
         if self.game is not None:
-            self.game.set_orders(self.power_name, formatted)
+            self._validate_orders(formatted)
+            try:
+                self.game.set_orders(power_name=self.power_name, orders=formatted, wait=False)
+            except TypeError:
+                # Older diplomacy lib doesn't support wait kwarg
+                self.game.set_orders(power_name=self.power_name, orders=formatted)
 
         # ── 3b. RankCandidatesForPower — inner-loop candidate selection ─────
         # C: FUN_00424850(piVar10, '\0') called per-power in BuildAndSendSUB
@@ -2628,6 +3344,115 @@ class AlbertClient:
 
         # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)
+
+    # ── Draw vote ─────────────────────────────────────────────────────────────
+
+    def _submit_draw_vote(self) -> None:
+        """Submit a YES draw vote to the server/game.
+
+        Only called when Albert actually wants a draw (g_draw_sent == 1).
+        The server defaults to neutral each phase, so we never need to
+        explicitly send NO or NEUTRAL — only YES when we want it.
+        """
+        if self.game is None:
+            return
+        try:
+            # NetworkGame (server): async vote request
+            if hasattr(self.game, 'vote') and callable(self.game.vote):
+                self.game.vote(vote='yes')
+            else:
+                # Local Game: set directly on the power object
+                power = self.game.powers.get(self.power_name)
+                if power is not None:
+                    power.vote = 'yes'
+            logger.info("Draw vote: submitted YES to server")
+        except Exception as exc:
+            logger.warning("Draw vote: failed to submit YES: %s", exc)
+
+    # ── Order validation ──────────────────────────────────────────────────
+
+    def _validate_orders(self, orders: list[str]) -> None:
+        """Check submitted orders against game.get_all_possible_orders().
+
+        Logs warnings for any illegal orders.  Does not block submission —
+        the server will void illegal orders anyway, but the log helps catch
+        bugs in the MC pipeline.
+        """
+        if self.game is None:
+            return
+        try:
+            possible = self.game.get_all_possible_orders()
+        except Exception:
+            return  # can't validate without the legal-orders map
+
+        for order in orders:
+            if order == 'WAIVE':
+                continue
+            # Extract the location from the order (first unit+loc token)
+            parts = order.split()
+            if len(parts) < 2:
+                continue
+            loc = parts[1]  # e.g. 'PAR' from 'A PAR H'
+            # Handle coasted locs like 'STP/NC'
+            legal = possible.get(loc, set())
+            if not legal:
+                # Try without coast for retreat/build orders
+                base = loc.split('/')[0]
+                legal = possible.get(base, set())
+            if legal and order not in legal:
+                logger.warning(
+                    "ORDER VALIDATION: %r not in legal orders for %s "
+                    "(sample legal: %s)",
+                    order, loc, list(legal)[:3],
+                )
+
+    # ── Adjustment (build/remove) order submission ─────────────────────────
+
+    def _submit_adjustment_orders(self) -> None:
+        """Translate g_build_order_list + g_waive_count into diplomacy-format
+        orders and submit them to the game.
+
+        g_build_order_list entries are DAIDE-style strings:
+            '( FRA AMY PAR ) BLD'  →  'A PAR B'
+            '( FRA FLT BRE ) BLD'  →  'F BRE B'
+            '( FRA AMY MAR ) REM'  →  'A MAR D'
+            '( FRA FLT NAP ) REM'  →  'F NAP D'
+        g_waive_count waives       →  'WAIVE' per waive
+        """
+        if self.game is None:
+            return
+
+        orders: list[str] = []
+        for entry in self.state.g_build_order_list:
+            # Parse '( POWER UNIT_TYPE PROV ) BLD|REM'
+            parts = entry.replace('(', '').replace(')', '').split()
+            # Expected: [POWER, AMY|FLT, PROV, BLD|REM]
+            if len(parts) < 4:
+                logger.warning("Adjustment: unparseable entry %r", entry)
+                continue
+            _power, unit_daide, prov, action = parts[0], parts[1], parts[2], parts[-1]
+            unit_letter = 'F' if unit_daide == 'FLT' else 'A'
+            if action == 'BLD':
+                orders.append(f"{unit_letter} {prov} B")
+            elif action == 'REM':
+                orders.append(f"{unit_letter} {prov} D")
+            else:
+                logger.warning("Adjustment: unknown action %r in %r", action, entry)
+
+        for _ in range(self.state.g_waive_count):
+            orders.append("WAIVE")
+
+        if orders:
+            logger.info("Adjustment orders for %s: %s", self.power_name, orders)
+            self._validate_orders(orders)
+            try:
+                self.game.set_orders(
+                    power_name=self.power_name, orders=orders, wait=False)
+            except TypeError:
+                self.game.set_orders(
+                    power_name=self.power_name, orders=orders)
+        else:
+            logger.info("Adjustment: no builds/removes/waives for %s", self.power_name)
 
     # ── Press handler ────────────────────────────────────────────────────────
 

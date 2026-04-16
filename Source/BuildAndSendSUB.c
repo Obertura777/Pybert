@@ -137,7 +137,7 @@ void __fastcall BuildAndSendSUB(void *param_1)
   void *local_14;
   undefined1 *puStack_10;
   int local_c;
-  
+
   local_c = 0xffffffff;
   puStack_10 = &LAB_00498008;
   local_14 = ExceptionList;
@@ -179,7 +179,7 @@ LAB_004579a9:
     }
     if (puVar18 == puVar31) {
 LAB_004591b3:
-      FUN_00443ed0(pvVar22);
+      AwaitPressAndSendGOF(pvVar22);
       local_c._0_1_ = 5;
       FreeList(apvStack_25c);
       local_c._0_1_ = 4;
@@ -512,7 +512,7 @@ LAB_004591b3:
             puStack_3d4 = auStack_418;
             FUN_00465f60(auStack_418,(void **)(puVar18 + 0x30));
             local_c = CONCAT31(local_c._1_3_,6);
-            psVar12 = FUN_0042fc40(local_3d8,asStack_37a);
+            psVar12 = EvaluatePress(local_3d8,asStack_37a);
             sVar2 = *psVar12;
             if (puVar18 == *(undefined4 **)(puVar24 + 4)) {
               FUN_0047a948();
@@ -566,7 +566,7 @@ LAB_004591b3:
             piStack_3a8 = (int *)&stack0xfffffc00;
             in_stack_fffffc00 = (int **)CONCAT22((short)((uint)in_stack_fffffc04 >> 0x10),sVar2);
             RESPOND(local_3d8,apvStack_26c,sVar2,(uint)in_stack_fffffc04,puVar18[0x2f]);
-            FUN_00457520(pvVar22);
+            EvaluateOrderProposalsAndSendGOF(pvVar22);
           }
         }
         if (puVar18 == *(undefined4 **)(puVar24 + 4)) {
@@ -1214,4 +1214,3 @@ LAB_00458a91:
     puVar18 = puStack_3bc;
   } while( true );
 }
-

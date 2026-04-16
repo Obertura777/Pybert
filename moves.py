@@ -659,7 +659,10 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
 
     AdjacencyList_FilterByUnitType(..., FLT) would return only fleet-navigable
     neighbours; the Python adj_matrix merges all adjacency types, so we use it
-    as-is (no separate fleet_adj_matrix exists yet).
+    as-is.  This is acceptable here because register_convoy_fleet is marking
+    army-adjacent provinces for convoy scoring, not generating fleet move orders.
+    Unit-type terrain filtering for actual moves is enforced in _build_order_mto
+    (monte_carlo.py) and _is_legal_mto (dispatch.py).
     """
     if fleet_prov in state.g_ConvoyFleetRegistered:
         return

@@ -116,7 +116,9 @@ class InnerGameState:
     g_ActiveDmzList: "Any"
     g_ActiveDmzMap: "Any"
     g_AllianceOrders: "Any"
-    g_AllianceOrdersPresent: "Any"
+    # g_AllianceOrdersPresent removed: phantom global. The C binary reads
+    # `&DAT_00bb6d00 + p*0xc` which is the std::set _Mysize field of slot p
+    # inside g_AllianceOrders, not a separate array. Use len(...) instead.
     g_AllyOrderHistory: "Any"
     g_ConvoyRoute: "Any"
     g_CoopFlag: "Any"
@@ -125,7 +127,7 @@ class InnerGameState:
     g_DesigListA: "Any"
     g_DesigListB: "Any"
     g_DmzOrderList: "Any"
-    g_GeneralOrdersPresent: "Any"
+    # g_GeneralOrdersPresent removed: phantom global (see g_AllianceOrdersPresent).
     g_LoneLeadPower: "Any"
     g_MoveTimeLimit: "Any"
     g_OrderHistory: "Any"
@@ -692,11 +694,14 @@ class InnerGameState:
 
         self.prov_to_id = {}
         self.adj_matrix = {}
-        self.unit_info = {} # prov_id -> {'power': int, 'type': 'AMY'/'FLT', 'coast': str}
+        self.unit_info = {} # prov_id -> {'power': int, 'type': 'A'/'F', 'coast': str}
         # Set of province IDs whose underlying province type is 'WATER' (sea zones).
         # Populated once during synchronize_from_game from game.map.area_type().
         # Mirrors the flag at inner_state + prov_id * 0x24 + 4 == '\0' in the C++ original.
         self.water_provinces: frozenset = frozenset()
+        # Set of province IDs whose area_type is 'LAND' (landlocked — no fleet access).
+        # COAST provinces are in neither water_provinces nor land_provinces.
+        self.land_provinces: frozenset = frozenset()
 
         # ── PhaseHandler snapshots (FUN_0040df20) ────────────────────────────
         # DAT_0062e4b8 — phase×power snapshot of g_AllyTrustScore lo-word
@@ -766,19 +771,70 @@ class InnerGameState:
             for prov in game.map.locs:
                 if prov not in self.prov_to_id:
                     self.prov_to_id[prov] = len(self.prov_to_id)
+            # Add uppercase aliases for lowercase parent provinces
+            # (e.g. 'spa' → id 63 also gets 'SPA' → id 63).  This ensures
+            # prov_to_id lookups work regardless of casing.
+            _aliases = {}
+            for name, pid in self.prov_to_id.items():
+                upper = name.upper()
+                if upper != name and upper not in self.prov_to_id:
+                    _aliases[upper] = pid
+            self.prov_to_id.update(_aliases)
             
-            # Build adjacency graph and water-province set
+            # Build case-insensitive reverse map for adjacency resolution.
+            # game.map.abut_list can return mixed-case names (e.g. 'gas' for
+            # GAS) and coast-suffixed names (e.g. 'SPA/SC').  We normalise
+            # by stripping the coast suffix and upper-casing.
+            _upper_lookup: dict = {}
+            for _p in self.prov_to_id:
+                _key = _p.split('/')[0].upper() if '/' in _p else _p.upper()
+                # Prefer the non-coast entry (e.g. 'GAS' over 'GAS/NC')
+                if _key not in _upper_lookup or '/' not in _p:
+                    _upper_lookup[_key] = self.prov_to_id[_p]
+
+            # Build adjacency graph, water-province set, and land-province set
             water_prov_ids = set()
+            land_prov_ids = set()
             for prov in self.prov_to_id:
                 base_prov = prov.split('/')[0] if '/' in prov else prov
                 self.adj_matrix[self.prov_to_id[prov]] = []
+                seen_adj_ids: set = set()
                 for adj in game.map.abut_list(prov):
-                    adj_base = adj.split('/')[0] if '/' in adj else adj
-                    if adj_base in self.prov_to_id:
-                        self.adj_matrix[self.prov_to_id[prov]].append(self.prov_to_id[adj_base])
-                if game.map.area_type(base_prov) == 'WATER':
-                    water_prov_ids.add(self.prov_to_id[prov])
+                    adj_base = adj.split('/')[0].upper() if '/' in adj else adj.upper()
+                    adj_id = _upper_lookup.get(adj_base, -1)
+                    if adj_id >= 0 and adj_id not in seen_adj_ids:
+                        self.adj_matrix[self.prov_to_id[prov]].append(adj_id)
+                        seen_adj_ids.add(adj_id)
+                atype = game.map.area_type(base_prov)
+                pid = self.prov_to_id[prov]
+                if atype == 'WATER':
+                    water_prov_ids.add(pid)
+                elif atype == 'LAND':
+                    land_prov_ids.add(pid)
+                # COAST provinces are in neither set — accessible by both unit types
             self.water_provinces = frozenset(water_prov_ids)
+            self.land_provinces = frozenset(land_prov_ids)
+
+            # Build supply-centre set (province IDs of all SCs on the map).
+            self.sc_provinces = set()
+            for sc_name in getattr(game.map, 'scs', []):
+                sc_base = sc_name.split('/')[0].upper()
+                sc_id = _upper_lookup.get(sc_base, -1)
+                if sc_id >= 0:
+                    self.sc_provinces.add(sc_id)
+
+            # Build _id_to_prov reverse map.  Always store the uppercase
+            # non-coast canonical form so downstream order strings match
+            # what the diplomacy lib and dispatch validator expect.
+            # E.g. id 63 → 'SPA' (not 'spa' or 'SPA/SC').
+            self._id_to_prov = {}
+            for name, pid in self.prov_to_id.items():
+                canon = name.split('/')[0].upper()
+                existing = self._id_to_prov.get(pid)
+                if existing is None:
+                    self._id_to_prov[pid] = canon
+                # All variants of the same base map to the same canon, so
+                # no further preference logic needed.
 
             # Build home-SC map: power_idx → frozenset of province IDs.
             # game.map.homes is a dict of power_name → [home_sc_name, ...]
@@ -787,9 +843,9 @@ class InnerGameState:
                 if power_name in power_to_id:
                     p_id = power_to_id[power_name]
                     prov_ids = frozenset(
-                        self.prov_to_id[sc.split('/')[0]]
+                        _upper_lookup[sc.split('/')[0].upper()]
                         for sc in home_scs
-                        if sc.split('/')[0] in self.prov_to_id
+                        if sc.split('/')[0].upper() in _upper_lookup
                     )
                     self.home_centers[p_id] = prov_ids
 
@@ -798,13 +854,43 @@ class InnerGameState:
         self.g_ScOwner.fill(-1)
         self.g_OwnReachScore.fill(0)
         self.unit_info.clear()
-        self.g_ProposalHistory.clear()
+        # ── Per-call resets (mirror GenerateAndSubmitOrders.c top-of-fn) ──
+        # The C binary explicitly reinitialises these at the top of every
+        # GenerateAndSubmitOrders call:
+        #   g_PosAnalysisList (DAT_00bb65cc)  — sentinel-list reinit, line 92-96
+        #   g_PressSentMatrix (line 243)      — zeroed in per-power loop
+        #   g_XdoPressProposals               — staging for ComputePress, drained
+        # Mirror that here.
         self.g_XdoPressSent.fill(0)
         self.g_XdoPressProposals.clear()
         self.g_PosAnalysisList.clear()
-        self.g_AcceptedProposals.clear()
-        self.g_AllianceMsgTree.clear()
-        self.g_BroadcastList.clear()
+
+        # ── DO NOT clear: the following globals accumulate forever in C. ──
+        # Wiping them in Python would break multi-phase commitment semantics
+        # and re-emit dedup'd alliance/proposal events on every phase.
+        #
+        # g_BroadcastList     (DAT_00bb65ec) — received DAIDE press; the only
+        #     write site is register_received_press, no destructor. An XDO
+        #     announced in S1901M must still penalise contradicting
+        #     candidates in F1901M+ until superseded.
+        #
+        # g_AllianceMsgTree   (DAT_00bbf638) — set of alliance-event keys
+        #     used by BuildAllianceMsg/CheckAndInsertAllianceTreeEntry as a
+        #     dedup so the same alliance event isn't re-broadcast. Inserts
+        #     happen in CAL_BOARD/CAL_VALUE/FRIENDLY/GOF; no clear anywhere.
+        #
+        # g_AcceptedProposals (DAT_00bb65d4) — tokens we've agreed to. Sole
+        #     C write: CAL_VALUE.c:174 (FUN_00419300 = set_insert). Never
+        #     cleared on the success path; only the failure-cleanup loop in
+        #     RESPOND drains it (already mirrored in communications.py).
+        #
+        # g_ProposalHistory   (g_ProposalHistoryMap) — keyed by proposal
+        #     digest; used by BuildSupportProposals/BuildAndSendSUB/Process-
+        #     Turn for "have we proposed/seen this before?" dedup. Only
+        #     StdMap_FindOrInsert / StdMap_Insert in the C; no destructor.
+        #
+        # g_BroadcastListWatermark IS per-call (register_received_press
+        # snapshots and rewinds it) — safe to clamp here for newcomers.
         self.g_BroadcastListWatermark = 0
 
         # Parse Ownership
@@ -839,14 +925,28 @@ class InnerGameState:
             if power_name in power_to_id:
                 self.sc_count[power_to_id[power_name]] = len(centers)
 
-        # Compute Near End Game Factor (placeholder; cal_board computes the real value)
-        max_scs = int(np.max(self.sc_count)) if np.any(self.sc_count) else 0
-        self.g_NearEndGameFactor = max_scs / 18.0 * 5.0
+        # Seed NearEndGameFactor with the same formula cal_board uses
+        # (max over all powers of (sc[k] - win_threshold + 9), floor 1.0).
+        # cal_board() recomputes this properly when it runs; this seed
+        # covers the first SPR phase where cal_board hasn't fired yet.
+        wt = int(self.win_threshold) or 1
+        near_end = 1.0
+        for k in range(7):
+            factor = float(int(self.sc_count[k]) - wt + 9)
+            if factor > near_end:
+                near_end = factor
+        self.g_NearEndGameFactor = near_end
 
         # Season token: SPR/SUM/FAL/AUT/WIN from phase string e.g. "S1901M"/"F1901R"/"W1901A"
         # Phase format: [S|F|W] + year + [M|R|A]
         #   S+M=SPR, S+R=SUM, F+M=FAL, F+R=AUT, W+A=WIN
-        _phase_raw: Any = game.get_phase() if hasattr(game, 'get_phase') else ''
+        # Try get_current_phase (diplomacy.Game) first, then get_phase (NetworkGame)
+        if hasattr(game, 'get_current_phase'):
+            _phase_raw: Any = game.get_current_phase()
+        elif hasattr(game, 'get_phase'):
+            _phase_raw = game.get_phase()
+        else:
+            _phase_raw = ''
         phase: str = str(_phase_raw) if _phase_raw is not None else ''
         if len(phase) >= 2:
             phase_type   = phase[-1:].upper()   # 'M', 'R', or 'A'
@@ -933,6 +1033,24 @@ class InnerGameState:
 
     def can_reach(self, src_prov: int, dst_prov: int):
         return dst_prov in self.adj_matrix.get(src_prov, [])
+
+    def can_reach_by_type(self, src_prov: int, dst_prov: int, unit_type: str) -> bool:
+        """Province adjacency gate with unit-type filtering.
+
+        Fleets can move to WATER or COAST provinces but NOT LAND (landlocked).
+        Armies can move to LAND or COAST provinces but NOT WATER (sea zones).
+
+        ``unit_type`` should be ``'F'`` or ``'A'`` (as stored in
+        ``unit_info``), though ``'FLT'``/``'AMY'`` are also accepted.
+        Falls back to ``can_reach`` for unknown types.
+        """
+        if dst_prov not in self.adj_matrix.get(src_prov, []):
+            return False
+        if unit_type in ('F', 'FLT') and dst_prov in self.land_provinces:
+            return False   # fleet cannot enter landlocked province
+        if unit_type in ('A', 'AMY') and dst_prov in self.water_provinces:
+            return False   # army cannot enter sea zone
+        return True
 
     def get_max_threatening_adj_scs(self, prov_id: int, power_id: int) -> int:
         max_scs = 0
