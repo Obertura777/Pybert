@@ -46,7 +46,7 @@ def send_alliance_press(
     """
     Port of SendAlliancePress (named symbol; address not confirmed beyond call site).
 
-    C signature (thiscall on g_BroadcastList proxy DAT_00bb65ec):
+    C signature (thiscall on g_broadcast_list proxy DAT_00bb65ec):
         void __thiscall SendAlliancePress(void *this,
                                           undefined4 *param_1,
                                           int *param_2)
@@ -68,7 +68,7 @@ def send_alliance_press(
 
     Python absorption
     -----------------
-    * ``g_BroadcastList`` is a plain Python ``list`` (no tree structure).
+    * ``g_broadcast_list`` is a plain Python ``list`` (no tree structure).
     * The lower-bound search is replicated as a linear scan by ``key``.
     * ``FUN_0042e450`` (RB-tree node allocator + rebalancer) is absorbed
       into ``list.insert``.
@@ -81,7 +81,11 @@ def send_alliance_press(
                  BuildAndSendSUB press-deal loop this is the target
                  power index).
     entry_data : optional dict of extra fields to merge into the new
-                 entry (province_set, press_seq, power, …).
+                 entry (province_set, press_seq, power, …). Callers should
+                 populate ``score_vector`` if the entry comes from inbound
+                 gate.py (which computes per-power legitimacy scores).
+                 Self-generated entries should compute score_vector via
+                 legitimacy_gate as in emit_xdo_proposals_to_broadcast.
 
     Returns
     -------
@@ -110,7 +114,7 @@ def send_alliance_press(
     if entry_data:
         entry.update(entry_data)
 
-    bl: list = state.g_BroadcastList
+    bl: list = state.g_broadcast_list
 
     # lower_bound: first position where existing key >= new key
     insert_pos = len(bl)
@@ -122,7 +126,7 @@ def send_alliance_press(
     bl.insert(insert_pos, entry)
 
     _log.debug(
-        "send_alliance_press: inserted key=%d into g_BroadcastList at pos %d "
+        "send_alliance_press: inserted key=%d into g_broadcast_list at pos %d "
         "(list now %d entries)",
         key, insert_pos, len(bl),
     )
@@ -133,13 +137,13 @@ def send_alliance_press(
 
 def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
     """
-    Convert accumulated g_XdoPressProposals into g_BroadcastList entries.
+    Convert accumulated g_xdo_press_proposals into g_broadcast_list entries.
 
     In the C binary, BuildSupportProposals (FUN_0043e370) both builds the
     proposal records AND emits them as XDO(SUP(...)) token sequences into the
     broadcast list (via FUN_00466f80(&XDO, ...) + AppendList, lines 396–427).
     The Python port splits these concerns: ``build_support_proposals``
-    populates ``g_XdoPressProposals`` and this function performs the emission.
+    populates ``g_xdo_press_proposals`` and this function performs the emission.
 
     Each proposal dict has::
 
@@ -147,7 +151,7 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
          'mover_prov': int, 'dest': int, 'from_power': int, 'to_power': int,
          'priority': int, 'key': int}
 
-    We convert these into g_BroadcastList entries with ``order_candidates``
+    We convert these into g_broadcast_list entries with ``order_candidates``
     lists whose tokens follow the DAIDE XDO(SUP ...) pattern that
     ``_parse_xdo_body_to_order`` can consume downstream.
 
@@ -156,7 +160,7 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    proposals = getattr(state, 'g_XdoPressProposals', None)
+    proposals = getattr(state, 'g_xdo_press_proposals', None)
     if not proposals:
         return 0
 
@@ -202,20 +206,36 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
             ')',
         ]
 
-        # Build g_BroadcastList entry (matches format consumed by
+        # Build g_broadcast_list entry (matches format consumed by
         # score_order_candidates_from_broadcast).
         key = prop.get('key', sup_prov * 1000000 + mov_prov * 1000 + dest_prov)
+
+        # Compute per-power score vector (same as register_received_press in gate.py)
+        from .inbound.gate import legitimacy_gate
+        score_vec = [0] * 7
+        cands = [{'tokens': tokens, 'type_flag': 1}]
+        for pwr in range(7):
+            try:
+                s = legitimacy_gate(
+                    state, pwr,
+                    [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)
+                      if isinstance(c, dict) else 0} for c in cands],
+                )
+                score_vec[pwr] = int(s)
+            except (KeyError, IndexError, TypeError, ValueError):
+                score_vec[pwr] = 0
+
         entry = {
             'key':              key,
             'sent':             True,
             'type_flag':        1,       # 1 = self-generated (vs 0 = received)
             'trial_count':      0,
-            'score_vector':     [0] * 7,
-            'history_flag':     0,
+            'score_vector':     score_vec,
+            'history_flag':     1,       # Mark as populated so CAL_VALUE uses diff-form
             'order_candidates': [{'tokens': tokens, 'type_flag': 1}],
         }
 
-        bl = state.g_BroadcastList
+        bl = state.g_broadcast_list
         # Insert sorted by key (C: lower_bound insertion)
         insert_pos = len(bl)
         for i, node in enumerate(bl):
@@ -227,13 +247,13 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
 
     if emitted:
         _log.debug(
-            "emit_xdo_proposals: emitted %d SUP proposals into g_BroadcastList "
+            "emit_xdo_proposals: emitted %d SUP proposals into g_broadcast_list "
             "(list now %d entries)",
-            emitted, len(state.g_BroadcastList),
+            emitted, len(state.g_broadcast_list),
         )
 
     # Clear consumed proposals (they've been emitted).
-    state.g_XdoPressProposals.clear()
+    state.g_xdo_press_proposals.clear()
     return emitted
 
 
@@ -242,35 +262,35 @@ def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
     Python port of ScoreOrderCandidates' writer loop
     (Source/ScoreOrderCandidates.c, lines 217–294).
 
-    Walks state.g_BroadcastList (DAT_00bb65ec) and projects each entry's
+    Walks state.g_broadcast_list (DAT_00bb65ec) and projects each entry's
     parsed XDO order_candidates into:
 
-      * state.g_GeneralOrders[power]   (≡ DAT_00bb6cf8 + power*0xc) —
+      * state.g_general_orders[power]   (≡ DAT_00bb6cf8 + power*0xc) —
         unconditional general-orders set; consulted by MC sub-pass 1c
         unconditional second pass.
-      * state.g_AllianceOrders[power]  (≡ DAT_00bb65f8 + power*0xc) —
+      * state.g_alliance_orders[power]  (≡ DAT_00bb65f8 + power*0xc) —
         alliance-orders set; consulted by MC sub-pass 1c first pass when
         the proposer is the own power or a trusted ally.
 
     Trust gate for the alliance set mirrors the dispatch_first_pass
     decision in monte_carlo.process_turn (~line 1091): own power, or
-    g_AllyTrustScore_Hi > 0, or (Hi >= 0 and Lo > 2).
+    g_ally_trust_score_hi > 0, or (Hi >= 0 and Lo > 2).
 
     Returns the number of order_records inserted (sum across both sets).
     Designed to be safe to call multiple times — callers that want
-    fresh state should clear g_GeneralOrders / g_AllianceOrders first.
+    fresh state should clear g_general_orders / g_alliance_orders first.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    bl = getattr(state, 'g_BroadcastList', None)
+    bl = getattr(state, 'g_broadcast_list', None)
     if not bl:
         return 0
 
-    if not hasattr(state, 'g_GeneralOrders'):
-        state.g_GeneralOrders = {}
-    if not hasattr(state, 'g_AllianceOrders'):
-        state.g_AllianceOrders = {}
+    if not hasattr(state, 'g_general_orders'):
+        state.g_general_orders = {}
+    if not hasattr(state, 'g_alliance_orders'):
+        state.g_alliance_orders = {}
 
     own_power = getattr(state, 'own_power_index', None)
     if own_power is None:
@@ -309,7 +329,7 @@ def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
                 continue
             seen_keys.add(key)
 
-            state.g_GeneralOrders.setdefault(power_idx, []).append(order_seq)
+            state.g_general_orders.setdefault(power_idx, []).append(order_seq)
             inserted += 1
 
             # Alliance gate.
@@ -318,14 +338,14 @@ def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
                 is_ally_first_pass = True
             else:
                 try:
-                    trust_lo = int(state.g_AllyTrustScore[own_power, power_idx])
-                    trust_hi = int(state.g_AllyTrustScore_Hi[own_power, power_idx])
+                    trust_lo = int(state.g_ally_trust_score[own_power, power_idx])
+                    trust_hi = int(state.g_ally_trust_score_hi[own_power, power_idx])
                     if trust_hi > 0 or (trust_hi >= 0 and trust_lo > 2):
                         is_ally_first_pass = True
                 except Exception:
                     pass
             if is_ally_first_pass:
-                state.g_AllianceOrders.setdefault(power_idx, []).append(order_seq)
+                state.g_alliance_orders.setdefault(power_idx, []).append(order_seq)
                 inserted += 1
 
     if inserted:
@@ -333,8 +353,8 @@ def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
             "score_order_candidates: inserted %d order_records "
             "(general slots: %s, alliance slots: %s)",
             inserted,
-            sorted(state.g_GeneralOrders.keys()),
-            sorted(state.g_AllianceOrders.keys()),
+            sorted(state.g_general_orders.keys()),
+            sorted(state.g_alliance_orders.keys()),
         )
     return inserted
 
@@ -347,7 +367,7 @@ def propose_dmz(state: InnerGameState,
     """
     Port of ProposeDMZ (FUN_00432960).
 
-    Iterates g_OrderList looking for contested provinces and sends DMZ
+    Iterates g_order_list looking for contested provinces and sends DMZ
     proposals to *ally_power* via DAIDE PRP(DMZ(...)) press.
 
     Returns True if at least one proposal was sent.
@@ -357,7 +377,7 @@ def propose_dmz(state: InnerGameState,
       1 bilateral   → PRP ( DMZ ( own ally ) prov )
       1 unilateral  → PRP ( DMZ ally prov )
 
-    g_DMZAggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
+    g_dmz_aggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
     Proposals to the same (power, province) pair are capped at 2.
 
     Research.md §1381.
@@ -367,12 +387,12 @@ def propose_dmz(state: InnerGameState,
     _send = send_fn if send_fn is not None else (lambda msg: _log.debug("ProposeDMZ: %s", msg))
 
     own_power = getattr(state, 'albert_power_idx', 0)
-    threshold = int(getattr(state, 'g_DMZAggressiveness', 0))
+    threshold = int(getattr(state, 'g_dmz_aggressiveness', 0))
     sent = False
 
     contested: list = []   # entries with flag1=1
 
-    for entry in getattr(state, 'g_OrderList', []):
+    for entry in getattr(state, 'g_order_list', []):
         if entry.get('done', False):
             continue
         province  = int(entry.get('province', -1))
@@ -386,7 +406,7 @@ def propose_dmz(state: InnerGameState,
 
         # Cap per (power, province) at 2 proposals
         key = (ally_power, province)
-        if state.g_SentProposals.get(key, 0) >= 2:
+        if state.g_sent_proposals.get(key, 0) >= 2:
             continue
 
         if score < threshold:
@@ -401,7 +421,7 @@ def propose_dmz(state: InnerGameState,
         _send(msg)
         for c in contested:
             key = (ally_power, c['province'])
-            state.g_SentProposals[key] = state.g_SentProposals.get(key, 0) + 1
+            state.g_sent_proposals[key] = state.g_sent_proposals.get(key, 0) + 1
         sent = True
 
     elif len(contested) == 1:
@@ -413,13 +433,13 @@ def propose_dmz(state: InnerGameState,
         else:
             msg = f"PRP ( DMZ {ally_power} {province} )"
         _send(msg)
-        state.g_SentProposals[key] = state.g_SentProposals.get(key, 0) + 1
+        state.g_sent_proposals[key] = state.g_sent_proposals.get(key, 0) + 1
         sent = True
 
     # Mark proposed entries as done
     if sent:
         proposed_provs = {c['province'] for c in contested}
-        for entry in state.g_OrderList:
+        for entry in state.g_order_list:
             if int(entry.get('province', -1)) in proposed_provs:
                 entry['done'] = True
 
@@ -433,8 +453,8 @@ def _update_relation_history(state: InnerGameState) -> None:
     Port of UpdateRelationHistory (FUN_0040d7e0).
 
     Enforces a _safe_pow(1.8, trust_lo/10) minimum floor on every positive
-    g_AllyTrustScore[row][col] entry.  Called by friendly() (always) and by
-    _hostility() when g_PressFlag==0 or g_NearEndGameFactor>3.0.
+    g_ally_trust_score[row][col] entry.  Called by friendly() (always) and by
+    _hostility() when g_press_flag==0 or g_near_end_game_factor>3.0.
 
     The C function stores trust as a 64-bit int split into lo (puVar6[0]) and
     hi (puVar6[1]) uint words.  The floor is computed as:
@@ -448,8 +468,8 @@ def _update_relation_history(state: InnerGameState) -> None:
     num_powers = 7
     for row in range(num_powers):
         for col in range(num_powers):
-            trust_lo = int(state.g_AllyTrustScore[row, col])
-            trust_hi = int(state.g_AllyTrustScore_Hi[row, col])
+            trust_lo = int(state.g_ally_trust_score[row, col])
+            trust_hi = int(state.g_ally_trust_score_hi[row, col])
             # Guard: trust > 0 — C: (-1 < trust_hi) AND (0 < trust_hi OR trust_lo != 0)
             if not (trust_hi >= 0 and (trust_hi > 0 or trust_lo != 0)):
                 continue
@@ -459,8 +479,8 @@ def _update_relation_history(state: InnerGameState) -> None:
             floor_hi = -1 if (floor_lo >> 31) else 0
             # 64-bit comparison: (trust_hi, trust_lo) < (floor_hi, floor_lo)
             if trust_hi <= floor_hi and (trust_hi < floor_hi or trust_lo < floor_lo):
-                state.g_AllyTrustScore[row, col]    = floor_lo
-                state.g_AllyTrustScore_Hi[row, col] = floor_hi
+                state.g_ally_trust_score[row, col]    = floor_lo
+                state.g_ally_trust_score_hi[row, col] = floor_hi
 
 
 # ── FRIENDLY ─────────────────────────────────────────────────────────────────
@@ -473,9 +493,9 @@ def friendly(state: InnerGameState) -> None:
     GenerateAndSubmitOrders between PhaseHandler(1) and PhaseHandler(2).
 
     Three phases (research.md §4364 / decompiled.txt):
-      Phase 1 — update g_RelationScore for each (row, col) power pair
+      Phase 1 — update g_relation_score for each (row, col) power pair
       Phase 2 — UpdateRelationHistory (FUN_0040d7e0)
-      Phase 3 — upgrade/downgrade g_AllyMatrix based on trust thresholds
+      Phase 3 — upgrade/downgrade g_ally_matrix based on trust thresholds
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -495,36 +515,36 @@ def friendly(state: InnerGameState) -> None:
             # The reverse-direction clear pre-zeros pairs that won't reach the eliminated
             # branch when row=eliminated (since the check is on col's sc_count, not row's).
             if int(state.sc_count[col]) == 0:
-                state.g_AllyTrustScore[row, col]    = 0
-                state.g_AllyTrustScore_Hi[row, col] = 0
-                state.g_TrustExtended_Lo[row, col]  = 0
-                state.g_TrustExtended_Hi[row, col]  = 0
-                state.g_RelationScore[row, col]      = 0
+                state.g_ally_trust_score[row, col]    = 0
+                state.g_ally_trust_score_hi[row, col] = 0
+                state.g_trust_extended_lo[row, col]  = 0
+                state.g_trust_extended_hi[row, col]  = 0
+                state.g_relation_score[row, col]      = 0
                 # symmetric clear (*piVar3 / iStack_34 writes in decompiled)
-                state.g_AllyTrustScore[col, row]    = 0
-                state.g_AllyTrustScore_Hi[col, row] = 0
-                state.g_TrustExtended_Lo[col, row]  = 0
-                state.g_TrustExtended_Hi[col, row]  = 0
-                state.g_RelationScore[col, row]      = 0
+                state.g_ally_trust_score[col, row]    = 0
+                state.g_ally_trust_score_hi[col, row] = 0
+                state.g_trust_extended_lo[col, row]  = 0
+                state.g_trust_extended_hi[col, row]  = 0
+                state.g_relation_score[col, row]      = 0
                 continue
 
-            stab      = int(state.g_StabFlag[row, col])
-            cease     = int(state.g_CeaseFire[row, col])
-            # g_CoopScoreFlag_B (DAT_0062be98) — fall/autumn cooperation flag
-            # g_CoopScoreFlag_A (DAT_0062c580) — spring/summer cooperation flag
+            stab      = int(state.g_stab_flag[row, col])
+            cease     = int(state.g_cease_fire[row, col])
+            # g_coop_score_flag_b (DAT_0062be98) — fall/autumn cooperation flag
+            # g_coop_score_flag_a (DAT_0062c580) — spring/summer cooperation flag
             # Both are tested in the FRIENDLY conjunction (C: FRIENDLY.c:123-124)
             # regardless of season.  Previously read the phantom names
-            # g_CoopFlag / g_SomeCoopScore, which were never populated.
-            coop      = int(state.g_CoopScoreFlag_B[row, col])
-            some_coop = int(state.g_CoopScoreFlag_A[row, col])
-            trust_lo  = int(state.g_AllyTrustScore[row, col])
-            trust_hi  = int(state.g_AllyTrustScore_Hi[row, col])
-            peace_sig = int(state.g_PeaceSignal[row, col])
-            neutral   = int(state.g_NeutralFlag[row, col])
-            relation  = int(state.g_RelationScore[row, col])
-            rel_sym   = int(state.g_RelationScore[col, row])
-            rank      = int(state.g_InfluenceRankFlag[row, col])
-            stab_n    = int(state.g_StabCounter[row, col])
+            # g_coop_flag / g_some_coop_score, which were never populated.
+            coop      = int(state.g_coop_score_flag_b[row, col])
+            some_coop = int(state.g_coop_score_flag_a[row, col])
+            trust_lo  = int(state.g_ally_trust_score[row, col])
+            trust_hi  = int(state.g_ally_trust_score_hi[row, col])
+            peace_sig = int(state.g_peace_signal[row, col])
+            neutral   = int(state.g_neutral_flag[row, col])
+            relation  = int(state.g_relation_score[row, col])
+            rel_sym   = int(state.g_relation_score[col, row])
+            rank      = int(state.g_influence_rank_flag[row, col])
+            stab_n    = int(state.g_stab_counter[row, col])
 
             if stab == 1:
                 # Two-path stab penalty based on relation levels and influence rank.
@@ -535,37 +555,37 @@ def friendly(state: InnerGameState) -> None:
                         penalty  = stab_n * (-10) - 10
                         relation = max(relation + penalty, -50)
                         rel_sym  = max(rel_sym  + penalty, -50)
-                        state.g_RelationScore[row, col] = relation
-                        state.g_RelationScore[col, row] = rel_sym
-                        state.g_StabCounter[row, col]   += 1
+                        state.g_relation_score[row, col] = relation
+                        state.g_relation_score[col, row] = rel_sym
+                        state.g_stab_counter[row, col]   += 1
                     else:
                         # At least one score ≤ 4: zero both directions
-                        state.g_RelationScore[row, col] = 0
-                        state.g_RelationScore[col, row] = 0
+                        state.g_relation_score[row, col] = 0
+                        state.g_relation_score[col, row] = 0
                 else:
                     # High-score / high-rank stab: larger penalty n*-20-70
                     penalty  = stab_n * (-20) - 70
                     relation = max(relation + penalty, -50)
                     rel_sym  = max(rel_sym  + penalty, -50)
-                    state.g_RelationScore[row, col] = relation
-                    state.g_RelationScore[col, row] = rel_sym
-                    state.g_StabCounter[row, col]   += 1
+                    state.g_relation_score[row, col] = relation
+                    state.g_relation_score[col, row] = rel_sym
+                    state.g_stab_counter[row, col]   += 1
                     # Clear betrayal counters for own power's other allies (cancel pending peace)
                     if row == own_power:
                         for k in range(num_powers):
                             if k != col:
-                                state.g_BetrayalCounter[k] = 0
+                                state.g_betrayal_counter[k] = 0
                 _log.debug("FRIENDLY: stab (%d,%d) → rel=%d sym=%d",
                            row, col,
-                           int(state.g_RelationScore[row, col]),
-                           int(state.g_RelationScore[col, row]))
+                           int(state.g_relation_score[row, col]),
+                           int(state.g_relation_score[col, row]))
 
             elif cease == 1:
                 # Cease-fire: cap both directions at 0
                 if relation > 0:
-                    state.g_RelationScore[row, col] = 0
+                    state.g_relation_score[row, col] = 0
                 if rel_sym > 0:
-                    state.g_RelationScore[col, row] = 0
+                    state.g_relation_score[col, row] = 0
 
             elif stab == 0 and coop == 0 and some_coop == 0 and season_rewards:
                 # Normal relationship update (FAL/WIN only).
@@ -576,73 +596,73 @@ def friendly(state: InnerGameState) -> None:
 
                 if not alliance:
                     # Block A: symmetric partner has active trust, no peace signal → +5
-                    sym_hi = int(state.g_AllyTrustScore_Hi[col, row])
-                    sym_lo = int(state.g_AllyTrustScore[col, row])
+                    sym_hi = int(state.g_ally_trust_score_hi[col, row])
+                    sym_lo = int(state.g_ally_trust_score[col, row])
                     if (sym_hi >= 0 and (sym_hi > 0 or sym_lo != 0) and
                             peace_sig == 0 and relation < 50):
                         relation += 5
-                        state.g_RelationScore[row, col] = min(relation, 50)
+                        state.g_relation_score[row, col] = min(relation, 50)
                         if row == own_power:
                             _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
                                                          neutral, peace_sig, relation, _log)
                     else:
                         # Block B: trust/neutral flags present, or relation < 0, or deceit < 2
                         b_cond = (trust_lo != 0 or trust_hi != 0 or neutral != 0 or
-                                  relation < 0 or state.g_DeceitLevel < 2)
+                                  relation < 0 or state.g_deceit_level < 2)
                         if b_cond:
                             if trust_lo == 0 and trust_hi == 0 and relation < 0:
                                 # Organic recovery: +10, capped at 0
                                 relation += 10
                                 if relation > 0:
                                     relation = 0
-                                state.g_RelationScore[row, col] = relation
+                                state.g_relation_score[row, col] = relation
                             elif (trust_lo == 0 and trust_hi == 0 and
                                   relation > 0 and neutral == 1):
                                 # Neutral+positive: reset to 0
-                                state.g_RelationScore[row, col] = 0
+                                state.g_relation_score[row, col] = 0
                         else:
                             # Block C: set tentative trust (row != own_power only)
                             if row != own_power:
-                                state.g_AllyTrustScore[row, col]    = 1
-                                state.g_AllyTrustScore_Hi[row, col] = 0
-                                state.g_RelationScore[row, col]     = 0
+                                state.g_ally_trust_score[row, col]    = 1
+                                state.g_ally_trust_score_hi[row, col] = 0
+                                state.g_relation_score[row, col]     = 0
                             else:
                                 # LAB_0042df19: own_power — peace signal dispatch
                                 _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
                                                              neutral, peace_sig, relation, _log)
 
-                    if int(state.g_RelationScore[row, col]) > 50:
-                        state.g_RelationScore[row, col] = 50
+                    if int(state.g_relation_score[row, col]) > 50:
+                        state.g_relation_score[row, col] = 50
 
                 else:
                     # Block D: alliance confirmed — accumulate relation (+5 deceitful, +10 honest)
-                    gain = 5 if state.g_DeceitLevel == 1 else 10
-                    state.g_RelationScore[row, col] = relation + gain
+                    gain = 5 if state.g_deceit_level == 1 else 10
+                    state.g_relation_score[row, col] = relation + gain
                     if row == own_power:
                         _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
                                                      neutral, peace_sig, relation, _log)
-                    if int(state.g_RelationScore[row, col]) > 50:
-                        state.g_RelationScore[row, col] = 50
+                    if int(state.g_relation_score[row, col]) > 50:
+                        state.g_relation_score[row, col] = 50
 
     # Phase 2 — UpdateRelationHistory (FUN_0040d7e0).
     _update_relation_history(state)
 
-    # Phase 3 — g_AllyMatrix alliance state transitions.
+    # Phase 3 — g_ally_matrix alliance state transitions.
     # trust_hi < 0 OR (trust_hi < 1 AND trust_lo < 5) → downgrade full (2) → tentative (1)
     # otherwise → upgrade tentative (1) → full (2)
     for row in range(num_powers):
         for col in range(num_powers):
             if row == col:
                 continue
-            trust_lo = int(state.g_AllyTrustScore[row, col])
-            trust_hi = int(state.g_AllyTrustScore_Hi[row, col])
-            ally_val = int(state.g_AllyMatrix[row, col])
+            trust_lo = int(state.g_ally_trust_score[row, col])
+            trust_hi = int(state.g_ally_trust_score_hi[row, col])
+            ally_val = int(state.g_ally_matrix[row, col])
             if trust_hi < 0 or (trust_hi < 1 and trust_lo < 5):
                 if ally_val == 2:
-                    state.g_AllyMatrix[row, col] = 1   # full → tentative
+                    state.g_ally_matrix[row, col] = 1   # full → tentative
             else:
                 if ally_val == 1:
-                    state.g_AllyMatrix[row, col] = 2   # tentative → full
+                    state.g_ally_matrix[row, col] = 2   # tentative → full
 
 
 def _friendly_peace_signal_check(state: InnerGameState, col: int,
@@ -653,26 +673,26 @@ def _friendly_peace_signal_check(state: InnerGameState, col: int,
     press when own power receives a peace signal.
 
     C (FRIENDLY.c lines 160-178) builds a press entry with token 0x19
-    (PCE press type) and inserts it into g_BroadcastList via
+    (PCE press type) and inserts it into g_broadcast_list via
     FUN_0041c450 (SendAlliancePress).  The Python version was missing
     the press-sending half.  Fixed 2026-04-20 (audit finding M12).
     """
     if (trust_lo == 0 and trust_hi == 0 and neutral == 0 and
             peace_sig == 1 and relation >= 0):
-        state.g_BetrayalCounter[col] = 0
+        state.g_betrayal_counter[col] = 0
         _log.debug("FRIENDLY: getting peace signal from power %d", col)
 
         # ── Press-sending (C: FRIENDLY.c lines 166-178) ──────────────
         # C builds token = col | 0x4100, sets uStack_4c = 0x19 (PCE
         # press type), then calls FUN_00410b40 → FUN_0041c450 to insert
-        # into g_BroadcastList.  Mirror this as a send_alliance_press
+        # into g_broadcast_list.  Mirror this as a send_alliance_press
         # call with type='PCE' so BuildAndSendSUB picks it up.
         peace_entry = {
             'type': 'PCE',
             'from_power_tok': col | 0x4100,
             'sublist3': [0x19],  # C: uStack_4c = 0x19
         }
-        send_alliance_press(state, key=len(state.g_BroadcastList),
+        send_alliance_press(state, key=len(state.g_broadcast_list),
                             entry_data=peace_entry)
 
 
@@ -721,7 +741,7 @@ def _is_game_active(state: InnerGameState) -> bool:
     Port of FUN_00411740.
 
     When DAT_00baed46 (g_baed46) != 1: returns True unconditionally.
-    When DAT_00baed46 == 1: iterates g_BroadcastList; if ANY proposal has its
+    When DAT_00baed46 == 1: iterates g_broadcast_list; if ANY proposal has its
     sent flag == 0 (not yet sent), returns False.  Returns True if all proposals
     have been sent (or the list is empty).
 
@@ -735,7 +755,7 @@ def _is_game_active(state: InnerGameState) -> bool:
     """
     if getattr(state, 'g_baed46', 0) != 1:
         return True
-    for entry in getattr(state, 'g_BroadcastList', []):
+    for entry in getattr(state, 'g_broadcast_list', []):
         if not entry.get('sent', True):
             return False
     return True
@@ -745,13 +765,13 @@ def _check_server_reachable(state: InnerGameState, mode: int = -1) -> bool:
     """
     Port of FUN_004117d0(-1) called from dispatch_press_and_fallback_gof.
 
-    Returns True (non-zero) when any unprocessed g_PosAnalysisList entry has
+    Returns True (non-zero) when any unprocessed g_pos_analysis_list entry has
     had its board orders satisfied — used by the caller to decide whether to
     apply the time-window check before sending a fallback GOF.  If False, the
     caller sends GOF immediately without checking the time window.
 
     NOTE: the original stub described this as a TCP server-reachability check.
-    The actual decompile shows it scans g_PosAnalysisList for board-order
+    The actual decompile shows it scans g_pos_analysis_list for board-order
     matches; the "reachable/unreachable" framing was a misinterpretation.  In
     the C game, unmatched proposals (False) trigger immediate fallback; matched
     proposals (True) cause the caller to wait up to base_wait+25 s first.
@@ -886,14 +906,14 @@ def _prepare_ally_press_entry(state: "InnerGameState", power: int) -> None:
     """
     FUN_00418db0(power) — PrepareAllyPressEntry.
 
-    Removes all pending THN(<power>) entries from g_MasterOrderList before a
+    Removes all pending THN(<power>) entries from g_master_order_list before a
     new press item is scheduled for that power, preventing duplicates.
 
     C logic (decompiled.txt lines 27–84):
       1. FUN_00465870(local_28)            — init temp token list.
          local_44[0] = power | 0x4100      — build DAIDE power token.
          FUN_00466ed0(&THN, local_38, local_44) → local_28 holds THN(<power>).
-      2. Outer do-while: restart scan from g_MasterOrderList head each time.
+      2. Outer do-while: restart scan from g_master_order_list head each time.
          Inner while: iterate nodes; FUN_00465d90(node+6, &local_28) checks
          whether the node's token-seq equals THN(<power>).
          No match → advance iterator (FUN_0040e210).
@@ -903,8 +923,8 @@ def _prepare_ally_press_entry(state: "InnerGameState", power: int) -> None:
     Python: token-list mechanics absorbed; equality check reduces to
     press_type == 'THN' and data == [power].
     """
-    master: list = getattr(state, 'g_MasterOrderList', [])
-    state.g_MasterOrderList = [
+    master: list = getattr(state, 'g_master_order_list', [])
+    state.g_master_order_list = [
         e for e in master
         if not (e.get('press_type') == 'THN' and e.get('data') == [power])
     ]

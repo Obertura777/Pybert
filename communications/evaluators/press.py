@@ -33,7 +33,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
                  Random 51% gate: if scratch non-empty, may replace stored
                  accepted proposal with new YES one.
           else → single proposal: call FUN_0042c040 directly.
-      - On YES: registers accepted tokens in DAT_00bb65d4 (g_AcceptedProposals).
+      - On YES: registers accepted tokens in DAT_00bb65d4 (g_accepted_proposals).
 
     CAL_VALUE (FUN_004266b6): wired to _cal_value() for multi-XDO AND coherence.
     FUN_0042c040 = _eval_single_xdo: type dispatcher (PCE/DMZ/ALY/XDO/SLO/DRW/NOT/SUB).
@@ -86,12 +86,12 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
                 r = _eval_single_xdo(state, tok, _from_pow)
                 if r == _YES:
                     # C: FUN_00419300(&DAT_00bb65d4, apvStack_2c, local_6c)
-                    state.g_AcceptedProposals.append(tok)
+                    state.g_accepted_proposals.append(tok)
                 else:
                     result_ok = False
 
         if not result_ok:
-            state.g_AcceptedProposals.clear()  # C: cleanup loop on failure
+            state.g_accepted_proposals.clear()  # C: cleanup loop on failure
             _log.debug("evaluate_press: AND proposal rejected")
             return _REJ
 
@@ -121,7 +121,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
         if scratch_count > 0:
             # C: only the randomly-selected winner goes into the accepted list
             # (FUN_00419300 is called once after the loop, not per-iteration).
-            state.g_AcceptedProposals.append(scratch)
+            state.g_accepted_proposals.append(scratch)
             _log.debug("evaluate_press: ORR proposal accepted")
             return _YES
 
@@ -134,7 +134,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
         r = _eval_single_xdo(state, tok, _from_pow)
         if r == _YES:
             # C: FUN_00419300(&DAT_00bb65d4, apvStack_4c, &stack0x00000008)
-            state.g_AcceptedProposals.append(tok)
+            state.g_accepted_proposals.append(tok)
             _log.debug("evaluate_press: single proposal accepted")
         else:
             _log.debug("evaluate_press: single proposal rejected")

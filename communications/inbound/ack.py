@@ -34,7 +34,7 @@ def ack_matcher(
     proposal_tokens: "list | None" = None,
 ) -> int:
     """
-    Port of FUN_0042c970 — the ack-matcher that walks ``g_PosAnalysisList``
+    Port of FUN_0042c970 — the ack-matcher that walks ``g_pos_analysis_list``
     (DAT_00bb65c8) looking for an unprocessed received-proposal whose
     sender matches an incoming YES/REJ/BWX ack, then runs role-set
     bookkeeping for each match.
@@ -52,7 +52,7 @@ def ack_matcher(
             - ``REJ`` / ``BWX`` → StdMap_FindOrInsert into role-C
               sub-tree; additionally *reset* role-C's sub-list.
             - Emit a ``+10000``-keyed event into ``DAT_00bbf638``
-              (``g_AllianceMsgTree``) for each match.
+              (``g_alliance_msg_tree``) for each match.
 
       **Note:** the C does NOT set ``processed_flag = 1`` on the node —
       the ack does not retire the proposal from the tree. We mirror
@@ -73,7 +73,7 @@ def ack_matcher(
     is_yes = (ack_tok == _ACK_TOK_YES)
     match_count = 0
 
-    for entry in getattr(state, 'g_PosAnalysisList', []):
+    for entry in getattr(state, 'g_pos_analysis_list', []):
         if not isinstance(entry, dict):
             continue
         if entry.get('processed_flag', 0) != 0:
@@ -104,9 +104,9 @@ def ack_matcher(
             # any accumulated secondary state for this entry.
             entry['role_c_sub'] = []
 
-        # ── +10000-keyed event into g_AllianceMsgTree ─────────────────────
+        # ── +10000-keyed event into g_alliance_msg_tree ─────────────────────
         # C: BuildAllianceMsg(&DAT_00bbf638, buf, elapsed_sec + 10000).
-        state.g_AllianceMsgTree.add(int(_t.time()) + 10000)
+        state.g_alliance_msg_tree.add(int(_t.time()) + 10000)
 
         match_count += 1
         _log.debug(

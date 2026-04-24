@@ -10,13 +10,14 @@ Module-level deps: ``..state.InnerGameState``.
 """
 
 from ...state import InnerGameState
+from ._common import _NEUTRAL_POWER
 
 
 def compute_order_dip_flags(state: InnerGameState) -> None:
     """
     Port of ComputeOrderDipFlags (FUN_004113d0).
 
-    Re-initialises the three diplomatic flags on every g_OrderList node:
+    Re-initialises the three diplomatic flags on every g_order_list node:
       flag1 (+0x1c): True  = province is genuinely contested vs. ordering power
       flag2 (+0x1d): True  = bilateral ally coordination is viable
       flag3 (+0x1e): False = hostile unit present at or adjacent to the province
@@ -27,14 +28,14 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
     Callees (all absorbed / already in unchecked.md):
       FUN_0047a948            — MSVC iterator validity assertion
       TreeIterator_Advance    — adjacency-set BST iterator step
-      std_Tree_IteratorIncrement — g_OrderList std::map iterator advance
+      std_Tree_IteratorIncrement — g_order_list std::map iterator advance
     """
     own      = getattr(state, 'albert_power_idx', 0)
-    press_on = (state.g_PressFlag == 1)
-    dipl_a   = getattr(state, 'g_DiplomacyStateA', None)
-    dipl_b   = getattr(state, 'g_DiplomacyStateB', None)
+    press_on = (state.g_press_flag == 1)
+    dipl_a   = getattr(state, 'g_diplomacy_state_a', None)
+    dipl_b   = getattr(state, 'g_diplomacy_state_b', None)
 
-    for entry in state.g_OrderList:
+    for entry in state.g_order_list:
         province       = int(entry['province'])
         ordering_power = int(entry['ally_power'])
 
@@ -43,10 +44,10 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
         flag2 = True
         flag3 = False
 
-        # ── Phase 1a: g_ScOwner check (lines 57–68) ──────────────────────────
-        # g_ScOwner[prov] == ordering_power → province already owned by orderer
-        # g_ScOwner[prov] == own            → we own it; no bilateral coord needed
-        sc_owner = int(state.g_ScOwner[province]) if province < len(state.g_ScOwner) else -1
+        # ── Phase 1a: g_sc_owner check (lines 57–68) ──────────────────────────
+        # g_sc_owner[prov] == ordering_power → province already owned by orderer
+        # g_sc_owner[prov] == own            → we own it; no bilateral coord needed
+        sc_owner = int(state.g_sc_owner[province]) if province < len(state.g_sc_owner) else -1
         if sc_owner == ordering_power:
             flag1 = False
         elif sc_owner == own:
@@ -71,13 +72,13 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
             #   neutral, enemy-stab flagged, own unit, or zero trust.
             if occ == _NEUTRAL_POWER:
                 flag2 = False
-            elif 0 <= occ < 7 and int(state.g_EnemyFlag[occ]) == 1:
+            elif 0 <= occ < 7 and int(state.g_enemy_flag[occ]) == 1:
                 flag2 = False
             elif occ == own:
                 flag2 = False
             elif 0 <= occ < 7 and (
-                int(state.g_AllyTrustScore[own, occ]) == 0 and
-                int(state.g_AllyTrustScore_Hi[own, occ]) == 0
+                int(state.g_ally_trust_score[own, occ]) == 0 and
+                int(state.g_ally_trust_score_hi[own, occ]) == 0
             ):
                 flag2 = False
 
@@ -86,8 +87,8 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
             if occ != ordering_power:
                 if occ == _NEUTRAL_POWER or (
                     0 <= occ < 7 and
-                    int(state.g_AllyTrustScore[ordering_power, occ]) == 0 and
-                    int(state.g_AllyTrustScore_Hi[ordering_power, occ]) == 0
+                    int(state.g_ally_trust_score[ordering_power, occ]) == 0 and
+                    int(state.g_ally_trust_score_hi[ordering_power, occ]) == 0
                 ):
                     flag3 = True
 
@@ -99,7 +100,7 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
             occ = int(adj_unit['power'])
 
             # Enemy-stab flag always clears flag2 (lines 142–147).
-            if 0 <= occ < 7 and int(state.g_EnemyFlag[occ]) == 1:
+            if 0 <= occ < 7 and int(state.g_enemy_flag[occ]) == 1:
                 flag2 = False
 
             # Press-on block (lines 148–164).
@@ -109,8 +110,8 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
                 if occ == ordering_power:
                     continue
                 if occ != own and occ != _NEUTRAL_POWER and 0 <= occ < 7:
-                    t_hi = int(state.g_AllyTrustScore_Hi[own, occ])
-                    t_lo = int(state.g_AllyTrustScore[own, occ])
+                    t_hi = int(state.g_ally_trust_score_hi[own, occ])
+                    t_lo = int(state.g_ally_trust_score[own, occ])
                     d_b  = int(dipl_b[occ]) if dipl_b is not None else 0
                     d_a  = int(dipl_a[occ]) if dipl_a is not None else 0
                     # int64 trust < 2  OR  DiplomacyState < 2
@@ -123,8 +124,8 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
             # (lines 165–172).
             if occ != ordering_power and occ != own and occ != _NEUTRAL_POWER:
                 if (0 <= occ < 7 and
-                        int(state.g_AllyTrustScore[ordering_power, occ]) == 0 and
-                        int(state.g_AllyTrustScore_Hi[ordering_power, occ]) == 0):
+                        int(state.g_ally_trust_score[ordering_power, occ]) == 0 and
+                        int(state.g_ally_trust_score_hi[ordering_power, occ]) == 0):
                     flag3 = True
 
         # ── Write back ────────────────────────────────────────────────────────

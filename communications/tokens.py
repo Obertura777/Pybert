@@ -72,9 +72,9 @@ def _token_seq_overlap(seq_a, seq_b) -> bool:
     Absorbed throughout the codebase as ``frozenset(a) & frozenset(b)``.
 
     Called from:
-      receive_proposal               — deduplicate proposals against g_PosAnalysisList
-      _respond_walk_pos_analysis     — match proposals for g_DeviationTree inserts
-      _cancel_prior_press            — scan g_MasterOrderList for THN(<power>) entries
+      receive_proposal               — deduplicate proposals against g_pos_analysis_list
+      _respond_walk_pos_analysis     — match proposals for g_deviation_tree inserts
+      _cancel_prior_press            — scan g_master_order_list for THN(<power>) entries
     """
     return bool(frozenset(seq_a) & frozenset(seq_b))
 

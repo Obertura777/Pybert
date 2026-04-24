@@ -94,32 +94,32 @@ def _ally_trust_ok(state: "InnerGameState", own: int, other: int) -> bool:
              OR (diplomacy_state_b[other] >= 0 AND diplomacy_state_a[other] > 1))
     """
     try:
-        hi_fwd = int(state.g_AllyTrustScore_Hi[own, other])
-        lo_fwd = int(state.g_AllyTrustScore[own, other])
+        hi_fwd = int(state.g_ally_trust_score_hi[own, other])
+        lo_fwd = int(state.g_ally_trust_score[own, other])
     except Exception:
         return False
     if hi_fwd < 0 or (hi_fwd == 0 and lo_fwd <= 2):
         return False
     try:
-        hi_rev = int(state.g_AllyTrustScore_Hi[other, own])
-        lo_rev = int(state.g_AllyTrustScore[other, own])
+        hi_rev = int(state.g_ally_trust_score_hi[other, own])
+        lo_rev = int(state.g_ally_trust_score[other, own])
     except Exception:
         return False
     if hi_rev < 0 or (hi_rev == 0 and lo_rev == 0):
         return False
-    if int(getattr(state, 'g_EnemyFlag', [0] * 7)[other]) == 1:
+    if int(getattr(state, 'g_enemy_flag', [0] * 7)[other]) == 1:
         return False
     try:
-        rel = int(state.g_RelationScore[own, other])  # DAT_00634e90
+        rel = int(state.g_relation_score[own, other])  # DAT_00634e90
     except Exception:
         rel = 0
     if rel < 0:
         return False
-    press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
+    press_mode = int(getattr(state, 'g_press_flag', 0)) == 1
     if press_mode:
         try:
-            ds_b = int(getattr(state, 'g_DiplomacyStateB', [0] * 8)[other])  # DAT_004d5484
-            ds_a = int(getattr(state, 'g_DiplomacyStateA', [0] * 8)[other])  # DAT_004d5480
+            ds_b = int(getattr(state, 'g_diplomacy_state_b', [0] * 8)[other])  # DAT_004d5484
+            ds_a = int(getattr(state, 'g_diplomacy_state_a', [0] * 8)[other])  # DAT_004d5480
         except Exception:
             ds_a = ds_b = 0
         if not (ds_b > 0 or (ds_b >= 0 and ds_a > 1)):

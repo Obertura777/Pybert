@@ -18,6 +18,7 @@ Cross-module deps: ``_common`` helpers (``_pow_idx``, ``_extract_powers``,
 """
 
 from ...state import InnerGameState
+from ..parsers import _extract_top_paren_groups
 from ._common import (
     _pow_idx,
     _extract_powers,
@@ -36,7 +37,7 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
       YES if bVar1 AND bVar2 AND bVar3
       REJ if bVar1 AND bVar2 AND NOT bVar3
       BWX otherwise (0x4A02 — "busy waiting", i.e. not applicable to us)
-    Hostile = g_EnemyFlag[p]==1 OR g_RelationScore[own][p] < 0.
+    Hostile = g_enemy_flag[p]==1 OR g_relation_score[own][p] < 0.
     """
     _BWX = 0x4A02
     own = state.albert_power_idx
@@ -51,7 +52,7 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         else:
             if p == from_power:
                 bVar2 = True
-            if int(state.g_EnemyFlag[p]) == 1 or int(state.g_RelationScore[own, p]) < 0:
+            if int(state.g_enemy_flag[p]) == 1 or int(state.g_relation_score[own, p]) < 0:
                 bVar3 = False
     if bVar1 and bVar2:
         return 0x481C if bVar3 else 0x4814   # YES or REJ
@@ -71,7 +72,7 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
       * For ``from_power`` (sublist-0 in C is the from-power singleton):
           - If ``from_power == own``: trivial accept (skip province check).
           - Else: run the ally-trust gate (``_ally_trust_ok``).  Failure → REJ.
-      * For each province in sublist-2: walk ``g_OrderList`` looking for an
+      * For each province in sublist-2: walk ``g_order_list`` looking for an
         entry whose ``province`` and ``ally_power`` both match.  An entry
         "justifies" the DMZ when:
             entry.flag1 is True (alliance order)
@@ -107,10 +108,10 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         return _REJ
 
     prov_ids = _extract_provs(state, provs_section)
-    order_list = getattr(state, 'g_OrderList', []) or []
+    order_list = getattr(state, 'g_order_list', []) or []
 
     for prov in prov_ids:
-        # Walk g_OrderList for a node justifying DMZ on this province.
+        # Walk g_order_list for a node justifying DMZ on this province.
         # C BST loop (lines 120-155): for each entry matching (province, ally_power),
         # apply three gates.  The third gate does a per-entry lookup of the entry's
         # ally_power in the DMZ-powers std::map (local_48) via GameBoard_GetPowerRec.
@@ -155,7 +156,7 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
               ``local_88`` (the ally-side StdMap built earlier)
       bVar4 = for each (aly_power, vss_power) pair, the per-pair compatibility
               gate passes — checks ally trust, enemy flags, relation score,
-              proximity (g_MutualEnemyTable), proposal counter (g_RelationScore),
+              proximity (g_mutual_enemy_table), proposal counter (g_relation_score),
               and press-mode gates.
 
     Returns YES iff (bVar1 && bVar2 && bVar3 && bVar4); else REJ.
@@ -194,14 +195,14 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
 
     # bVar4: per-pair compatibility.  This is the bulk of _eval_aly.c.
     # Fixed 2026-04-20 (M-COM-1): press-mode promise-queue gates now checked
-    # via g_DiplomacyStateA/B, matching C lines 180-210.
-    press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
-    enemy_flag = getattr(state, 'g_EnemyFlag', None)
-    rel        = state.g_RelationScore           # DAT_00634e90
-    ally_mat   = state.g_AllyMatrix              # DAT_006340c0/g_AllyMatrix overlap
-    mutual_en  = getattr(state, 'g_MutualEnemyTable', None)  # DAT_00b9fdd8
-    diplo_a    = getattr(state, 'g_DiplomacyStateA', None)   # DAT_004d5480
-    diplo_b    = getattr(state, 'g_DiplomacyStateB', None)   # DAT_004d5484
+    # via g_diplomacy_state_a/B, matching C lines 180-210.
+    press_mode = int(getattr(state, 'g_press_flag', 0)) == 1
+    enemy_flag = getattr(state, 'g_enemy_flag', None)
+    rel        = state.g_relation_score           # DAT_00634e90
+    ally_mat   = state.g_ally_matrix              # DAT_006340c0/g_ally_matrix overlap
+    mutual_en  = getattr(state, 'g_mutual_enemy_table', None)  # DAT_00b9fdd8
+    diplo_a    = getattr(state, 'g_diplomacy_state_a', None)   # DAT_004d5480
+    diplo_b    = getattr(state, 'g_diplomacy_state_b', None)   # DAT_004d5484
 
     for aly_p in aly_powers:
         if aly_p == own:
@@ -210,7 +211,7 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
             # Forward enemy/relation gate.
             if press_mode:
                 # Promise-queue gate (C _eval_aly.c lines 180-210):
-                # Check g_DiplomacyStateA[aly_p] and g_DiplomacyStateB[vss_p]
+                # Check g_diplomacy_state_a[aly_p] and g_diplomacy_state_b[vss_p]
                 # to ensure we haven't already committed contradictory promises.
                 if diplo_a is not None and diplo_b is not None:
                     dip_a = int(diplo_a[aly_p]) if aly_p < len(diplo_a) else 0
@@ -325,10 +326,11 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     Port of CAL_VALUE = FUN_004266b6 — XDO / negated-XDO coherence scorer.
 
     See docs/funcs/CAL_VALUE.md for the full spec. This port implements the
-    control-flow skeleton faithfully; the delta-score arithmetic (C lines
-    539–570) is approximated because Python's g_BroadcastList entries do
-    not yet carry the per-power score vector at +0x48 that C's AllianceRecord
-    exposes (schema-extension gap tracked in python_parity_overview.md).
+    control-flow skeleton faithfully with full per-power score vector support:
+    score vectors are computed for inbound entries via register_received_press
+    (gate.py lines 365–378) and for self-generated entries via
+    emit_xdo_proposals_to_broadcast, enabling accurate delta-score classification
+    into YES/REJ/BWX/HUH verdict bands.
 
     High-level flow (mirrors C):
 
@@ -337,7 +339,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
          (NOT-wrapped XDO) clause lists via ``_split_xdo_clauses``.
 
       2. Sequence-catalog walk (C lines 299–401):
-         Iterate ``state.g_BroadcastList`` (the Python equivalent of
+         Iterate ``state.g_broadcast_list`` (the Python equivalent of
          ``DAT_00bb65ec``) looking for an entry whose order_candidates
          contain **every** positive proposed clause and do NOT contain
          any of the negative proposed clauses. First match wins.
@@ -385,7 +387,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     matched_index = -1
     pos_set = set(positive)
     neg_set = set(negative)
-    for idx, entry in enumerate(state.g_BroadcastList):
+    for idx, entry in enumerate(state.g_broadcast_list):
         cands = entry.get('order_candidates', []) if isinstance(entry, dict) else []
         # Stringify candidate tokens for comparison with clause text.
         cand_texts = set()
@@ -413,7 +415,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         )
         # C: SEND_LOG("Could not find matching sequence") + BuildAllianceMsg archive.
         import time as _t
-        state.g_AllianceMsgTree.add(int(_t.time()))
+        state.g_alliance_msg_tree.add(int(_t.time()))
         return _REJ
 
     # ── 3. Matching-sequence scoring (delta + verdict bands) ─────────────
@@ -446,7 +448,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     cur_key = matched_entry.get('key', 0)
     predecessor = None
     if matched_index > 0:
-        cand_pred = state.g_BroadcastList[matched_index - 1]
+        cand_pred = state.g_broadcast_list[matched_index - 1]
         if isinstance(cand_pred, dict) and cand_pred.get('key', 0) < cur_key:
             predecessor = cand_pred
 
@@ -623,7 +625,7 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> i
                   • If (q,d) is recorded in BOTH counter AND promise AND q is
                     in the DMZ-powers set → ``bVar4 = False``.
                   • If (q,d) is recorded in counter but NOT in promise AND
-                    g_NearEndGameFactor < 3.0 → ``bVar4 = False``.
+                    g_near_end_game_factor < 3.0 → ``bVar4 = False``.
 
       Phase D (lines 244-250) — ally-trust gate using own,from_power scores.
                 If iter_powers > 2 and trust gates fail → ``bVar4 = False``.
@@ -674,7 +676,7 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> i
                     pass
         return False
 
-    near_end = float(getattr(state, 'g_NearEndGameFactor', 0.0))
+    near_end = float(getattr(state, 'g_near_end_game_factor', 0.0))
 
     bVar3 = True   # REJ-eligibility flag (becomes False when from_power's ledger is silent)
     bVar4 = True   # YES-eligibility flag (cleared by DMZ-conflict or NearEnd-counter check)
@@ -703,8 +705,8 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     # ── Phase D: ally-trust gate (lines 244-250) ──────────────────────────
     # if Hi < 1 AND (Hi < 0 OR Lo < 2) AND iter_powers > 2: bVar4 = False
     try:
-        hi = int(state.g_AllyTrustScore_Hi[own, from_p])
-        lo = int(state.g_AllyTrustScore[own, from_p])
+        hi = int(state.g_ally_trust_score_hi[own, from_p])
+        lo = int(state.g_ally_trust_score[own, from_p])
     except Exception:
         hi, lo = 0, 0
     if (hi < 1) and ((hi < 0) or (lo < 2)) and (len(iter_powers) > 2):

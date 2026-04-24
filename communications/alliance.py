@@ -54,7 +54,7 @@ def alliance_tree_find_or_insert(state: "InnerGameState", key: int) -> tuple:
       7. Writes ``param_1[0] = this`` (container back-pointer) and
          ``param_1[1] = new_node`` (node pointer).
 
-    In Python ``g_AllianceMsgTree`` (``DAT_00bbf638``) is a plain ``set``; all
+    In Python ``g_alliance_msg_tree`` (``DAT_00bbf638``) is a plain ``set``; all
     pointer-wiring and RB rebalancing collapse to a single ``set.add``.  The
     return value mirrors the C ``param_1`` pair:
 
@@ -68,9 +68,9 @@ def alliance_tree_find_or_insert(state: "InnerGameState", key: int) -> tuple:
       FUN_00402650 — ``std::length_error`` constructor (exception path only)
       FUN_00402a30 — MSVC exception rethrow helper (exception path only)
     """
-    was_inserted = key not in state.g_AllianceMsgTree
-    state.g_AllianceMsgTree.add(key)
-    return state.g_AllianceMsgTree, key, was_inserted
+    was_inserted = key not in state.g_alliance_msg_tree
+    state.g_alliance_msg_tree.add(key)
+    return state.g_alliance_msg_tree, key, was_inserted
 
 
 def build_alliance_msg(state: "InnerGameState", key: int) -> tuple:
@@ -121,7 +121,7 @@ def _stl_tree_copy(dest: list, source: list) -> list:
       +0x0C  ``_Value``  — key/value data       (param_1+3; passed to _Buynode)
       +0x10  ``_Color``  — RB-tree color byte
       +0x11  ``_Isnil``  — non-zero = sentinel/nil node
-                           (checked at +0x11; distinct from g_OrderList which
+                           (checked at +0x11; distinct from g_order_list which
                            uses +0x21; this is a smaller per-proposal-orders
                            tree type)
 
@@ -247,7 +247,7 @@ def build_hostility_record(src: dict) -> dict:
                                     (FUN_0041c3c0 copy constructor)
       +0x24  12B  'obj_24'        — 12-byte object
                                     (FUN_0041c3c0 copy constructor)
-      +0x30  84B  'trust_row'     — 21×int32 raw copy (one g_AllyTrustScore row)
+      +0x30  84B  'trust_row'     — 21×int32 raw copy (one g_ally_trust_score row)
       +0x84  4B   'int_84'        — dword
       +0x88  16B  'token_list_88' — token list (FUN_00465f60 copy)
       +0x98  1B   'flag_98'       — flag byte

@@ -18,6 +18,9 @@ Contains:
 None of these functions touch ``InnerGameState`` — they are pure parsers.
 """
 
+from .evaluators._common import _pow_idx
+
+
 def _extract_top_paren_groups(text: str) -> list:
     """Return a list of the content strings of each top-level ( ... ) group."""
     groups: list = []
@@ -76,9 +79,9 @@ def _parse_xdo_candidates(content_str: str) -> list:
 
 # ── DAIDE XDO body → order_seq translator ────────────────────────────────────
 #
-# Bridge between the inbound press registry (g_BroadcastList, populated by
-# register_received_press) and the MC reader (state.g_GeneralOrders[power] /
-# state.g_AllianceOrders[power] consumed by monte_carlo.process_turn at sub-
+# Bridge between the inbound press registry (g_broadcast_list, populated by
+# register_received_press) and the MC reader (state.g_general_orders[power] /
+# state.g_alliance_orders[power] consumed by monte_carlo.process_turn at sub-
 # pass 1c).
 #
 # This is the Python equivalent of the writer loop inside ScoreOrderCandidates

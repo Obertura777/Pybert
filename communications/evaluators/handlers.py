@@ -40,18 +40,18 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
     Algorithm:
       1. For every ordered pair (power_i, power_j) of PCE powers where i != j:
            - If power_i == own_power: mark power_j as PCE-applied this turn
-             (g_TurnOrderHist_Lo[power_j] = 2).
-           - Compute new trust = max(1, 3 − g_StabCounter[i,j]), capped at 3
+             (g_turn_order_hist_lo[power_j] = 2).
+           - Compute new trust = max(1, 3 − g_stab_counter[i,j]), capped at 3
              when _g_NearEndGameFactor >= 4.0.
-           - Update g_AllyTrustScore[i,j] / g_AllyTrustScore_Hi[i,j] if the
+           - Update g_ally_trust_score[i,j] / g_ally_trust_score_hi[i,j] if the
              new trust (as uint64) exceeds the current value.
       2. If any score was updated: log + BuildAllianceMsg(0x66) (recalc notice).
-      3. If g_PressFlag == 1 (trust-override / press mode active):
+      3. If g_press_flag == 1 (trust-override / press mode active):
            - Scan all 7 powers; if any power still has a pending PCE flag
-             (g_TurnOrderHist_Lo == 1) or has zero trust despite having
+             (g_turn_order_hist_lo == 1) or has zero trust despite having
              a DiplomacyState entry, the peace deal is not yet complete.
            - If ALL powers accepted: log, BuildAllianceMsg(0x65), restore
-             g_AllyTrustScore[own,*] from g_DiplomacyStateA/B snapshot.
+             g_ally_trust_score[own,*] from g_diplomacy_state_a/B snapshot.
       4. If changed: call ComputeOrderDipFlags (FUN_004113d0) — not yet ported.
 
     Returns True if the trust matrix was updated (signals GOF recalculation).
@@ -83,14 +83,14 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
             # If own power is in the pair: mark power_j as PCE-applied
             # C: if (uVar16 == uVar4) { DAT_004d53d8[uVar12*2] = 2; DAT_004d53dc[uVar12*2] = 0; }
             if power_i == own_power:
-                state.g_TurnOrderHist_Lo[power_j] = 2
-                state.g_TurnOrderHist_Hi[power_j] = 0
+                state.g_turn_order_hist_lo[power_j] = 2
+                state.g_turn_order_hist_hi[power_j] = 0
 
-            # Compute trust: 3 − g_StabCounter[i,j] clamped to [1, 3]
+            # Compute trust: 3 − g_stab_counter[i,j] clamped to [1, 3]
             # When near-end-game (factor >= 4.0) always use 3.
             # C: uVar9 = 3; if (_g_NearEndGameFactor < 4.0) uVar9 = max(1, 3-stab)
-            if state.g_NearEndGameFactor < 4.0:
-                trust = 3 - int(state.g_StabCounter[power_i, power_j])
+            if state.g_near_end_game_factor < 4.0:
+                trust = 3 - int(state.g_stab_counter[power_i, power_j])
                 if trust < 1:
                     trust = 1
             else:
@@ -100,14 +100,14 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
             # C: iVar14 = (int)uVar9 >> 0x1f  → 0 for positive trust
             trust_hi = trust >> 31   # always 0 for trust in [1,3]
 
-            curr_hi = int(state.g_AllyTrustScore_Hi[power_i, power_j])
-            curr_lo = int(state.g_AllyTrustScore[power_i, power_j])
+            curr_hi = int(state.g_ally_trust_score_hi[power_i, power_j])
+            curr_lo = int(state.g_ally_trust_score[power_i, power_j])
 
             # Update if (trust_hi, trust) > (curr_hi, curr_lo) as uint64.
             # C: curr_hi <= trust_hi AND (curr_hi < trust_hi OR curr_lo_uint < trust_uint)
             if curr_hi <= trust_hi and (curr_hi < trust_hi or curr_lo < trust):
-                state.g_AllyTrustScore[power_i, power_j]    = trust
-                state.g_AllyTrustScore_Hi[power_i, power_j] = trust_hi
+                state.g_ally_trust_score[power_i, power_j]    = trust
+                state.g_ally_trust_score_hi[power_i, power_j] = trust_hi
                 changed = True
 
     # ── If any score changed: log + BuildAllianceMsg(0x66) ───────────────────
@@ -117,23 +117,23 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
         # C: BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x66)
         build_alliance_msg(state, 0x66)
 
-    # ── All-powers-accepted check (only when g_PressFlag == 1) ───────────────
+    # ── All-powers-accepted check (only when g_press_flag == 1) ───────────────
     # C: if (DAT_00baed68 == '\x01') { ... if (bVar3) goto LAB_0041deab; ... }
-    if state.g_PressFlag == 1:
-        dipl_a_arr = getattr(state, 'g_DiplomacyStateA', None)
-        dipl_b_arr = getattr(state, 'g_DiplomacyStateB', None)
+    if state.g_press_flag == 1:
+        dipl_a_arr = getattr(state, 'g_diplomacy_state_a', None)
+        dipl_b_arr = getattr(state, 'g_diplomacy_state_b', None)
         not_all_accepted = False
         for i in range(num_powers):
             # Condition 1: pending PCE flag (sent but not yet applied)
             # C: DAT_004d53d8[i*2] == 1 AND DAT_004d53dc[i*2] == 0
-            if int(state.g_TurnOrderHist_Lo[i]) == 1 and int(state.g_TurnOrderHist_Hi[i]) == 0:
+            if int(state.g_turn_order_hist_lo[i]) == 1 and int(state.g_turn_order_hist_hi[i]) == 0:
                 not_all_accepted = True
 
             # Condition 2: own has no trust with power i despite diplomatic state
-            # C: g_AllyTrustScore[own*21+i]==0 AND g_AllyTrustScore_Hi==0
+            # C: g_ally_trust_score[own*21+i]==0 AND g_ally_trust_score_hi==0
             #    AND (DAT_004d5480[i*2]!=0 OR DAT_004d5484[i*2]!=0)
-            t_lo = int(state.g_AllyTrustScore[own_power, i])
-            t_hi = int(state.g_AllyTrustScore_Hi[own_power, i])
+            t_lo = int(state.g_ally_trust_score[own_power, i])
+            t_hi = int(state.g_ally_trust_score_hi[own_power, i])
             dipl_a = int(dipl_a_arr[i]) if dipl_a_arr is not None else 0
             dipl_b = int(dipl_b_arr[i]) if dipl_b_arr is not None else 0
             if t_lo == 0 and t_hi == 0 and (dipl_a != 0 or dipl_b != 0):
@@ -145,11 +145,11 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
             # C: BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x65)
             build_alliance_msg(state, 0x65)
 
-            # C: puVar11 = &g_AllyTrustScore + uVar4*0x2a; copies DAT_004d5480/4 into it
+            # C: puVar11 = &g_ally_trust_score + uVar4*0x2a; copies DAT_004d5480/4 into it
             if dipl_a_arr is not None and dipl_b_arr is not None:
                 for i in range(num_powers):
-                    state.g_AllyTrustScore[own_power, i]    = int(dipl_a_arr[i])
-                    state.g_AllyTrustScore_Hi[own_power, i] = int(dipl_b_arr[i])
+                    state.g_ally_trust_score[own_power, i]    = int(dipl_a_arr[i])
+                    state.g_ally_trust_score_hi[own_power, i] = int(dipl_b_arr[i])
             changed = True
 
     # ── If changed: ComputeOrderDipFlags (FUN_004113d0) ─────────────────────
@@ -183,12 +183,12 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
         For each vss_power in VSS list:
           if aly_power == own_power: skip            (line 83)
           idx = vss_power + aly_power * 21           (line 84)
-          if g_AllyMatrix[idx] < 1:
-              g_AllyMatrix[idx] = 1; changed = True  (lines 85–88)
-          if g_EnemyDesired == 1 and g_AllyTrustScore_Hi[aly,vss] >= 0:
-              g_AllyTrustScore[aly,vss]    = 0       (lines 89–93)
-              g_AllyTrustScore_Hi[aly,vss] = 0
-              g_RelationScore[aly,vss]     = 0
+          if g_ally_matrix[idx] < 1:
+              g_ally_matrix[idx] = 1; changed = True  (lines 85–88)
+          if g_EnemyDesired == 1 and g_ally_trust_score_hi[aly,vss] >= 0:
+              g_ally_trust_score[aly,vss]    = 0       (lines 89–93)
+              g_ally_trust_score_hi[aly,vss] = 0
+              g_relation_score[aly,vss]     = 0
               changed = True
           own_idx = own_power * 21 + aly_power       (line 95)
           if trust[own→aly] == 0 (both lo and hi)
@@ -205,12 +205,12 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
 
     Global mapping:
       own_power           ← *(param_1+8)+0x2424  = state.albert_power_idx
-      g_AllyMatrix        ← &g_AllyMatrix[row*21+col]  (char, 21×21 flat)
-      g_EnemyDesired      ← DAT_00baed5f  = state.g_StabbedFlag / g_EnemyDesired
-      g_AllyTrustScore    ← &g_AllyTrustScore[idx*2]   (lo word of uint64)
-      g_AllyTrustScore_Hi ← &g_AllyTrustScore_Hi[idx*2](hi word of uint64)
-      g_RelationScore     ← DAT_00634e90  = state.g_RelationScore[row,col]
-      g_EnemyFlag         ← DAT_004cf568/6c  = state.g_EnemyFlag[power] lo/hi
+      g_ally_matrix        ← &g_ally_matrix[row*21+col]  (char, 21×21 flat)
+      g_EnemyDesired      ← DAT_00baed5f  = state.g_stabbed_flag / g_EnemyDesired
+      g_ally_trust_score    ← &g_ally_trust_score[idx*2]   (lo word of uint64)
+      g_ally_trust_score_hi ← &g_ally_trust_score_hi[idx*2](hi word of uint64)
+      g_relation_score     ← DAT_00634e90  = state.g_relation_score[row,col]
+      g_enemy_flag         ← DAT_004cf568/6c  = state.g_enemy_flag[power] lo/hi
 
     Callee added to Unchecked: none new (BuildAllianceMsg already unchecked).
     """
@@ -248,38 +248,38 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
                 continue
 
             # C line 84: iVar7 = (uint)*pbVar6 + uVar5 * 0x15
-            # iVar7 is used as flat index into g_AllyMatrix (21-wide)
+            # iVar7 is used as flat index into g_ally_matrix (21-wide)
             idx = int(vss_power) + aly_power * 21    # iVar7
 
-            # C lines 85–88: g_AllyMatrix[iVar7] < 1  → set to 1
-            if int(state.g_AllyMatrix[aly_power, vss_power]) < 1:
-                state.g_AllyMatrix[aly_power, vss_power] = 1
+            # C lines 85–88: g_ally_matrix[iVar7] < 1  → set to 1
+            if int(state.g_ally_matrix[aly_power, vss_power]) < 1:
+                state.g_ally_matrix[aly_power, vss_power] = 1
                 changed = True
 
             # C lines 89–93: g_EnemyDesired==1 AND trust_hi[aly,vss] >= 0
-            #   → zero g_AllyTrustScore, g_AllyTrustScore_Hi, g_RelationScore
-            enemy_desired = int(getattr(state, 'g_StabbedFlag', 0))   # DAT_00baed5f
-            trust_hi_av = int(state.g_AllyTrustScore_Hi[aly_power, vss_power])
+            #   → zero g_ally_trust_score, g_ally_trust_score_hi, g_relation_score
+            enemy_desired = int(getattr(state, 'g_stabbed_flag', 0))   # DAT_00baed5f
+            trust_hi_av = int(state.g_ally_trust_score_hi[aly_power, vss_power])
             if enemy_desired == 1 and trust_hi_av >= 0:
-                # C: (&g_AllyTrustScore)[iVar7*2] = 0; (&g_AllyTrustScore_Hi)[iVar7*2] = 0
-                state.g_AllyTrustScore[aly_power, vss_power]    = 0
-                state.g_AllyTrustScore_Hi[aly_power, vss_power] = 0
-                # C: (&DAT_00634e90)[iVar7] = 0   — g_RelationScore
-                state.g_RelationScore[aly_power, vss_power]     = 0
+                # C: (&g_ally_trust_score)[iVar7*2] = 0; (&g_ally_trust_score_hi)[iVar7*2] = 0
+                state.g_ally_trust_score[aly_power, vss_power]    = 0
+                state.g_ally_trust_score_hi[aly_power, vss_power] = 0
+                # C: (&DAT_00634e90)[iVar7] = 0   — g_relation_score
+                state.g_relation_score[aly_power, vss_power]     = 0
                 changed = True
 
             # C line 95: iVar7 = uStack_74 * 0x15 + uVar5  (own→aly direction)
             # C lines 96–97: trust[own→aly] == 0 AND enemy flags of aly_power == 0
-            trust_lo_oa = int(state.g_AllyTrustScore[own_power, aly_power])
-            trust_hi_oa = int(state.g_AllyTrustScore_Hi[own_power, aly_power])
+            trust_lo_oa = int(state.g_ally_trust_score[own_power, aly_power])
+            trust_hi_oa = int(state.g_ally_trust_score_hi[own_power, aly_power])
 
             # DAT_004cf568[uVar5*2] and DAT_004cf56c[uVar5*2]:
-            # these are the lo/hi int32 words of g_EnemyFlag for aly_power
-            enemy_flag = getattr(state, 'g_EnemyFlag', None)
+            # these are the lo/hi int32 words of g_enemy_flag for aly_power
+            enemy_flag = getattr(state, 'g_enemy_flag', None)
             if enemy_flag is not None:
                 ef_lo = int(enemy_flag[aly_power])
                 # hi word — stored in a separate array or second element
-                ef_hi_arr = getattr(state, 'g_EnemyFlag_Hi', None)
+                ef_hi_arr = getattr(state, 'g_enemy_flag_hi', None)
                 ef_hi = int(ef_hi_arr[aly_power]) if ef_hi_arr is not None else 0
             else:
                 ef_lo = ef_hi = 0
@@ -335,7 +335,7 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
           piVar9  = dmz_provs[k]    (the province being DMZ'd; piStack_b0)
 
           BRANCH A — piVar4 == own_power:
-            Walk g_DmzOrderList (DAT_00bb65e4, sentinel DAT_00bb65e0).
+            Walk g_dmz_order_list (DAT_00bb65e4, sentinel DAT_00bb65e0).
             For each record rec:
               if rec.owner_power == own_power: skip  (*(pCVar8+0xc) == piStack_88)
               iVar10 = rec.owner_power
@@ -345,7 +345,7 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
               if puVar7[1] == iStack_34:   (province k belongs to this power's territory)
                 cStack_b1 = '\x01'         (DMZ accepted for this province/power)
                 StdMap_FindOrInsert(owner_power_base, apvStack_18, province_k)
-                  → g_ActiveDmzMap[province_k] = rec.owner_power  (record the DMZ)
+                  → g_active_dmz_map[province_k] = rec.owner_power  (record the DMZ)
 
           BRANCH B — piVar4 != own_power:
             iVar10 = DAT_00bb702c[piVar4*3]  (this power's province-tree record)
@@ -354,13 +354,13 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
             if puVar7[1] == iVar10:   (province k is in this power's territory)
               cStack_b1 = '\x01'
               StdMap_FindOrInsert(puVar11, &pvStack_64, province_k)
-                → g_ActiveDmzMap[province_k] = piVar4
-            Walk g_ActiveDmzList (DAT_00bb7134, sentinel DAT_00bb7130):
+                → g_active_dmz_map[province_k] = piVar4
+            Walk g_active_dmz_list (DAT_00bb7134, sentinel DAT_00bb7130):
               For each rec:
                 if rec[3] == piVar4 (outer power)
                    AND rec[4] != piVar9 (different province than current):
                   FUN_00412280(DAT_00bb7130, aiStack_20, (int)puVar11, rec)
-                    → remove this stale DMZ entry  (erase from g_ActiveDmzList)
+                    → remove this stale DMZ entry  (erase from g_active_dmz_list)
 
       If cStack_b1 == '\x01':
         FUN_0046b050(...)  (serialize DMZ token list to string — absorbed as log)
@@ -371,12 +371,12 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
 
     Global mapping:
       own_power       ← state.albert_power_idx
-      g_DmzOrderList  ← state.g_DmzOrderList   list[dict]:
+      g_dmz_order_list  ← state.g_dmz_order_list   list[dict]:
                           each entry: {'owner_power': int, 'provinces': set, 'active': bool}
-      g_ActiveDmzMap  ← state.g_ActiveDmzMap    dict: {province: power} — accepted DMZ entries
-      g_ActiveDmzList ← state.g_ActiveDmzList   list[dict]:
+      g_active_dmz_map  ← state.g_active_dmz_map    dict: {province: power} — accepted DMZ entries
+      g_active_dmz_list ← state.g_active_dmz_list   list[dict]:
                           each entry: {'power': int, 'province': int} — active agreements
-      g_ScOwner       ← state.g_ScOwner[province]  — province SC owner index
+      g_sc_owner       ← state.g_sc_owner[province]  — province SC owner index
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
@@ -424,16 +424,16 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
     changed = False
 
     # Lazy-init the two DMZ state dicts if not present on state
-    if not hasattr(state, 'g_DmzOrderList'):
-        state.g_DmzOrderList = []   # DAT_00bb65e0/e4: list[dict{owner_power,provinces}]
-    if not hasattr(state, 'g_ActiveDmzMap'):
-        state.g_ActiveDmzMap = {}   # DAT_00bb6f28/*: {province: power}
-    if not hasattr(state, 'g_ActiveDmzList'):
-        state.g_ActiveDmzList = []  # DAT_00bb7130/34: list[dict{power, province}]
+    if not hasattr(state, 'g_dmz_order_list'):
+        state.g_dmz_order_list = []   # DAT_00bb65e0/e4: list[dict{owner_power,provinces}]
+    if not hasattr(state, 'g_active_dmz_map'):
+        state.g_active_dmz_map = {}   # DAT_00bb6f28/*: {province: power}
+    if not hasattr(state, 'g_active_dmz_list'):
+        state.g_active_dmz_list = []  # DAT_00bb7130/34: list[dict{power, province}]
 
-    g_DmzOrderList: list = state.g_DmzOrderList
-    g_ActiveDmzMap: dict = state.g_ActiveDmzMap
-    g_ActiveDmzList: list = state.g_ActiveDmzList
+    g_dmz_order_list: list = state.g_dmz_order_list
+    g_active_dmz_map: dict = state.g_active_dmz_map
+    g_active_dmz_list: list = state.g_active_dmz_list
 
     # ── Outer double loop: powers i, j ────────────────────────────────────────
     # C: if (0 < (int)uVar3) { do { ... } while (iStack_90 < (int)uVar3); }
@@ -453,13 +453,13 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
 
                 if outer_power == own_power:
                     # ── BRANCH A: own power is in the DMZ pair ────────────────
-                    # C lines 97–140: walk g_DmzOrderList (DAT_00bb65e4 .. sentinel DAT_00bb65e0)
+                    # C lines 97–140: walk g_dmz_order_list (DAT_00bb65e4 .. sentinel DAT_00bb65e0)
                     # For each rec:
                     #   if rec.owner_power == own_power: skip
                     #   iVar10 = rec.owner_power
                     #   puVar7 = GameBoard_GetPowerRec(base+owner*0xc, buf, &province)
                     #   if puVar7[1] == iStack_34: → StdMap_FindOrInsert + changed
-                    for rec in list(g_DmzOrderList):
+                    for rec in list(g_dmz_order_list):
                         rec_owner = int(rec.get('owner_power', -1))
                         # C: if (*(int*)(pCVar8+0xc) != piStack_88) → process; else next
                         if rec_owner == own_power:
@@ -468,45 +468,52 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
                             continue
                         # GameBoard_GetPowerRec check:
                         # "does province k fall within rec_owner's territory?"
-                        # In Python: check g_ScOwner for this province.
-                        sc_owner = int(state.g_ScOwner[province]) if province < len(state.g_ScOwner) else -1
+                        # In Python: check g_sc_owner for this province.
+                        sc_owner = int(state.g_sc_owner[province]) if province < len(state.g_sc_owner) else -1
                         if sc_owner == rec_owner:
                             # puVar7[1] == iStack_34 → accept: cStack_b1 = '\x01'
                             changed = True
                             # StdMap_FindOrInsert: register the accepted DMZ for this province
-                            # absorb as: g_ActiveDmzMap[province] = rec_owner
-                            g_ActiveDmzMap[province] = rec_owner
+                            # absorb as: g_active_dmz_map[province] = rec_owner
+                            g_active_dmz_map[province] = rec_owner
 
                 else:
                     # ── BRANCH B: non-own outer power ─────────────────────────
                     # C lines 143–185:
                     # puVar11 = &DAT_00bb7028 + piVar4*0xc  (outer_power's base)
                     # GameBoard_GetPowerRec check → province k in outer_power's territory?
-                    sc_owner = int(state.g_ScOwner[province]) if province < len(state.g_ScOwner) else -1
+                    sc_owner = int(state.g_sc_owner[province]) if province < len(state.g_sc_owner) else -1
                     if sc_owner == outer_power:
                         # cStack_b1 = '\x01'; StdMap_FindOrInsert → accept DMZ
                         changed = True
-                        g_ActiveDmzMap[province] = outer_power
+                        g_active_dmz_map[province] = outer_power
 
-                    # ── Walk g_ActiveDmzList: remove stale entries ─────────────
+                    # ── Walk g_active_dmz_list: remove matching entry ───────────
                     # C lines 153–184:
                     # Walk DAT_00bb7134 list; for each rec:
                     #   if ppiVar12[3] == piStack_ac (outer_power)
-                    #      AND ppiVar12[4] != piVar9 (province k was NOT this province):
+                    #      AND ppiVar12[4] == piVar9 (province matches):
                     #     FUN_00412280(DAT_00bb7130, ..., rec)  → erase from list
+                    #   else if power matches but province differs → advance (no erase)
                     #  (restart iteration after erase matches C do-while restart)
+                    #
+                    # Fix 2026-04-21 (C-1): Previously had inverted condition
+                    # (rec_province != province) which erased OTHER provinces'
+                    # DMZ records instead of the matching one.  C line 169:
+                    #   if (ppiVar12[4] != piVar9) goto LAB_00420474  → advance
+                    #   FUN_00412280(...)  → erase when province MATCHES
                     restart = True
                     while restart:
                         restart = False
-                        for idx, active_rec in enumerate(list(g_ActiveDmzList)):
+                        for idx, active_rec in enumerate(list(g_active_dmz_list)):
                             rec_power   = int(active_rec.get('power', -1))
                             rec_province = int(active_rec.get('province', -1))
-                            if rec_power == outer_power and rec_province != province:
+                            if rec_power == outer_power and rec_province == province:
                                 # FUN_00412280: erase this stale DMZ entry
                                 # C: ppiStack_94 = (int**)*DAT_00bb7134 after erase
                                 #    (the list head is reset to the new front)
                                 try:
-                                    g_ActiveDmzList.remove(active_rec)
+                                    g_active_dmz_list.remove(active_rec)
                                 except ValueError:
                                     pass
                                 restart = True
@@ -547,12 +554,12 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
          FUN_00465930(local_40) → uVar11 = element count of local_40.
          FUN_00419300(DAT_00bb65f8 + bVar3*0xc, ..., local_40)
            → register this XDO proposal into sender's proposal map
-             (g_XdoProposalBySender[sender_power]).
+             (g_xdo_proposal_by_sender[sender_power]).
       4. Element 2 of sublist 0 → pvStack_80 = destination/scope province.
          StdMap_FindOrInsert(DAT_00bb6bf8 + bVar3*0xc, ..., pvStack_80)
-           → g_XdoDestBySender[sender_power][dest_prov] = dest_prov
+           → g_xdo_dest_by_sender[sender_power][dest_prov] = dest_prov
          StdMap_FindOrInsert(DAT_00bb713c, ..., pvStack_80)
-           → g_XdoGlobalDestMap[dest_prov] = dest_prov
+           → g_xdo_global_dest_map[dest_prov] = dest_prov
       5. Element 0 of sublist 1 → sVar4 = order command token (short).
       6a. If MTO or CTO:
             Element 0 of sublist 2 → ppiStack_7c = destination province.
@@ -566,7 +573,7 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             sublist-0 of sublist-2 of local_40  element 0 → bVar3 re-read
               = province of the unit being supported (piStack_b0)
             StdMap_FindOrInsert(DAT_00bb713c, ..., ppiStack_7c)
-              → g_XdoGlobalDestMap[ppiStack_7c] = ppiStack_7c
+              → g_xdo_global_dest_map[ppiStack_7c] = ppiStack_7c
             If uVar11 == 5 (SUP MTO — 5-element XDO):
               ScoreSupportOpp(DAT_00bb69f8 + bVar3*0xc, buf,
                                (ppiVar14, ppiVar16))
@@ -587,9 +594,9 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
       9. Return True (\x01).
 
     New global state fields:
-      g_XdoProposalBySender : dict[int, list]  — DAT_00bb65f8 per-power list
-      g_XdoDestBySender     : dict[int, dict]  — DAT_00bb6bf8 per-power map
-      g_XdoGlobalDestMap    : dict             — DAT_00bb713c global map
+      g_xdo_proposal_by_sender : dict[int, list]  — DAT_00bb65f8 per-power list
+      g_xdo_dest_by_sender     : dict[int, dict]  — DAT_00bb6bf8 per-power map
+      g_xdo_global_dest_map    : dict             — DAT_00bb713c global map
       g_xdo_candidate_list  : list[dict]       — in_stack_00000018 from FUN_00405090
 
     Unchecked callees: ScoreSupportOpp (DAT_00bb67f8/00bb69f8 paths),
@@ -625,10 +632,10 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
     payload = tokens[1:]     # local_40 equivalent
     uVar11  = len(payload)   # C: FUN_00465930
 
-    # FUN_00419300: register XDO proposal for the sender in g_XdoProposalBySender
+    # FUN_00419300: register XDO proposal for the sender in g_xdo_proposal_by_sender
     # C: FUN_00419300(&DAT_00bb65f8 + bVar3*0xc, &pvStack_50, local_40)
     _ordered_token_seq_insert(
-        state.g_XdoProposalBySender.setdefault(sender_power, []),
+        state.g_xdo_proposal_by_sender.setdefault(sender_power, []),
         payload,
     )
 
@@ -641,14 +648,14 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
         dest_prov = 0
 
     # DAT_00bb6bf8 + sender*0xc: per-sender destination map
-    if not hasattr(state, 'g_XdoDestBySender'):
-        state.g_XdoDestBySender = {}
-    state.g_XdoDestBySender.setdefault(sender_power, {})[dest_prov] = dest_prov
+    if not hasattr(state, 'g_xdo_dest_by_sender'):
+        state.g_xdo_dest_by_sender = {}
+    state.g_xdo_dest_by_sender.setdefault(sender_power, {})[dest_prov] = dest_prov
 
     # DAT_00bb713c: global destination map
-    if not hasattr(state, 'g_XdoGlobalDestMap'):
-        state.g_XdoGlobalDestMap = {}
-    state.g_XdoGlobalDestMap[dest_prov] = dest_prov
+    if not hasattr(state, 'g_xdo_global_dest_map'):
+        state.g_xdo_global_dest_map = {}
+    state.g_xdo_global_dest_map[dest_prov] = dest_prov
 
     # ── Step 5: order command = element 0 of sublist 1 ───────────────────────
     # C: GetSubList(local_40, pvStack_6c, 1) + GetListElement(puVar9, uStack_92, 0)
@@ -700,7 +707,7 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             sup_unit_prov = 0
 
         # StdMap_FindOrInsert(DAT_00bb713c, ..., ppiStack_7c = ppiVar14)
-        state.g_XdoGlobalDestMap[sup_power] = sup_power
+        state.g_xdo_global_dest_map[sup_power] = sup_power
 
         if uVar11 == 5:
             # SUP MTO (5-element XDO: XDO sender cmd sup_power dest_prov)
@@ -731,9 +738,9 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
         else:
             # SUP HLD
             # StdMap_FindOrInsert(DAT_00bb6af8 + sup_unit_prov*0xc, ..., ppiStack_7c = sup_power)
-            if not hasattr(state, 'g_XdoSupHldMap'):
-                state.g_XdoSupHldMap = {}
-            state.g_XdoSupHldMap.setdefault(sup_unit_prov, {})[sup_power] = sup_power
+            if not hasattr(state, 'g_xdo_sup_hld_map'):
+                state.g_xdo_sup_hld_map = {}
+            state.g_xdo_sup_hld_map.setdefault(sup_unit_prov, {})[sup_power] = sup_power
 
             # Loop over in_stack_00000018:
             #   FUN_004193f0(&DAT_00bb68f8 + entry.power*0xc, buf, (dest_prov, dest_prov))

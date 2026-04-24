@@ -35,12 +35,12 @@ def receive_proposal(
     """
     Port of RECEIVE_PROPOSAL (named; no binary address recovered by Ghidra).
 
-    Deduplicates an incoming proposal press against g_PosAnalysisList
+    Deduplicates an incoming proposal press against g_pos_analysis_list
     (DAT_00bb65c8/cc).  If this proposal has not yet been recorded:
 
-      1. Appends its token sequence to g_PosAnalysisList.
+      1. Appends its token sequence to g_pos_analysis_list.
       2. Logs "We have received the proposal: %s" (mirrors C SEND_LOG).
-      3. Adds sender_power to g_AllianceMsgTree (DAT_00bbf638) — the Python
+      3. Adds sender_power to g_alliance_msg_tree (DAT_00bbf638) — the Python
          equivalent of BuildAllianceMsg's sorted-BST insert.
       4. Calls _prepare_ally_press_entry(state, sender_power) [FUN_00418db0
          stub — marks the sender's press-entry as pending for RESPOND].
@@ -63,7 +63,7 @@ def receive_proposal(
       FUN_00465930  — TokenSeq_Count (→ len())
       FUN_00401950  — list content destructor (→ no-op; locals start empty)
       StdMap_FindOrInsert  — std::map lower-bound+insert (→ set.add / dict)
-      FUN_00419cb0  — list/range iterator init for g_PosAnalysisList (→ loop)
+      FUN_00419cb0  — list/range iterator init for g_pos_analysis_list (→ loop)
       FUN_00411a80  — bind iteration to DAT_00bb65d4 secondary sentinel (→ loop)
       GetListElement  — indexed token fetch (→ list index)
       FUN_00465d90  — token-seq overlap bool (→ frozenset intersection)
@@ -80,14 +80,14 @@ def receive_proposal(
       FUN_0046b050  — token-list → string repr (→ str(), already in unchecked)
       SEND_LOG      — debug/log sink (→ logging.info)
       BuildAllianceMsg — BST insert of sender into DAT_00bbf638
-                         (→ g_AllianceMsgTree.add; already in unchecked)
+                         (→ g_alliance_msg_tree.add; already in unchecked)
       FUN_00418db0  — PrepareAllyPressEntry (→ _prepare_ally_press_entry stub)
     """
     import logging as _log_module
     _log = _log_module.getLogger(__name__)
 
-    # ── Overlap check against g_PosAnalysisList ───────────────────────────────
-    # C outer loop iterates g_PosAnalysisList nodes; FUN_00465d90(node+4, &stack4)
+    # ── Overlap check against g_pos_analysis_list ───────────────────────────────
+    # C outer loop iterates g_pos_analysis_list nodes; FUN_00465d90(node+4, &stack4)
     # returns True when node's token set overlaps the incoming proposal.
     # The inner power-record loop uses piStack_c8 which is always empty for
     # freshly inserted entries (power_count == 0), so it never executes and
@@ -96,13 +96,13 @@ def receive_proposal(
     proposal_set = frozenset(proposal_tokens)
     already_seen = any(
         proposal_set & entry['token_set']
-        for entry in state.g_PosAnalysisList
+        for entry in state.g_pos_analysis_list
     )
 
     if already_seen:
         return
 
-    # ── Insert into g_PosAnalysisList ────────────────────────────────────────
+    # ── Insert into g_pos_analysis_list ────────────────────────────────────────
     # C: FUN_00465f60(copy, &stack4)  →  copy proposal token list
     #    FUN_004223c0(analysis, record)  →  init analysis struct (absorbed)
     #    FUN_00430370(&sentinel, &iter, copy)  →  std::list insert
@@ -121,7 +121,7 @@ def receive_proposal(
             'power': cand.get('power', sender_power),
         })
 
-    state.g_PosAnalysisList.append({
+    state.g_pos_analysis_list.append({
         'tokens': list(proposal_tokens),
         'token_set': proposal_set,
         'power_count': 0,   # C node[0xe]; always 0 for newly inserted entries
@@ -146,10 +146,10 @@ def receive_proposal(
     #    SEND_LOG(&pvStack_ec, L"We have received the proposal: %s")
     _log.info("We have received the proposal: %s", proposal_tokens)
 
-    # ── BuildAllianceMsg — record sender in g_AllianceMsgTree ────────────────
+    # ── BuildAllianceMsg — record sender in g_alliance_msg_tree ────────────────
     # C: puStack_f4 = (int)(elapsed_seconds + 10000)
     #    BuildAllianceMsg(&DAT_00bbf638, &pvStack_e8, (int *)&puStack_f4)
-    # Python models g_AllianceMsgTree keyed by power index rather than by the
+    # Python models g_alliance_msg_tree keyed by power index rather than by the
     # C timestamp value (elapsed_seconds + 10000).
     build_alliance_msg(state, sender_power)
 
@@ -167,44 +167,44 @@ def _respond_walk_pos_analysis(
     own_power: int,
 ) -> None:
     """
-    LAB_00421ebc — walk g_PosAnalysisList for proposals matching *sublist3*
-    and register *own_power* in g_DeviationTree for each match.
+    LAB_00421ebc — walk g_pos_analysis_list for proposals matching *sublist3*
+    and register *own_power* in g_deviation_tree for each match.
 
     C flow (decompiled.txt lines 261–316):
-      Iterate g_PosAnalysisList (DAT_00bb65c8/cc sentinel loop):
+      Iterate g_pos_analysis_list (DAT_00bb65c8/cc sentinel loop):
         FUN_00465d90(node+0x10, local_3c) — token-seq overlap check.
         If overlap:
           iStack_68 = node[0x34]  (power-count field)
           GameBoard_GetPowerRec(node+0x30, apuStack_8c, &uStack_c4)
           if puVar13[1] != iStack_68                  ← power-count mismatch
-             AND (YES != param_2 OR g_PowerActiveTurn[sender] == 1):
+             AND (YES != param_2 OR g_power_active_turn[sender] == 1):
                StdMap_FindOrInsert(node+0x48, &send_time, &uStack_c4)
         FUN_0040f860(&iter)  ← advance list iterator
 
     GameBoard_GetPowerRec (power-count mismatch check) is absorbed — the check
     fires conservatively whenever the token sets overlap.
-    StdMap_FindOrInsert → g_DeviationTree[(token_key, own_power)] insert.
+    StdMap_FindOrInsert → g_deviation_tree[(token_key, own_power)] insert.
     FUN_00465d90        → frozenset intersection (already used in receive_proposal).
     FUN_0047a948        → AssertFail (absorbed).
     FUN_0040f860        → list iterator advance (absorbed as Python for-loop).
     """
     _YES = 0x481c
-    g_active = getattr(state, 'g_PowerActiveTurn', None)
+    g_active = getattr(state, 'g_power_active_turn', None)
     sender_active = bool(g_active is not None and g_active[sender_power])
 
     sublist3_set = frozenset(sublist3)
     if not sublist3_set:
         return
 
-    for entry in state.g_PosAnalysisList:
+    for entry in state.g_pos_analysis_list:
         entry_set = entry.get('token_set', frozenset())
         if not (entry_set & sublist3_set):
             continue
         # C: (puVar13[1] != iStack_68) — power-count mismatch; absorbed as True.
-        # C: (YES != param_2 || g_PowerActiveTurn[sender] == 1)
+        # C: (YES != param_2 || g_power_active_turn[sender] == 1)
         if response_type != _YES or sender_active:
             key = (frozenset(entry['tokens']), own_power)
-            state.g_DeviationTree[key] = state.g_DeviationTree.get(key, 0)
+            state.g_deviation_tree[key] = state.g_deviation_tree.get(key, 0)
             if 'deviation_powers' not in entry:
                 entry['deviation_powers'] = set()
             entry['deviation_powers'].add(own_power)
@@ -238,17 +238,17 @@ def respond(
       param_4   → elapsed_hi     high-word of current timestamp (int32)
 
     Deception path (REJ + single power + enemy + trust gate):
-      If g_EnemyFlag[sender]==1 AND sender's trust toward own is positive AND
+      If g_enemy_flag[sender]==1 AND sender's trust toward own is positive AND
       relation >= 0 AND random gate fails to trigger avoidance → respond YES
       (deceitfully accept).  Logs "We are DECEITFULLY responding to: (%s)".
-      Sets g_PowerActiveTurn[sender] = 1.
+      Sets g_power_active_turn[sender] = 1.
 
     Normal path:
       Echoes response_type unchanged.
       Logs "Our response to a message was: %s".
 
-    Both paths: enqueue SND entry into g_MasterOrderList, update
-    g_AllianceMsgTree, then walk g_PosAnalysisList via
+    Both paths: enqueue SND entry into g_master_order_list, update
+    g_alliance_msg_tree, then walk g_pos_analysis_list via
     _respond_walk_pos_analysis.
 
     HUH path:
@@ -258,8 +258,8 @@ def respond(
     Timing (non-tournament mode):
       target = elapsed_since_session_start + rand(0–7) + 5 s
       If target < best_ally_turn_score  → push to best_score + 2 s
-      If g_MoveTimeLimitSec > 0        → cap at limit − 20 s
-    Timing (tournament mode / g_PressInstant != 0):
+      If g_move_time_limit_sec > 0        → cap at limit − 20 s
+    Timing (tournament mode / g_press_instant != 0):
       target = elapsed_since_session_start  (send immediately)
 
     Callees absorbed inline:
@@ -275,10 +275,10 @@ def respond(
       FUN_00466e10  add power token    → list.append
       FUN_00466c40  concat token lists → list + list
       FUN_00465f60  copy token list    → list()
-      FUN_00419c30  enqueue press      → g_MasterOrderList.append
+      FUN_00419c30  enqueue press      → g_master_order_list.append
       FUN_0046b050  serialize tokens   → str()
       SEND_LOG                         → logging.debug
-      BuildAllianceMsg                 → g_AllianceMsgTree.add
+      BuildAllianceMsg                 → g_alliance_msg_tree.add
       FUN_0040d4d0  HUH forward        → absorbed (no-op)
       ATL::CSimpleStringT::CloneData   → absorbed
       LOCK / UNLOCK                    → absorbed
@@ -294,8 +294,8 @@ def respond(
     _HUH = 0x4806
 
     own_power: int = getattr(state, 'albert_power_idx', 0)
-    # DAT_00baed32 — tournament mode (g_PressInstant in Python)
-    tournament_mode: int = int(getattr(state, 'g_PressInstant', 0))
+    # DAT_00baed32 — tournament mode (g_press_instant in Python)
+    tournament_mode: int = int(getattr(state, 'g_press_instant', 0))
 
     # ── Extract sublists ─────────────────────────────────────────────────────
     # C: GetSubList(param_1, buf, 1/2/3)
@@ -314,7 +314,7 @@ def respond(
     # ── Initial best ally turn-score lookup ──────────────────────────────────
     # C: iVar16 = -1; puStack_bc = 0xffffffff
     #    if (DAT_00ba27b4[power*8] >= 0): iVar16 = ...; puStack_bc = ...
-    g_turn_score = getattr(state, 'g_TurnScore', None)
+    g_turn_score = getattr(state, 'g_turn_score', None)
     best_score_hi: int = -1
     best_score_lo: int = 0xffffffff
 
@@ -362,7 +362,7 @@ def respond(
                 target = best_f + 2.0
 
         # C: if (0 < DAT_00624ef4): cap at limit - 0x14
-        move_limit = int(getattr(state, 'g_MoveTimeLimitSec', 0))
+        move_limit = int(getattr(state, 'g_move_time_limit_sec', 0))
         if move_limit > 0:
             cap = float(move_limit - 20)
             if target > cap:
@@ -386,17 +386,17 @@ def respond(
 
         # Gate 1: sender must be designated enemy
         # C: (&DAT_004cf568)[uVar17*2] == 1  AND  (&DAT_004cf56c)[uVar17*2] == 0
-        # Python: g_EnemyFlag[sender] == 1 (int32; hi-word of int64 is always 0)
-        g_enemy = getattr(state, 'g_EnemyFlag', None)
+        # Python: g_enemy_flag[sender] == 1 (int32; hi-word of int64 is always 0)
+        g_enemy = getattr(state, 'g_enemy_flag', None)
         enemy_flag = int(g_enemy[uVar17]) if g_enemy is not None else 0
 
         if enemy_flag == 1:
             # Gate 2: trust and relation check
             # C: iVar18 = uVar17*21 + own_power  (sender→own direction in int64 array)
-            trust_hi = int(state.g_AllyTrustScore_Hi[uVar17, own_power])
-            trust_lo = int(state.g_AllyTrustScore[uVar17, own_power])
-            # g_RelationScore[own_power, uVar17]  (DAT_00634e90[own*21+sender])
-            relation = int(state.g_RelationScore[own_power, uVar17])
+            trust_hi = int(state.g_ally_trust_score_hi[uVar17, own_power])
+            trust_lo = int(state.g_ally_trust_score[uVar17, own_power])
+            # g_relation_score[own_power, uVar17]  (DAT_00634e90[own*21+sender])
+            relation = int(state.g_relation_score[own_power, uVar17])
 
             # Condition to SKIP deceit (goto normal path):
             #   (trust_hi < 0 OR (trust_hi < 1 AND trust_lo == 0) OR relation < 0)
@@ -407,8 +407,8 @@ def respond(
                 or relation < 0
             )
 
-            aggressiveness = int(getattr(state, 'g_DMZAggressiveness', 0))
-            press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
+            aggressiveness = int(getattr(state, 'g_dmz_aggressiveness', 0))
+            press_mode = int(getattr(state, 'g_press_flag', 0)) == 1
 
             # C: (iVar18 = rand(), (iVar18 / 0x17) % 0x14 + aggressiveness < 0x51)
             r1 = _random.randint(0, 0x7fff)
@@ -432,12 +432,12 @@ def respond(
                 _log.debug("We are DECEITFULLY responding to: (%s)", response_tokens)
 
                 # C: (&DAT_00633768)[(byte)local_c8[0]] = 1
-                g_active = getattr(state, 'g_PowerActiveTurn', None)
+                g_active = getattr(state, 'g_power_active_turn', None)
                 if g_active is not None:
                     g_active[sender_power] = 1
 
                 # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_bc)
-                state.g_MasterOrderList.append({
+                state.g_master_order_list.append({
                     'scheduled_time': target,
                     'press_type':     'SND',
                     'data':           response_tokens,
@@ -459,7 +459,7 @@ def respond(
     _log.debug("Our response to a message was: %s", response_tokens)
 
     # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_ac)
-    state.g_MasterOrderList.append({
+    state.g_master_order_list.append({
         'scheduled_time': target,
         'press_type':     'SND',
         'data':           response_tokens,

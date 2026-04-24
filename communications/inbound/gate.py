@@ -151,10 +151,10 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
          count-match fields match. First match → return 0.
       4. On no match: run the cheap scorer (FUN_00431310 / legitimacy_gate
          stand-in here). If score == 0, archive a ``+10000``-keyed event
-         on ``g_AllianceMsgTree`` and return 1 (delay). Else return 0.
+         on ``g_alliance_msg_tree`` and return 1 (delay). Else return 0.
 
     Python compressions:
-      - Sub-trees A/B are represented by each g_BroadcastList entry's
+      - Sub-trees A/B are represented by each g_broadcast_list entry's
         ``order_candidates`` (matching _cal_value's walk). The code-9 /
         code-10 dual-orientation is not separately modelled here — a
         single-orientation match is sufficient for novelty detection.
@@ -182,7 +182,7 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
     # ── 2. Catalog walk (novelty check) ───────────────────────────────────
     pos_set = set(positive)
     neg_set = set(negative)
-    for entry in state.g_BroadcastList:
+    for entry in state.g_broadcast_list:
         if not isinstance(entry, dict):
             continue
         if is_orr:
@@ -260,7 +260,7 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
         # plus the +10000 offset (press_epoch isn't tracked in Python;
         # the offset alone discriminates the event class per the schema
         # in docs/funcs/DELAY_REVIEW.md).
-        state.g_AllianceMsgTree.add(int(_t.time()) + 10000)
+        state.g_alliance_msg_tree.add(int(_t.time()) + 10000)
         _log.debug("delay_review: score==0 → 1 (delay) + event archived")
         return 1
 
@@ -277,7 +277,7 @@ def register_received_press(
     """
     Port of RegisterReceivedPress = FUN_00431310.
 
-    Creates g_BroadcastList entries for an incoming FRM press proposal so that
+    Creates g_broadcast_list entries for an incoming FRM press proposal so that
     BuildAndSendSUB can process them via RECEIVE_PROPOSAL → EvaluatePress → RESPOND.
 
     C parameters:
@@ -295,7 +295,7 @@ def register_received_press(
       5. Two-pass split of param_11 by type_flag:
            Pass 1: type_flag==0 → local_1e4; call BuildHostilityRecord + SendAlliancePress.
            Pass 2: re-iterate, same split; watermark = size before pass-1 insert.
-      6. DAT_00baed60 = final g_BroadcastList size (watermark).
+      6. DAT_00baed60 = final g_broadcast_list size (watermark).
 
     Python compression:
       - param_11 (BST of order candidates) is replaced by _parse_xdo_candidates()
@@ -337,11 +337,11 @@ def register_received_press(
     # and proceed (matching the observation that register_received_press
     # unconditionally enqueues in C too — the gate's effect is primarily
     # through CAL_VALUE, not here).
-    # Canonical Python name is albert_power_idx; g_AlbertPower is the
+    # Canonical Python name is albert_power_idx; g_albert_power is the
     # C-faithful mirror (DAT_00624124) kept in sync by bot client.
     own_power_idx = getattr(
         state, 'albert_power_idx',
-        getattr(state, 'g_AlbertPower', 0),
+        getattr(state, 'g_albert_power', 0),
     )
     try:
         gate_score = legitimacy_gate(
@@ -353,8 +353,8 @@ def register_received_press(
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("register_received_press: legitimacy_gate raised %s; proceeding", exc)
 
-    # C: local_1f8 = DAT_00bb65f4  (g_BroadcastList size before first insert)
-    size_before = len(state.g_BroadcastList)
+    # C: local_1f8 = DAT_00bb65f4  (g_broadcast_list size before first insert)
+    size_before = len(state.g_broadcast_list)
 
     # Compute per-power score vector — Python stand-in for the int[≥7] at
     # AllianceRecord +0x48 that BuildHostilityRecord populates in C. For
@@ -403,15 +403,15 @@ def register_received_press(
 
     # ── Pass 2: same candidates, watermark = size before pass-1 ──────────
     # C: local_150 = local_1f8; local_e4[0] = DAT_00bb65f4 (updated size)
-    size_after = len(state.g_BroadcastList)
+    size_after = len(state.g_broadcast_list)
     entry2: dict = dict(entry1)
     entry2['watermark'] = size_before   # local_150 = local_1f8
     entry2['flag'] = flag               # local_13c = param_12
     entry2['order_candidates'] = list(external_cands)  # doubled in C; same here
     send_alliance_press(state, key=size_after, entry_data=entry2)
 
-    # C: DAT_00baed60 = DAT_00bb65f4  (final g_BroadcastList size watermark)
-    state.g_BroadcastListWatermark = len(state.g_BroadcastList)
+    # C: DAT_00baed60 = DAT_00bb65f4  (final g_broadcast_list size watermark)
+    state.g_broadcast_list_watermark = len(state.g_broadcast_list)
     _log.debug(
-        "register_received_press: watermark=%d", state.g_BroadcastListWatermark
+        "register_received_press: watermark=%d", state.g_broadcast_list_watermark
     )

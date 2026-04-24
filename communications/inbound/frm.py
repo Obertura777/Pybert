@@ -34,7 +34,7 @@ from .gate import delay_review, register_received_press
 def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
     """
     Port of process_frm and FRIENDLY logic (FUN_0042dc40).
-    Updates g_AllyMatrix and sets relation tracking arrays by unpacking FRM envelopes.
+    Updates g_ally_matrix and sets relation tracking arrays by unpacking FRM envelopes.
     Also calls register_received_press (FUN_00431310) for incoming XDO/PRP proposals.
 
     The ``sender`` arrives from python-diplomacy as a full DipNet name
@@ -117,7 +117,7 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                 'from_power_tok': sender_id | 0x4100,
                 'sublist3': list(press_tokens),
             }
-            send_alliance_press(state, key=len(state.g_BroadcastList), entry_data=rej_entry)
+            send_alliance_press(state, key=len(state.g_broadcast_list), entry_data=rej_entry)
         elif delay_result == 1:
             import logging as _logging
             _logging.getLogger(__name__).debug(
@@ -177,12 +177,12 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                     ally_id = daide_names.index(ally_upper)
                     if ally_id != sender_id:
                         # Break alliance mapping forcefully
-                        state.g_AllyMatrix[sender_id, ally_id] = 0
-                        state.g_AllyMatrix[ally_id, sender_id] = 0
+                        state.g_ally_matrix[sender_id, ally_id] = 0
+                        state.g_ally_matrix[ally_id, sender_id] = 0
 
                         # Degrade trust aggressively on rejections
-                        current_trust = state.g_AllyTrustScore[sender_id, ally_id]
-                        state.g_AllyTrustScore[sender_id, ally_id] = max(0.0, current_trust - 2.0)
+                        current_trust = state.g_ally_trust_score[sender_id, ally_id]
+                        state.g_ally_trust_score[sender_id, ally_id] = max(0.0, current_trust - 2.0)
 
                         # Update alliance tree — C's FRMHandler always calls
                         # BuildAllianceMsg for ALY arrivals. Fixed 2026-04-20
@@ -200,12 +200,12 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                     ally_id = daide_names.index(ally_upper)
                     if ally_id != sender_id:
                         # Establish explicit bilateral bounds
-                        state.g_AllyMatrix[sender_id, ally_id] = 1
-                        state.g_AllyMatrix[ally_id, sender_id] = 1
+                        state.g_ally_matrix[sender_id, ally_id] = 1
+                        state.g_ally_matrix[ally_id, sender_id] = 1
 
                         # Increment trust progressively
-                        state.g_AllyTrustScore[sender_id, ally_id] += 1.0
-                        state.g_AllyTrustScore[ally_id, sender_id] += 1.0
+                        state.g_ally_trust_score[sender_id, ally_id] += 1.0
+                        state.g_ally_trust_score[ally_id, sender_id] += 1.0
 
                         # Update alliance tree — mirrors REJ branch above.
                         # Fixed 2026-04-20 (audit finding C2).
