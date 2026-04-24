@@ -6,7 +6,7 @@ Split from heuristics.py during the 2026-04 refactor.
 - ``compute_draw_vote``          — Nash-stability check for the DRW vote
 - ``detect_stabs_and_hostility`` — update AllyMatrix/TrustScore from board outcomes
 - ``post_process_orders``        — decay + update move-history matrix
-- ``generate_self_proposals``    — seed g_GeneralOrders when no press arrives
+- ``generate_self_proposals``    — seed g_general_orders when no press arrives
 - ``compute_press``              — per-power adjacency pressure matrix
 
 Module-level deps: ``numpy``, ``..state.InnerGameState``.
@@ -245,30 +245,30 @@ def detect_stabs_and_hostility(state: InnerGameState, power_idx: int):
         
         # Scan ownership arrays
         for p in range(7):
-            if state.g_SCOwnership[p, prov] == 1:
+            if state.g_sc_ownership[p, prov] == 1:
                 owner_id = p
                 break
                 
         # Condition A: We own the SC, but someone else occupies it
         if owner_id == power_idx and occupier_id != -1 and occupier_id != power_idx:
             # If the occupier was formally bound in our trust matrix...
-            if state.g_AllyMatrix[power_idx, occupier_id] == 1:
+            if state.g_ally_matrix[power_idx, occupier_id] == 1:
                 # STABBED scenario mapping
-                state.g_AllyMatrix[power_idx, occupier_id] = 0
-                state.g_AllyTrustScore[power_idx, occupier_id] = 0.0
-                state.g_DeceitLevel += 1
+                state.g_ally_matrix[power_idx, occupier_id] = 0
+                state.g_ally_trust_score[power_idx, occupier_id] = 0.0
+                state.g_deceit_level += 1
                 
                 # Escalate positional threat score heavily
-                state.g_ThreatLevel[occupier_id, prov] = int(state.g_ThreatLevel[occupier_id, prov]) + 10
+                state.g_threat_level[occupier_id, prov] = int(state.g_threat_level[occupier_id, prov]) + 10
                 
         # Condition B: We attacked an ally's SC
         elif owner_id != -1 and owner_id != power_idx and occupier_id == power_idx:
             # We breached bounds
-            if state.g_AllyMatrix[power_idx, owner_id] == 1:
+            if state.g_ally_matrix[power_idx, owner_id] == 1:
                 # DEVIATE_MOVE mapping
-                state.g_AllyMatrix[power_idx, owner_id] = 0
+                state.g_ally_matrix[power_idx, owner_id] = 0
                 # Our trust crashes as retaliation is mapped
-                state.g_AllyTrustScore[power_idx, owner_id] = max(0, state.g_AllyTrustScore[power_idx, owner_id] / 2.0)
+                state.g_ally_trust_score[power_idx, owner_id] = max(0, state.g_ally_trust_score[power_idx, owner_id] / 2.0)
 
 
     # NOTE 2026-04-14: C CAL_BOARD does not call UpdateRelationHistory.
@@ -283,7 +283,7 @@ def post_process_orders(state: InnerGameState) -> None:
     """
     Port of PostProcessOrders (FUN_00411120).
 
-    Updates g_MoveHistoryMatrix from the submitted-order history list.
+    Updates g_move_history_matrix from the submitted-order history list.
     Two passes:
       Pass 1 — decay all entries by 3 (floor 0)
       Pass 2 — update from submitted-order history:
@@ -297,11 +297,11 @@ def post_process_orders(state: InnerGameState) -> None:
     num_provinces = 256
 
     # Pass 1 — uniform decay
-    state.g_MoveHistoryMatrix -= 3
-    np.clip(state.g_MoveHistoryMatrix, 0, None, out=state.g_MoveHistoryMatrix)
+    state.g_move_history_matrix -= 3
+    np.clip(state.g_move_history_matrix, 0, None, out=state.g_move_history_matrix)
 
     # Pass 2 — update from order history list
-    for rec in getattr(state, 'g_OrderHistList', []):
+    for rec in getattr(state, 'g_order_hist_list', []):
         power    = int(rec.get('power', -1))
         src_prov = int(rec.get('src_prov', -1))
         dst_prov = int(rec.get('dst_prov', -1))
@@ -313,41 +313,37 @@ def post_process_orders(state: InnerGameState) -> None:
         if not (0 <= src_prov < num_provinces): continue
         if not (0 <= dst_prov < num_provinces): continue
 
-        # Check 1 (C++ order): flag_a=1 and flag_b=0 → successful support → +10 capped at 201
+        # Check 1 (C++ order): flag_a=1 and flag_b=0 → successful support → +10
+        # C checks `if (val < 0xc9)` (< 201) then adds 10 unconditionally,
+        # allowing values up to 210.  No secondary cap.
         if flag_a == 1 and flag_b == 0:
-            cur = int(state.g_MoveHistoryMatrix[power, src_prov, dst_prov])
+            cur = int(state.g_move_history_matrix[power, src_prov, dst_prov])
             if cur < 201:
-                state.g_MoveHistoryMatrix[power, src_prov, dst_prov] = min(cur + 10, 201)
+                state.g_move_history_matrix[power, src_prov, dst_prov] = cur + 10
 
         # Check 2: flag_c=1 → full conflict → zero src row, dst row, dst column (independent if)
         if flag_c == 1:
-            state.g_MoveHistoryMatrix[power, src_prov, :] = 0
-            state.g_MoveHistoryMatrix[power, dst_prov, :] = 0
-            state.g_MoveHistoryMatrix[power, :, dst_prov] = 0
+            state.g_move_history_matrix[power, src_prov, :] = 0
+            state.g_move_history_matrix[power, dst_prov, :] = 0
+            state.g_move_history_matrix[power, :, dst_prov] = 0
 
         # Check 3: flag_b=1 → unit disrupted at src → zero src row (independent if)
         if flag_b == 1:
-            state.g_MoveHistoryMatrix[power, src_prov, :] = 0
+            state.g_move_history_matrix[power, src_prov, :] = 0
 
 
 # ── Self-proposal generator ──────────────────────────────────────────────────
 
 def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
-    """Generate MTO proposals for all powers and inject into g_GeneralOrders.
+    """Generate MTO proposals for all powers from candidate scoring tables.
 
-    In the C binary, non-hold orders are driven by the press pipeline:
-    other bots send PRP(XDO(...)) → register_received_press →
-    g_BroadcastList → score_order_candidates_from_broadcast →
-    g_GeneralOrders → MC Phase 1c.  In standalone / NO_PRESS mode
-    that pipeline is empty, so all orders default to hold.
+    Mirrors the C bot's SerializeOrders → RegisterProposalOrders flow:
+    for each unit, the best-scored reachable adjacent province becomes
+    an MTO proposal in g_general_orders.  The scoring source is
+    g_candidate_scores (heat-BFS output from GenerateOrders), which is
+    the same data the C bot serializes after ApplyInfluenceScores.
 
-    This function replaces the press round-trip by generating proposals
-    directly from FinalScoreSet — for each unit, the highest-scored
-    reachable province becomes an MTO proposal in g_GeneralOrders.
-    The MC trial loop's Phase 1c then dispatches these into g_OrderTable,
-    allowing the MC to choose between holds and moves.
-
-    For the own power, proposals also go into g_AllianceOrders (mirrors
+    For own_power, proposals also go into g_alliance_orders (mirrors
     the trust gate in score_order_candidates_from_broadcast).
 
     Returns the number of proposals inserted.
@@ -355,97 +351,116 @@ def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    fs = state.FinalScoreSet
     num_powers = 7
     inserted = 0
 
-    if not hasattr(state, 'g_GeneralOrders'):
-        state.g_GeneralOrders = {}
-    if not hasattr(state, 'g_AllianceOrders'):
-        state.g_AllianceOrders = {}
+    if not hasattr(state, 'g_general_orders'):
+        state.g_general_orders = {}
+    if not hasattr(state, 'g_alliance_orders'):
+        state.g_alliance_orders = {}
     if not state._id_to_prov:
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
 
-    # Determine which provinces are SCs (supply centers).
-    # state.sc_provinces is a set of province *IDs* (ints), populated
-    # by synchronize_from_game from game.map.scs.
     sc_set: set = set(getattr(state, 'sc_provinces', set()))
 
     for power in range(num_powers):
+        # Phase 1: Score all candidate destinations per unit using
+        # g_candidate_scores (the BFS heat diffusion output from
+        # GenerateOrders, matching what C serializes)
+        unit_candidates: list = []
         for prov, info in list(state.unit_info.items()):
             if info['power'] != power:
                 continue
             unit_type = info.get('type', 'A')
 
-            # Score each adjacent province using multiple signals:
-            #   1. FinalScoreSet[power, adj]  (strategic value from heat diffusion)
-            #   2. SC bonus: +500 for unowned SCs, +300 for enemy SCs
-            #   3. Adjacency influence: g_MaxProvinceScore[adj] (cross-power max)
-            # Threshold: must beat 0 (any positive score means "worth considering")
-            candidates: list = []  # [(score, adj)]
-            for adj in state.get_adjacent_provinces(prov):
-                # Skip provinces occupied by own unit
-                adj_unit = state.unit_info.get(adj)
-                if adj_unit is not None and adj_unit['power'] == power:
-                    continue
+            candidates: list = []
+            raw_adj = state.get_adjacent_provinces(prov)
+            if unit_type in ('A', 'AMY'):
+                adj_list = [a for a in raw_adj if a not in state.water_provinces]
+            elif unit_type in ('F', 'FLT'):
+                adj_list = [a for a in raw_adj if a not in state.land_provinces]
+            else:
+                adj_list = list(raw_adj)
 
-                score = float(fs[power, adj])
+            for adj in adj_list:
+                # Primary: g_candidate_scores (BFS heat — matches C serialization)
+                score = float(state.g_candidate_scores[power, adj])
 
                 # SC bonus for unowned supply centers
                 if adj in sc_set:
-                    adj_owner = -1
-                    for p2 in range(num_powers):
-                        if state.g_SCOwnership[p2, adj] == 1:
-                            adj_owner = p2
-                            break
+                    adj_owner = int(state.g_sc_owner[adj])
                     if adj_owner < 0:
-                        score += 500.0   # neutral unowned SC
+                        score += 500.0
                     elif adj_owner != power:
-                        score += 300.0   # enemy SC
+                        score += 300.0
 
-                # Cross-power influence score as tiebreaker
-                score += float(state.g_MaxProvinceScore[adj]) * 0.1
+                # Tiebreaker: cross-power influence
+                score += float(state.g_max_province_score[adj]) * 0.1
 
-                # Heat-diffusion score as fallback (ensures water provinces
-                # and non-SC provinces still get move proposals).
+                # Fallback: heat movement score
                 if score == 0.0:
-                    score += float(state.g_CandidateScores[power, adj]) * 0.01
-                    # Final fallback: any reachable province gets a tiny score
-                    # so that MC can at least consider moves vs holds.
+                    score += float(state.g_heat_movement[power, adj]) * 0.01
                     if score == 0.0:
                         score = 0.001
 
                 candidates.append((score, adj))
 
-            if not candidates:
+            if candidates:
+                candidates.sort(reverse=True)
+                unit_candidates.append((prov, unit_type, candidates))
+
+        # Phase 2: Greedy collision-free assignment (highest-scored first)
+        claimed_dests: set = set()
+        assignments: list = []
+
+        pq = []
+        for prov, unit_type, cands in unit_candidates:
+            if cands:
+                pq.append((cands[0][0], prov, unit_type, cands, 0))
+        pq.sort(key=lambda x: x[0], reverse=True)
+
+        assigned_units: set = set()
+        while pq:
+            best_score, prov, unit_type, cands, idx = pq.pop(0)
+            if prov in assigned_units:
                 continue
+            chosen = None
+            for i in range(idx, len(cands)):
+                s, adj = cands[i]
+                if adj not in claimed_dests:
+                    chosen = (s, adj, i)
+                    break
+            if chosen is None:
+                continue
+            s, adj, ci = chosen
+            claimed_dests.add(adj)
+            assigned_units.add(prov)
+            assignments.append((prov, unit_type, adj))
 
-            # Sort descending, take top 3 (give MC variety for move selection)
-            candidates.sort(reverse=True)
-            for _score, best_adj in candidates[:3]:
-                prov_name = state._id_to_prov.get(prov, str(prov))
-                adj_name = state._id_to_prov.get(best_adj, str(best_adj))
-                order_seq = {
-                    'type': 'MTO',
-                    'unit': f"{unit_type} {prov_name}",
-                    'target': adj_name,
-                }
+        # Phase 3: Emit proposals
+        for prov, unit_type, best_adj in assignments:
+            prov_name = state._id_to_prov.get(prov, str(prov))
+            adj_name = state._id_to_prov.get(best_adj, str(best_adj))
+            order_seq = {
+                'type': 'MTO',
+                'unit': f"{unit_type} {prov_name}",
+                'target': adj_name,
+            }
 
-                state.g_GeneralOrders.setdefault(power, []).append(order_seq)
+            state.g_general_orders.setdefault(power, []).append(order_seq)
+            inserted += 1
+
+            if power == own_power:
+                state.g_alliance_orders.setdefault(power, []).append(order_seq)
                 inserted += 1
-
-                # Own power also goes into alliance orders
-                if power == own_power:
-                    state.g_AllianceOrders.setdefault(power, []).append(order_seq)
-                    inserted += 1
 
     if inserted:
         _log.debug(
             "generate_self_proposals: inserted %d proposals "
             "(general: %s, alliance: %s)",
             inserted,
-            sorted(state.g_GeneralOrders.keys()),
-            sorted(state.g_AllianceOrders.keys()),
+            sorted(state.g_general_orders.keys()),
+            sorted(state.g_alliance_orders.keys()),
         )
     return inserted
 
@@ -459,27 +474,38 @@ def compute_press(state: InnerGameState, own_power: int = 0) -> None:  # noqa: A
     Builds per-power adjacency-pressure matrix.  For each unit of any power,
     calls adjacency lookup, then for each adjacent *occupied* province
     (non-army coast token, or power-token == 0x14) sets
-    g_PressMatrix[power][province] = 1 and increments g_PressCount[power].
+    g_press_matrix[power][province] = 1 and increments g_press_count[power].
 
-    Result: g_PressMatrix (bool 2D, stride 0x100) + g_PressCount (count vec).
+    Result: g_press_matrix (bool 2D, stride 0x100) + g_press_count (count vec).
 
     Research.md §1295 / §2568 note.
     """
-    state.g_PressMatrix.fill(0)
-    state.g_PressCount.fill(0)
+    state.g_press_matrix.fill(0)
+    state.g_press_count.fill(0)
 
     for prov, info in state.unit_info.items():
         power = info['power']
+        unit_type = info.get('type', 'A')
 
-        for adj in state.get_unit_adjacencies(prov):
-            adj_power = state.get_unit_power(adj)
-            if adj_power == -1:
+        # C uses AdjacencyList_FilterByUnitType — armies skip water,
+        # fleets skip land.  Fixed 2026-04-20 (audit finding M-HEUR-3).
+        raw_adj = state.get_unit_adjacencies(prov)
+        if unit_type in ('A', 'AMY'):
+            adj_list = [a for a in raw_adj if a not in state.water_provinces]
+        elif unit_type in ('F', 'FLT'):
+            adj_list = [a for a in raw_adj if a not in state.land_provinces]
+        else:
+            adj_list = list(raw_adj)
+
+        for adj in adj_list:
+            adj_info = state.unit_info.get(adj)
+            if adj_info is None:
                 continue
-            adj_info = state.unit_info.get(adj, {})
-            # Condition: adjacent province is occupied, and is not an army
-            # (fleet or non-army coast) or has power-token 0x14
+            # C condition: province is occupied AND (unit is NOT an army,
+            # OR unit has power-token 0x14).  The 0x14 token is the "unknown
+            # power" sentinel — effectively "any occupied non-army province".
             adj_type = adj_info.get('type', '')
-            if adj_type == 'F' or adj_type == '':
-                if state.g_PressMatrix[power, adj] == 0:
-                    state.g_PressMatrix[power, adj] = 1
-                    state.g_PressCount[power] += 1
+            if adj_type != 'A':
+                if state.g_press_matrix[power, adj] == 0:
+                    state.g_press_matrix[power, adj] = 1
+                    state.g_press_count[power] += 1

@@ -3,7 +3,7 @@ from ..state import InnerGameState
 
 from ._primitives import (
     evaluate_province_score, compute_winter_builds,
-    _safe_pow, evaluate_alliance_score,
+    _safe_pow, _float_to_int64, evaluate_alliance_score,
 )
 from .board import cal_board
 from .influence import (

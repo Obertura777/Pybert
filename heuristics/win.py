@@ -38,7 +38,7 @@ _WIN_DAIDE_POWER_NAMES: list = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
 
 
 def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
-    """Seed g_CandidateScores[own_power] with eligible WIN build provinces.
+    """Seed g_candidate_scores[own_power] with eligible WIN build provinces.
 
     Mirrors the candidate-ordered-set population that FUN_0040ab10
     (`ComputeBuildDelta`) performs for the BUILD branch
@@ -47,7 +47,7 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     build/remove pipeline is driven directly from
     `generate_and_submit_orders` (bot.py) after `synchronize_from_game`.  A province is eligible when:
       • it is one of own_power's home supply centres  (state.home_centers)
-      • own_power currently owns it                   (g_SCOwnership[own,prov]==1)
+      • own_power currently owns it                   (g_sc_ownership[own,prov]==1)
       • no unit currently stands there                (prov not in unit_info)
 
     Baseline score 1.0 marks membership; score_order_candidates_own_power
@@ -56,15 +56,15 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     C: candidate set lives at Albert+own_power*0x78+0x361c; count stored at
     Albert+0x4e50; limit (delta) at Albert+0x4e54.
     """
-    state.g_CandidateScores[own_power].fill(0.0)
+    state.g_candidate_scores[own_power].fill(0.0)
     home_provs = state.home_centers.get(own_power, frozenset())
     for prov in home_provs:
-        if state.g_SCOwnership[own_power, prov] == 1 and prov not in state.unit_info:
-            state.g_CandidateScores[own_power, prov] = 1.0
+        if state.g_sc_ownership[own_power, prov] == 1 and prov not in state.unit_info:
+            state.g_candidate_scores[own_power, prov] = 1.0
 
 
 def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
-    """Seed g_CandidateScores[own_power] with eligible WIN remove provinces.
+    """Seed g_candidate_scores[own_power] with eligible WIN remove provinces.
 
     Mirrors FUN_0040ab10 for the REMOVE branch (unit_count > sc_count).
     Every province that holds an own unit is a candidate.
@@ -72,10 +72,10 @@ def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
     C: candidate set lives at Albert+own_power*0x78+0x361c; count at
     Albert+0x4df8; limit (delta) at Albert+0x4dfc.
     """
-    state.g_CandidateScores[own_power].fill(0.0)
+    state.g_candidate_scores[own_power].fill(0.0)
     for prov, unit_data in state.unit_info.items():
         if unit_data.get('power') == own_power:
-            state.g_CandidateScores[own_power, prov] = 1.0
+            state.g_candidate_scores[own_power, prov] = 1.0
 
 
 def compute_win_builds(state: InnerGameState, delta: int) -> None:
@@ -84,7 +84,7 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
     Called from send_GOF when unit_count < sc_count (BUILD phase).
 
     Algorithm:
-      1. Collect all provinces where g_CandidateScores[own_power, prov] > 0.
+      1. Collect all provinces where g_candidate_scores[own_power, prov] > 0.
       2. Sort by score descending (highest strategic value first).
       3. Take up to `delta` provinces; any shortfall becomes waives.
       4. For each selected province determine unit type:
@@ -113,7 +113,7 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
 
     candidates: list = []
     for prov in range(256):
-        score = float(state.g_CandidateScores[own_power, prov])
+        score = float(state.g_candidate_scores[own_power, prov])
         if score > 0.0:
             candidates.append((score, prov))
 
@@ -136,7 +136,7 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     Called from send_GOF when unit_count > sc_count (REMOVE phase).
 
     Algorithm:
-      1. Collect all own-unit provinces where g_CandidateScores[own_power, prov] > 0.
+      1. Collect all own-unit provinces where g_candidate_scores[own_power, prov] > 0.
       2. Sort by score ascending (lowest strategic value first — remove those first).
          Confirmed by decompile of FUN_0044bd40: BuildOrderSpec uses score+0x7d
          and the first element popped (lowest) is the one removed.
@@ -157,7 +157,7 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     for prov, unit_data in state.unit_info.items():
         if unit_data.get('power') != own_power:
             continue
-        score = float(state.g_CandidateScores[own_power, prov])
+        score = float(state.g_candidate_scores[own_power, prov])
         if score > 0.0:
             candidates.append((score, prov))
 
