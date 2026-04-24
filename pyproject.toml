@@ -1,0 +1,16 @@
+[project]
+name = "albert"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "diplomacy",
+]
+
+[tool.uv.sources]
+diplomacy = { git = "https://github.com/ALLAN-DIP/diplomacy.git", rev = "dev" }
+
+[tool.ty.environment]
+root = [".."]
