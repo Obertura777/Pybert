@@ -111,14 +111,6 @@ class _OrdersMixin:
             if self.power_name in _POWER_NAMES else 0
         )
         self.state.albert_power_idx = own_power_idx
-        # Keep the C-faithful name (DAT_00624124) in sync with the Python
-        # canonical albert_power_idx.  Consumers:
-        #   * monte_carlo/trial.py:849 — "skip iteration-delta term for self"
-        #     branch in ScoreOrderCandidates_AllPowers.
-        #   * communications/inbound/gate.py fallback chain.
-        # Previously read but never written → the branch silently defaulted
-        # to albert_power_idx via getattr, which was correct by accident.
-        self.state.g_AlbertPower = own_power_idx
 
         # Step 1 — record turn start timestamp (DAT_00ba2880 = __time64(0))
         self.state.g_turn_start_time = time.time()

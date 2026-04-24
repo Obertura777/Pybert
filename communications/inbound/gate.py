@@ -327,15 +327,9 @@ def register_received_press(
     # unconditionally enqueues in C too — the gate's effect is primarily
     # through CAL_VALUE, not here).
     try:
-        # Canonical Python name is albert_power_idx; g_AlbertPower is the
-        # C-faithful mirror (DAT_00624124) kept in sync by bot client.
-        # The previous chain (own_power_index → g_OwnPowerIndex) named
-        # attributes with no writer anywhere, so this always defaulted to 0
-        # regardless of which power the bot actually plays.
-        own_power_idx = getattr(
-            state, 'albert_power_idx',
-            getattr(state, 'g_AlbertPower', 0),
-        )
+        own_power_idx = getattr(state, 'own_power_index', None)
+        if own_power_idx is None:
+            own_power_idx = getattr(state, 'g_OwnPowerIndex', 0)
         gate_score = legitimacy_gate(
             state, int(own_power_idx),
             [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}

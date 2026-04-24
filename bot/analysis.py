@@ -375,24 +375,9 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
                 friendly_powers.add(p)
 
     draw_vote = compute_draw_vote(state, friendly_powers)
-
-    # C (GenerateAndSubmitOrders.c:482): send DRW when any of four flags is set:
-    #   DAT_00baed29 | DAT_00baed2a | DAT_00baed2b | DAT_00baed30
-    # Mapping:
-    #   DAT_00baed29 — unknown (possibly external draw-request signal); left in
-    #                  g_draw_flags pass-through bucket.
-    #   DAT_00baed2a — g_RequestDrawFlag   (set by CAL_BOARD phase 4a: big lead).
-    #   DAT_00baed2b — g_DrawVoteFlag      (result of ComputeDrawVote → draw_vote).
-    #   DAT_00baed30 — g_StaticMapFlag     (set when the map hasn't moved in many turns).
-    request_draw  = int(getattr(state, 'g_RequestDrawFlag', 0)) == 1
-    static_map    = int(getattr(state, 'g_StaticMapFlag',  0)) == 1
     extra_draw_flags = getattr(state, 'g_draw_flags', [])
-    if draw_vote or request_draw or static_map or any(extra_draw_flags):
-        logger.info(
-            "Draw vote: will accept DRW proposals (voting YES) "
-            "[draw_vote=%s, request_draw=%s, static_map=%s]",
-            draw_vote, request_draw, static_map,
-        )
+    if draw_vote or any(extra_draw_flags):
+        logger.info("Draw vote: will accept DRW proposals (voting YES)")
         state.g_draw_sent = 1
     else:
         logger.debug("Draw vote: will reject DRW proposals (no vote sent)")

@@ -57,28 +57,7 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     else:
         state.g_MoveHistoryMatrix.fill(0)
         
-    # C: Albert+0x3ffc = victory_threshold = sc_count/2 + 1
-    # (InitPositionForOrders.c:236 — `local_de8 / 2 + 1`, where local_de8 is
-    # incremented on lines 188-192 once per province whose byte-offset +3 is
-    # nonzero.  That +3 byte is the "is supply center" flag of the province
-    # record; for standard Diplomacy's 34 SCs this yields 18, matching the
-    # state.win_threshold default.  Using unit_count here (22 start → 12) would
-    # be semantically wrong.  See research.md §7229 / docs/funcs/
-    # InitPositionForOrders.md:76 and verification trace on local_de8.)
-    #
-    # Python canonical: state.win_threshold (read throughout heuristics/board.py,
-    # heuristics/scoring.py, heuristics/_primitives.py).  Keep both in sync so
-    # the C-faithful name (g_VictoryThreshold) also has a live writer matching
-    # whatever state.win_threshold reflects.
-    sc_count = len(getattr(state, 'sc_provinces', ()))
-    if sc_count > 0:
-        victory_threshold = sc_count // 2 + 1
-    else:
-        # Pre-init / mock states without sc_provinces populated — preserve the
-        # state.py:249 default rather than computing a degenerate value.
-        victory_threshold = int(getattr(state, 'win_threshold', 18))
-    state.g_VictoryThreshold = victory_threshold
-    state.win_threshold      = victory_threshold
+    state.g_VictoryThreshold = len(state.unit_info) // 2 + 1
 
 
 def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | None':

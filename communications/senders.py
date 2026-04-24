@@ -510,13 +510,8 @@ def friendly(state: InnerGameState) -> None:
 
             stab      = int(state.g_StabFlag[row, col])
             cease     = int(state.g_CeaseFire[row, col])
-            # g_CoopScoreFlag_B (DAT_0062be98) — fall/autumn cooperation flag
-            # g_CoopScoreFlag_A (DAT_0062c580) — spring/summer cooperation flag
-            # Both are tested in the FRIENDLY conjunction (C: FRIENDLY.c:123-124)
-            # regardless of season.  Previously read the phantom names
-            # g_CoopFlag / g_SomeCoopScore, which were never populated.
-            coop      = int(state.g_CoopScoreFlag_B[row, col])
-            some_coop = int(state.g_CoopScoreFlag_A[row, col])
+            coop      = int(state.g_CoopFlag[row, col])
+            some_coop = int(state.g_SomeCoopScore[row, col])
             trust_lo  = int(state.g_AllyTrustScore[row, col])
             trust_hi  = int(state.g_AllyTrustScore_Hi[row, col])
             peace_sig = int(state.g_PeaceSignal[row, col])
