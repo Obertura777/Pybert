@@ -12,8 +12,14 @@ dispatch.  ``normalize_influence_matrix`` is pulled in via a deferred
 function-body import to avoid a circular-import risk with ``..heuristics``.
 """
 
+from __future__ import annotations
+
 import copy
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..state import InnerGameState
 
 from ..communications import dispatch_scheduled_press
 from ._shared import _DAIDE_POWER_NAMES
@@ -131,8 +137,14 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
     Port of FUN_0045aa40 = send_GOF.
 
     Builds the GOF (Go Order Final) DAIDE token sequence from the inner
-    gamestate (FUN_00464460 = _build_gof_seq) and transmits it via SendDM
-    only when the sequence contains more than one token (non-empty guard).
+    gamestate (FUN_00464460 = _build_gof_seq) to check whether any orders
+    exist (TokenSeq_Count > 1).  If so, sends a plain ``GOF`` signal via
+    SendDM to indicate "I'm done negotiating, proceed".
+
+    In DAIDE, GOF is a standalone readiness signal — orders are submitted
+    separately via the game API (set_orders / SUB).  The C original
+    passes the full order-list through SendDM, but the server only reads
+    the GOF token; the trailing order tokens are ignored on the wire.
 
     C flow:
       local_2c  = FUN_00465870()          // init temp list
@@ -147,8 +159,7 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
     """
     gof_seq = _build_gof_seq(state)          # FUN_00464460
     if len(gof_seq) > 1:                     # TokenSeq_Count(local_2c) > 1
-        gof_seq = _build_gof_seq(state)      # FUN_00464460 — rebuild for send
-        send_dm(gof_seq)                     # SendDM
+        send_dm('GOF')                       # SendDM — plain GOF signal
 
 
 # ── EvaluateOrderProposalsAndSendGOF ─────────────────────────────────────────
@@ -160,7 +171,7 @@ def _evaluate_order_proposals_and_send_gof(
     """
     Port of FUN_00457520 = EvaluateOrderProposalsAndSendGOF.
 
-    Iterates g_OwnProposalMap (Python: state.g_PosAnalysisList) looking for
+    Iterates g_own_proposal_map (Python: state.g_pos_analysis_list) looking for
     entries whose proposed XDO orders are now all committed to the game board.
     For each newly-satisfied entry it runs CAL_MOVE on every associated press
     entry; if any CAL_MOVE returns truthy the GOF commit path fires
@@ -182,7 +193,7 @@ def _evaluate_order_proposals_and_send_gof(
       → entry is "satisfiable" and the GOF candidate path runs.
 
     Python model note:
-      g_PosAnalysisList entries are inserted by receive_proposal with empty
+      g_pos_analysis_list entries are inserted by receive_proposal with empty
       sub_entries / press_entries, so the inner board-check loop never executes
       (bVar3 stays True) and the press-entry loop also never executes (bVar4
       stays False).  Result: ScheduledPressDispatch is always called.  The full
@@ -194,7 +205,7 @@ def _evaluate_order_proposals_and_send_gof(
     bVar4 = False
     board_orders = getattr(state, 'g_board_orders', {})
 
-    for entry in getattr(state, 'g_PosAnalysisList', []):
+    for entry in getattr(state, 'g_pos_analysis_list', []):
         # C: if (*(char*)(puVar5 + 8) == '\0') — skip already-satisfied entries
         if entry.get('board_satisfied', False) or entry.get('processed', False):
             continue
@@ -231,21 +242,21 @@ def _evaluate_order_proposals_and_send_gof(
                 #    proposed orders as the "current" set.
                 #
                 # Cross-domain note: DAT_00bb65e0 is the same global the DMZ
-                # handler uses (state.g_DmzOrderList).  C accepts the collision
+                # handler uses (state.g_dmz_order_list).  C accepts the collision
                 # — both writers clear-and-rewrite — and the DMZ handler
                 # refreshes the list on its next call.  Faithful port keeps the
                 # same semantics.
                 try:
-                    if not hasattr(state, 'g_DmzOrderList') or state.g_DmzOrderList is None:
-                        state.g_DmzOrderList = []
-                    state.g_DmzOrderList.clear()
-                    state.g_DmzOrderList.extend(
+                    if not hasattr(state, 'g_dmz_order_list') or state.g_dmz_order_list is None:
+                        state.g_dmz_order_list = []
+                    state.g_dmz_order_list.clear()
+                    state.g_dmz_order_list.extend(
                         copy.deepcopy(sub) for sub in sub_entries
                     )
                 except Exception:
                     logger.exception(
                         "RegisterProposalOrders staging copy raised; continuing"
-                        " with empty g_DmzOrderList"
+                        " with empty g_dmz_order_list"
                     )
 
                 # ── Inner press-entry loop (node+0x15/0x16 sub-list) ──────────

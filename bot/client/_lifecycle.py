@@ -15,11 +15,14 @@ Composed with ``_OrdersMixin`` and ``_PressMixin`` to form ``AlbertClient``;
 cross-mixin method calls resolve through normal MRO at call time.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 import random
 import time
+from typing import Any, Callable
 
 import numpy as np
 from diplomacy.client.connection import connect
@@ -73,6 +76,9 @@ logger = logging.getLogger(__name__)
 
 
 class _LifecycleMixin:
+    # Cross-mixin method (provided by _OrdersMixin)
+    generate_and_submit_orders: Callable[[], None]
+
     # DONE(api): #4 — play() uses NetworkGame notification callbacks
     #   (GameProcessed, GameStatusUpdate, GameMessageReceived) with a 30s
     #   heartbeat safety-net poll instead of 2s blind polling.
@@ -237,7 +243,7 @@ class _LifecycleMixin:
 
         Also drains inbound game.messages and feeds each new one to
         on_message_received between synchronize_from_game and order generation.
-        synchronize_from_game intentionally does NOT clear g_BroadcastList
+        synchronize_from_game intentionally does NOT clear g_broadcast_list
         (matching the C binary's accumulate-forever semantics), so press
         registered here survives into the translator/corroboration pass.
         """

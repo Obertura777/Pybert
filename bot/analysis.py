@@ -38,50 +38,50 @@ logger = logging.getLogger(__name__)
 def _phase_handler(state: InnerGameState, phase: int) -> None:
     """PhaseHandler (FUN_0040df20 / SetGamePhase).
 
-    Snapshots g_AllyTrustScore and g_RelationScore (DAT_00634e90) into
+    Snapshots g_ally_trust_score and g_relation_score (DAT_00634e90) into
     phase-indexed arrays at each sub-phase boundary (phase 0–3).
 
     research.md §6534:
       idx = power + phase * 21
-      g_InfluenceSnapshot[idx, j] ← g_RelationScore[power, j]
-      g_TrustSnapshot[idx, j]     ← g_AllyTrustScore[power, j]  (lo + hi word)
+      g_influence_snapshot[idx, j] ← g_relation_score[power, j]
+      g_trust_snapshot[idx, j]     ← g_ally_trust_score[power, j]  (lo + hi word)
     """
     num_powers = 7
 
-    if not hasattr(state, 'g_TrustSnapshot'):
+    if not hasattr(state, 'g_trust_snapshot'):
         # 4 phases × up to 21 powers; each entry holds one row of 7 values
-        state.g_TrustSnapshot    = np.zeros((4 * 21, 7), dtype=np.float64)
-        state.g_TrustSnapshot_Hi = np.zeros((4 * 21, 7), dtype=np.int32)
-        state.g_InfluenceSnapshot = np.zeros((4 * 21, 7), dtype=np.int32)
+        state.g_trust_snapshot    = np.zeros((4 * 21, 7), dtype=np.float64)
+        state.g_trust_snapshot_hi = np.zeros((4 * 21, 7), dtype=np.int32)
+        state.g_influence_snapshot = np.zeros((4 * 21, 7), dtype=np.int32)
 
     for power in range(num_powers):
         idx = power + phase * 21
         for j in range(num_powers):
-            state.g_InfluenceSnapshot[idx, j] = int(state.g_RelationScore[power, j])
-            state.g_TrustSnapshot[idx, j]     = float(state.g_AllyTrustScore[power, j])
-            state.g_TrustSnapshot_Hi[idx, j]  = int(state.g_AllyTrustScore_Hi[power, j])
+            state.g_influence_snapshot[idx, j] = int(state.g_relation_score[power, j])
+            state.g_trust_snapshot[idx, j]     = float(state.g_ally_trust_score[power, j])
+            state.g_trust_snapshot_hi[idx, j]  = int(state.g_ally_trust_score_hi[power, j])
 
 
 def _analyze_position(state: InnerGameState) -> None:
     """AnalyzePosition (FUN_004119d0).
 
-    Counts live units per power and writes the result into g_UnitCount
+    Counts live units per power and writes the result into g_unit_count
     (DAT_0062e460).  research.md §6560 corrects the prior "has-alliance flag"
     label: this array is a plain unit-count; non-zero ↔ power has units.
     """
-    state.g_UnitCount.fill(0)
+    state.g_unit_count.fill(0)
     for unit in state.unit_info.values():
         power = unit.get('power', -1)
         if 0 <= power < 7:
-            state.g_UnitCount[power] += 1
+            state.g_unit_count[power] += 1
 
 
 def _move_analysis(state: InnerGameState) -> None:
     """MOVE_ANALYSIS (FUN_~0x435400).
 
     Evaluates inter-power pressure from the current order table and updates
-    g_AllyTrustScore based on observed aggression ratios.  On exactly one
-    hostile power detected, sets g_OpeningStickyMode and g_OpeningEnemy.
+    g_ally_trust_score based on observed aggression ratios.  On exactly one
+    hostile power detected, sets g_opening_sticky_mode and g_opening_enemy.
 
     Decompile-verified structure (decompiled.txt):
       1. Per-(a,b) reach table: reach[a][adj]=1 for adj-of-a-units not occupied by b;
@@ -95,7 +95,7 @@ def _move_analysis(state: InnerGameState) -> None:
     num_powers = 7
     own_power  = getattr(state, 'albert_power_idx', 0)
 
-    trust = state.g_AllyTrustScore  # (7,7) float64; updated in-place
+    trust = state.g_ally_trust_score  # (7,7) float64; updated in-place
 
     # Save own_power's trust row before any modifications (for pre-compaction restore)
     orig_own_trust = trust[own_power, :].copy()
@@ -149,19 +149,19 @@ def _move_analysis(state: InnerGameState) -> None:
                         break
 
                 # Order effects (C types 2=MTO, 6=CTO, 4=SUP_MTO)
-                order_type = int(state.g_OrderTable[b_prov, _F_ORDER_TYPE])
-                dest       = int(state.g_OrderTable[b_prov, _F_DEST_PROV])
+                order_type = int(state.g_order_table[b_prov, _F_ORDER_TYPE])
+                dest       = int(state.g_order_table[b_prov, _F_DEST_PROV])
 
                 if order_type in (_ORDER_MTO, _ORDER_CTO):      # C types 2 and 6
                     if 0 <= dest < 256:
                         # B-gate (C lines 287-296): bcd0 bump is gated on
-                        # `g_AllyDesignation_B[dest] != b` — i.e. the move is
+                        # `g_ally_designation_b[dest] != b` — i.e. the move is
                         # NOT a consolidation into a province already
                         # B-designated for the attacker at start-of-season.
                         # Before 2026-04-14 this gate was missing → consolidation
                         # moves were over-counted as aggressive.
-                        desig_b = (int(state.g_AllyDesignation_B[dest])
-                                   if hasattr(state, 'g_AllyDesignation_B') else -1)
+                        desig_b = (int(state.g_ally_designation_b[dest])
+                                   if hasattr(state, 'g_ally_designation_b') else -1)
                         b_gate_open = (desig_b != b)  # B.lo != attacker
                         if reach[dest] == 2:
                             # b moves into a-reachable contested province → aggressive
@@ -178,7 +178,7 @@ def _move_analysis(state: InnerGameState) -> None:
                             reach[dest] = 2
                 elif order_type == _ORDER_SUP_MTO:              # C type 4
                     # Only count if b is NOT supporting an a-unit
-                    secondary = int(state.g_OrderTable[b_prov, _F_SECONDARY])
+                    secondary = int(state.g_order_table[b_prov, _F_SECONDARY])
                     if (0 <= dest < 256
                             and not (0 <= secondary < 256 and prov_power[secondary] == a)
                             and reach[dest] >= 2):
@@ -244,7 +244,7 @@ def _move_analysis(state: InnerGameState) -> None:
 
     # --- Phase 4 — opening ally selection ------------------------------------
     # Invalidate ally slots where trust dropped below 2 (distrusted)
-    for attr in ('g_BestAllySlot0', 'g_BestAllySlot1', 'g_BestAllySlot2'):
+    for attr in ('g_best_ally_slot0', 'g_best_ally_slot1', 'g_best_ally_slot2'):
         slot = getattr(state, attr, -1)
         if 0 <= slot < num_powers and trust[own_power, slot] < 2:
             setattr(state, attr, -1)
@@ -254,17 +254,17 @@ def _move_analysis(state: InnerGameState) -> None:
     valid = [s for s in slots if s >= 0]
     while len(valid) < 3:
         valid.append(-1)
-    state.g_BestAllySlot0, state.g_BestAllySlot1, state.g_BestAllySlot2 = (
+    state.g_best_ally_slot0, state.g_best_ally_slot1, state.g_best_ally_slot2 = (
         valid[0], valid[1], valid[2])
 
-    # Best ally (after compaction) fully pressured by one power → g_AllyUnderAttack
-    best_ally = getattr(state, 'g_BestAllySlot0', -1)
+    # Best ally (after compaction) fully pressured by one power → g_ally_under_attack
+    best_ally = getattr(state, 'g_best_ally_slot0', -1)
     if 0 <= best_ally < num_powers:
         for c in range(num_powers):
             if (c != best_ally
                     and bcd0[best_ally, c] > 1
                     and bcd0[best_ally, c] == b5e8[best_ally, c]):
-                state.g_AllyUnderAttack = 1
+                state.g_ally_under_attack = 1
                 logger.debug(
                     "Best ally (%d) severely pressured by power (%d)", best_ally, c)
                 break
@@ -273,57 +273,57 @@ def _move_analysis(state: InnerGameState) -> None:
     hostile = [p for p in range(num_powers) if trust[own_power, p] == 1]
     if len(hostile) == 1:
         p = hostile[0]
-        state.g_OpeningStickyMode = 1
-        state.g_OpeningEnemy      = p
+        state.g_opening_sticky_mode = 1
+        state.g_opening_enemy      = p
         trust[own_power, p]       = 0
-        state.g_StabbedFlag       = 1   # DAT_00baed5f = g_EnemyDesired
+        state.g_stabbed_flag       = 1   # DAT_00baed5f = g_EnemyDesired
         logger.debug("Enemy set to single original enemy: power %d", p)
         return  # goto LAB_00436427 (skip triple-front check)
 
     # Triple-front mode: demote trust-3 entries to trust-1 for own_power
-    if getattr(state, 'g_TripleFrontFlag', 0) == 1:
+    if getattr(state, 'g_triple_front_flag', 0) == 1:
         for p in range(num_powers):
             if trust[own_power, p] == 3:
                 trust[own_power, p] = 1
 
 
 def _post_process_orders(state: InnerGameState) -> None:
-    """PostProcessOrders (FUN_00411120). Decays g_MoveHistoryMatrix and
+    """PostProcessOrders (FUN_00411120). Decays g_move_history_matrix and
     updates it from submitted-order outcomes. research.md §2039."""
     post_process_orders(state)
 
 
 def _compute_press(state: InnerGameState) -> None:
-    """ComputePress (FUN_004401f0). Builds g_PressMatrix / g_PressCount.
+    """ComputePress (FUN_004401f0). Builds g_press_matrix / g_press_count.
     research.md §1295."""
     compute_press(state)
 
 
 def _cleanup_turn(state: InnerGameState) -> None:
-    """NormalizeInfluenceMatrix. Trust-adjusts g_InfluenceMatrix_Raw by
-    (g_AllyTrustScore + 1), injects _safe_pow noise, and row-normalises to 100.
+    """NormalizeInfluenceMatrix. Trust-adjusts g_influence_matrix_raw by
+    (g_ally_trust_score + 1), injects _safe_pow noise, and row-normalises to 100.
 
     Was mislabelled 'Per-turn cleanup'; corrected per _index.md.
-    Writes g_InfluenceMatrix (consumed by compute_influence_matrix ranking).
+    Writes g_influence_matrix (consumed by compute_influence_matrix ranking).
 
     Decompile: decompiled.txt lines 460-593.
     Phases match GenerateOrders Phase 4-5 but operate on Raw/trust-adjusted copy.
     """
     n = 7  # numPowers
 
-    # Phase 1 — trust-adjust: g_InfluenceMatrix[row,col] = Raw[row,col] / (trust+1)
-    # C: DAT_00b82db8 = g_InfluenceMatrix_Raw / CONCAT44(trust_hi+carry, trust_lo+1)
+    # Phase 1 — trust-adjust: g_influence_matrix[row,col] = Raw[row,col] / (trust+1)
+    # C: DAT_00b82db8 = g_influence_matrix_raw / CONCAT44(trust_hi+carry, trust_lo+1)
     for row in range(n):
         for col in range(n):
-            raw   = float(state.g_InfluenceMatrix_Raw[row, col])
-            trust = float(state.g_AllyTrustScore[row, col])
-            state.g_InfluenceMatrix[row, col] = raw / (trust + 1.0)
+            raw   = float(state.g_influence_matrix_raw[row, col])
+            trust = float(state.g_ally_trust_score[row, col])
+            state.g_influence_matrix[row, col] = raw / (trust + 1.0)
 
     # Phase 2 — per-power row sum via PackScoreU64 (trunc toward zero, not banker's round;
     # FRNDINT+correction always restores truncation)
     # C: DAT_004f6b98[power*2] = PackScoreU64() after FPU row-sum accumulation
     power_sum = np.array(
-        [int(float(np.sum(state.g_InfluenceMatrix[p]))) for p in range(n)],
+        [int(float(np.sum(state.g_influence_matrix[p]))) for p in range(n)],
         dtype=np.int64,
     )
 
@@ -333,15 +333,15 @@ def _cleanup_turn(state: InnerGameState) -> None:
     for row in range(n):
         for col in range(n):
             col_total = float(power_sum[col])
-            base = float(state.g_InfluenceMatrix[row, col]) / (col_total + 1.0)
-            state.g_InfluenceMatrix[row, col] += _safe_pow(base, 0.3) * 500.0
+            base = float(state.g_influence_matrix[row, col]) / (col_total + 1.0)
+            state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
 
     # Phase 4 — row-normalise to 100
     # C: cell = (cell * 100.0) / row_sum  (skipped when row_sum == 0)
     for row in range(n):
-        row_sum = float(np.sum(state.g_InfluenceMatrix[row]))
+        row_sum = float(np.sum(state.g_influence_matrix[row]))
         if row_sum != 0.0:
-            state.g_InfluenceMatrix[row] = (state.g_InfluenceMatrix[row] * 100.0) / row_sum
+            state.g_influence_matrix[row] = (state.g_influence_matrix[row] * 100.0) / row_sum
 
 
 def _prepare_draw_vote_set(state: InnerGameState) -> None:
@@ -352,7 +352,7 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     state.g_draw_sent.
 
     C trust condition: Hi >= 0 AND (Hi > 0 OR Lo > 1)
-      where Hi = g_AllyTrustScore_Hi[own,p], Lo = g_AllyTrustScore[own,p].
+      where Hi = g_ally_trust_score_hi[own,p], Lo = g_ally_trust_score[own,p].
 
     The C function also manages a std::map allocator and C++ ref-counts on
     an intermediate proposal-context object (SerializeOrders + _free); those
@@ -368,8 +368,8 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
         if p == own:
             continue
         if int(state.sc_count[p]) > 0:
-            hi = int(state.g_AllyTrustScore_Hi[own, p])
-            lo = int(state.g_AllyTrustScore[own, p])
+            hi = int(state.g_ally_trust_score_hi[own, p])
+            lo = int(state.g_ally_trust_score[own, p])
             # C: trust > 1  ⟺  Hi >= 0 AND (Hi > 0 OR Lo > 1)
             if hi >= 0 and (hi > 0 or lo > 1):
                 friendly_powers.add(p)
@@ -381,11 +381,11 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     # Mapping:
     #   DAT_00baed29 — unknown (possibly external draw-request signal); left in
     #                  g_draw_flags pass-through bucket.
-    #   DAT_00baed2a — g_RequestDrawFlag   (set by CAL_BOARD phase 4a: big lead).
+    #   DAT_00baed2a — g_request_draw_flag   (set by CAL_BOARD phase 4a: big lead).
     #   DAT_00baed2b — g_DrawVoteFlag      (result of ComputeDrawVote → draw_vote).
-    #   DAT_00baed30 — g_StaticMapFlag     (set when the map hasn't moved in many turns).
-    request_draw  = int(getattr(state, 'g_RequestDrawFlag', 0)) == 1
-    static_map    = int(getattr(state, 'g_StaticMapFlag',  0)) == 1
+    #   DAT_00baed30 — g_static_map_flag     (set when the map hasn't moved in many turns).
+    request_draw  = int(getattr(state, 'g_request_draw_flag', 0)) == 1
+    static_map    = int(getattr(state, 'g_static_map_flag',  0)) == 1
     extra_draw_flags = getattr(state, 'g_draw_flags', [])
     if draw_vote or request_draw or static_map or any(extra_draw_flags):
         logger.info(
@@ -404,7 +404,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
 
     Called from BuildAndSendSUB (inner loop) as FUN_00424850(power_idx, '\\0').
     Selects the best order candidates for *power_idx* from
-    g_CandidateRecordList via a 7-phase pipeline:
+    g_candidate_record_list via a 7-phase pipeline:
 
       Phase 1  Find max score among this power's candidates.
       Phase 2  Build sorted list (ascending adjusted score; offset = 2500 - max).
@@ -420,7 +420,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
       Phase 6  Rank/select: promote candidates whose running_avg ≥ threshold
                (call_count + 1) subject to rank/near-end-game guards.
                Promoted → processed=1, score = −1 000 000 − rank,
-               output_score same, g_ScoreBaseline += 1.
+               output_score same, g_score_baseline += 1.
       Phase 7  Normalize output_score: redistribute remaining probability
                budget (capped at 90) among non-promoted candidates.
 
@@ -430,7 +430,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
       FUN_00410330  — allocate list/tree node (absorbed into local list)
       FUN_00465870  — init empty token list (absorbed)
       FUN_0040fb70  — free list internals (absorbed)
-      FUN_0040f260  — advance g_CandidateRecordList iterator (absorbed)
+      FUN_0040f260  — advance g_candidate_record_list iterator (absorbed)
       FUN_00419fa0  — sorted-list insert (absorbed into sort())
       FUN_00412540  — advance accepted-frontier pointer (absorbed)
       FUN_0040e680  — basic iterator advance (absorbed)
@@ -440,11 +440,11 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
     # DAT_0062cc64 — number of completed MC trials at call time
     n_trials: int = getattr(state, 'g_n_trials_completed', 0)
     # DAT_0062e460[power] — unit count (non-zero = active)
-    unit_count_arr = state.g_UnitCount
+    unit_count_arr = state.g_unit_count
     # DAT_00b9fe88[power] — ProcessTurn call count
     call_count_arr = getattr(state, 'g_PowerCallCount',
                              np.zeros(7, dtype=np.int32))
-    near_end: float = state.g_NearEndGameFactor
+    near_end: float = state.g_near_end_game_factor
 
     sc_count_local: int = int(unit_count_arr[power_idx]) + 1   # local_90 init
     alpha: float = (n_trials / (n_trials + 2)) if n_trials >= 0 else 0.0  # local_7c
@@ -453,7 +453,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
     # ── Phase 1: find max score ──────────────────────────────────────────
     SENTINEL = -(1 << 20)
     max_score: int = SENTINEL
-    for rec in state.g_CandidateRecordList:
+    for rec in state.g_candidate_record_list:
         if rec.get('power_idx', rec.get('power', -1)) == power_idx:
             s = int(rec.get('score', 0))
             if max_score == SENTINEL or s > max_score:
@@ -465,7 +465,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
 
     # ── Phase 2: sorted list by adjusted score ───────────────────────────
     power_recs = [
-        rec for rec in state.g_CandidateRecordList
+        rec for rec in state.g_candidate_record_list
         if rec.get('power_idx', rec.get('power', -1)) == power_idx
     ]
     power_recs.sort(key=lambda r: int(r.get('score', 0)) + score_offset)
@@ -610,7 +610,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
             cand['weight'] = 0.0
             cand['score'] = final_s
             cand['output_score'] = float(final_s)
-            state.g_ScoreBaseline += 1
+            state.g_score_baseline += 1
         else:
             # Demoted: clear pareto-selected weight, blend output_score
             if pareto_f == 1:

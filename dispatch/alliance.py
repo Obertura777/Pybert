@@ -56,14 +56,14 @@ def check_order_alliance(
       Lines 68–128  — Three alliance-designation trust checks (slots C, B, A).
         For each slot [C=DAT_004d3610/14, B=DAT_004d2610/14, A=DAT_004d2e10/14]:
           If slot is active (hi >= 0) AND ordering_power == own_power:
-            If dest_power != designated_ally → read g_AllyTrustScore[own*21+ally]
+            If dest_power != designated_ally → read g_ally_trust_score[own*21+ally]
           Else if designated_ally == own_power AND dest_power != own_power:
             Force trust = 10  (province is "ours", ordered by another power)
         Trust stored in local_40 (slot C), local_48 (slot B), local_44 (slot A).
 
       Lines 129–293 — Main validation (only when all three trust vars == 0):
         If ordering_power == own_power (always for Albert):
-          For each active power p (filter: g_EnemyFlag[p] == 0):
+          For each active power p (filter: g_enemy_flag[p] == 0):
             Scan g_ally_promise_list[p] for records targeting dest_prov.
             If found:
               dest_power == own_power → return _ERR_DUP_OWN
@@ -90,41 +90,41 @@ def check_order_alliance(
       GameBoard_GetPowerRec — STL map find; validates that a node belongs to the
                     local temporary map; replaced by direct array lookup in Python.
     """
-    # ── Slot C  (DAT_004d3610/14 = g_AllyDesignation_C) ─────────────────────
+    # ── Slot C  (DAT_004d3610/14 = g_ally_designation_c) ─────────────────────
     # C lines 72–90: read puVar13/iVar14, check trust for slot C.
     local_40 = 0
-    desig_c = int(state.g_AllyDesignation_C[dest_prov])
+    desig_c = int(state.g_ally_designation_c[dest_prov])
     if desig_c >= 0:                                    # slot C active (hi >= 0)
         ally_c = desig_c
         if ordering_power == own_power_idx:
             if dest_power != ally_c:                    # destination context ≠ designation
-                local_40 = int(state.g_AllyTrustScore[own_power_idx, ally_c])
+                local_40 = int(state.g_ally_trust_score[own_power_idx, ally_c])
         elif ally_c == own_power_idx and dest_power != own_power_idx:
             # Province designated for own power, but someone else is ordering
             local_40 = 10
 
-    # ── Slot B  (DAT_004d2610/14 = g_AllyDesignation_B) ─────────────────────
+    # ── Slot B  (DAT_004d2610/14 = g_ally_designation_b) ─────────────────────
     # C lines 91–110: reassign puVar13=dest_power, iVar14=sign_ext(dest_power),
     # then read puVar1/local_28 for slot B and check trust.
     local_48 = 0
-    desig_b = int(state.g_AllyDesignation_B[dest_prov])
+    desig_b = int(state.g_ally_designation_b[dest_prov])
     if desig_b >= 0:                                    # slot B active
         ally_b = desig_b
         if ordering_power == own_power_idx:
             if dest_power != ally_b:
-                local_48 = int(state.g_AllyTrustScore[own_power_idx, ally_b])
+                local_48 = int(state.g_ally_trust_score[own_power_idx, ally_b])
         elif ally_b == own_power_idx and dest_power != own_power_idx:
             local_48 = 10
 
-    # ── Slot A  (DAT_004d2e10/14 = g_AllyDesignation_A) ─────────────────────
+    # ── Slot A  (DAT_004d2e10/14 = g_ally_designation_a) ─────────────────────
     # C lines 111–128: read local_34/local_30 for slot A and check trust.
     local_44 = 0
-    desig_a = int(state.g_AllyDesignation_A[dest_prov])
+    desig_a = int(state.g_ally_designation_a[dest_prov])
     if desig_a >= 0:                                    # slot A active
         ally_a = desig_a
         if ordering_power == own_power_idx:
             if dest_power != ally_a:
-                local_44 = int(state.g_AllyTrustScore[own_power_idx, ally_a])
+                local_44 = int(state.g_ally_trust_score[own_power_idx, ally_a])
         elif ally_a == own_power_idx and dest_power != own_power_idx:
             local_44 = 10
 
@@ -152,12 +152,12 @@ def check_order_alliance(
     # ── Promise-list / counter-list conflict scan (C lines 131–253) ──────────
     if ordering_power == own_power_idx:
         # C lines 134–200: scan g_ally_promise_list per active power for
-        # records targeting dest_prov.  g_EnemyFlag[p] == 0 = power is active
+        # records targeting dest_prov.  g_enemy_flag[p] == 0 = power is active
         # (C: DAT_004cf568[p*2]==0 && DAT_004cf56c[p*2]==0, i.e. int64==0).
-        num_powers = state.g_EnemyFlag.shape[0]
+        num_powers = state.g_enemy_flag.shape[0]
         promise_list = state.g_ally_promise_list  # dict[int, list[dict]]
         for p in range(num_powers):
-            if state.g_EnemyFlag[p] != 0:
+            if state.g_enemy_flag[p] != 0:
                 continue
             for record in promise_list.get(p, []):
                 if record.get('dest_prov') != dest_prov:

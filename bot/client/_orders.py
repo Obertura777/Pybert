@@ -20,11 +20,14 @@ time (type hints, decorators, module-level references inside method
 bodies) still live here.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 import random
 import time
+from typing import Any, Callable
 
 import numpy as np
 
@@ -71,12 +74,25 @@ from ..analysis import (
 )
 from ..strategy import (
     _stabbed, _deviate_move, _friendly, _hostility, _post_friendly_update,
+    _destroy_candidate_tree,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class _OrdersMixin:
+    # Declared for type checkers — assigned in _LifecycleMixin.__init__
+    state: InnerGameState
+    power_name: str
+    game: Any
+    current_phase: str | None
+
+    # Cross-mixin methods (provided by _PressMixin)
+    _send_dm: Callable[..., None]
+    _build_and_send_sub: Callable[..., None]
+    _submit_draw_vote: Callable[..., None]
+    _validate_orders: Callable[..., None]
+
     def generate_and_submit_orders(self) -> None:
         """
         Port of FUN_004592a0 = GenerateAndSubmitOrders.
@@ -94,7 +110,7 @@ class _OrdersMixin:
             5a  Reset press candidate tables.
             5b  PhaseHandler(0).
             5c  Per-power reset loop (trust counters, score matrices).
-            5d  Phase checks: increment g_DeceitLevel (SPR), AnalyzePosition,
+            5d  Phase checks: increment g_deceit_level (SPR), AnalyzePosition,
                 MOVE_ANALYSIS (year-1 FAL, press-off, allied).
             5e  Clear g_baed6d sentinel.
             5f  GenerateOrders + MC selection (process_turn).
@@ -118,7 +134,7 @@ class _OrdersMixin:
         #   * communications/inbound/gate.py fallback chain.
         # Previously read but never written → the branch silently defaulted
         # to albert_power_idx via getattr, which was correct by accident.
-        self.state.g_AlbertPower = own_power_idx
+        self.state.g_albert_power = own_power_idx
 
         # Step 1 — record turn start timestamp (DAT_00ba2880 = __time64(0))
         self.state.g_turn_start_time = time.time()
@@ -145,11 +161,11 @@ class _OrdersMixin:
         # Step 4 — press flag refresh
         # Clear press flag, then re-arm from one-shot config flag (DAT_004c6bdc).
         # DAT_00baed68: 0 = press off, 1 = run ComputePress this turn.
-        if self.state.g_PressFlag == 1:
-            self.state.g_PressFlag = 0
+        if self.state.g_press_flag == 1:
+            self.state.g_press_flag = 0
         one_shot_press = getattr(self.state, 'g_one_shot_press', 0)
         if one_shot_press == 1:
-            self.state.g_PressFlag = 1
+            self.state.g_press_flag = 1
             self.state.g_one_shot_press = 0
 
         if game_over:
@@ -165,8 +181,8 @@ class _OrdersMixin:
 
         # 5a — reset press candidate tables
         # DAT_00bbf690[power][30] and DAT_00bc0a40[power][30] — cleared to sentinel
-        self.state.g_PressCandidateA = [[None] * 30 for _ in range(num_powers)]
-        self.state.g_PressCandidateB = [[None] * 30 for _ in range(num_powers)]
+        self.state.g_press_candidate_a = [[None] * 30 for _ in range(num_powers)]
+        self.state.g_press_candidate_b = [[None] * 30 for _ in range(num_powers)]
 
         # 5b — PhaseHandler step 0
         _phase_handler(self.state, 0)
@@ -179,7 +195,7 @@ class _OrdersMixin:
             self.state.g_trust_counter = np.zeros(num_powers, dtype=np.int32)
 
         for p in range(num_powers):
-            ally_p = int(self.state.g_AllyMatrix[own_power_idx, p]) != 0
+            ally_p = int(self.state.g_ally_matrix[own_power_idx, p]) != 0
             is_self = (p == own_power_idx)
             for j in range(num_powers):
                 if is_self or ally_p:
@@ -190,23 +206,23 @@ class _OrdersMixin:
 
         # 5d — phase-specific pre-processing
 
-        # g_DeceitLevel (DAT_00baed64) = Spring-year counter; 0=pre-game, 1=year 1, …
+        # g_deceit_level (DAT_00baed64) = Spring-year counter; 0=pre-game, 1=year 1, …
         # Incremented each SPR. Also labelled "Deceit Level" in Albert's internal log.
         if phase == 'SPR':
-            self.state.g_DeceitLevel += 1
+            self.state.g_deceit_level += 1
             logger.debug(
-                f"DeceitLevel = {self.state.g_DeceitLevel} "
-                f"(Spring of year {self.state.g_DeceitLevel})"
+                f"DeceitLevel = {self.state.g_deceit_level} "
+                f"(Spring of year {self.state.g_deceit_level})"
             )
 
         if movement_phase:
             _analyze_position(self.state)
 
         # MOVE_ANALYSIS gate: year-1, press-off, Fall, allied own power
-        ally_own: bool = int(self.state.g_AllyMatrix[own_power_idx, own_power_idx]) != 0
+        ally_own: bool = int(self.state.g_ally_matrix[own_power_idx, own_power_idx]) != 0
         if (
-            self.state.g_DeceitLevel == 1
-            and self.state.g_PressFlag == 0
+            self.state.g_deceit_level == 1
+            and self.state.g_press_flag == 0
             and phase == 'FAL'
             and ally_own
         ):
@@ -218,25 +234,25 @@ class _OrdersMixin:
         # 5f — GenerateOrders + ScoreOrderCandidates (FUN_004559c0)
         # ScoreOrderCandidates:
         #   Step 1: clear g_CandidateList2 (per-power secondary lists) → reset
-        #            g_CandidateRecordList so each scoring pass starts fresh.
-        #   Step 2: reset proposal records in g_CandidateRecordList for new round.
+        #            g_candidate_record_list so each scoring pass starts fresh.
+        #   Step 2: reset proposal records in g_candidate_record_list for new round.
         #   Step 3: call ProcessTurn for each power where
         #             unit_count[p] > 0 AND general_orders_present[p] != 0.
         #            trial_count = (unit_count[p] * g_TrialScale + 10) // 10;
-        #            if g_PressProposalsCap == 0 AND p != own_power: trial_count = 1.
+        #            if g_press_proposals_cap == 0 AND p != own_power: trial_count = 1.
         #   Steps 4–5: proposal matching / scoring (DAIDE token comparison) — absorbed
         #              into the MC candidate scoring: each ProcessTurn call populates
-        #              g_CandidateRecordList entries with scored order sets.
-        from ..monte_carlo import generate_orders
+        #              g_candidate_record_list entries with scored order sets.
+        from ...monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
 
         # ── ScoreProvinces + ScoreOrderCandidates_AllPowers ──────────────────
         # C binary (send_GOF.c lines 56–62): for SPR/FAL movement phases,
         # ScoreProvinces computes per-province strategic scores, then
-        # ScoreOrderCandidates_AllPowers uses g_CandidateScores (populated by
-        # generate_orders Phase 1f) to compute FinalScoreSet — the per-power
+        # ScoreOrderCandidates_AllPowers uses g_candidate_scores (populated by
+        # generate_orders Phase 1f) to compute final_score_set — the per-power
         # per-province value that the MC trial loop's _build_order_mto reads
-        # when scoring MTO orders.  Without this call FinalScoreSet stays all
+        # when scoring MTO orders.  Without this call final_score_set stays all
         # zeros and every MTO gets a zero convoy-chain score, making the MC
         # unable to distinguish good moves from bad ones.
         if movement_phase:
@@ -252,56 +268,56 @@ class _OrdersMixin:
             except Exception:
                 logger.exception(
                     "score_order_candidates_all_powers raised; continuing"
-                    " with empty FinalScoreSet"
+                    " with empty final_score_set"
                 )
 
         # Step 1 — clear per-power g_CandidateList2 trees (FUN_00410cf0 per power)
         # C: for each power, FUN_00410cf0(root) post-order frees the RB-tree,
-        # then resets the sentinel.  Python: clear each power's g_GeneralOrders
+        # then resets the sentinel.  Python: clear each power's g_general_orders
         # list via _destroy_candidate_tree, then reset the flat record list.
-        if hasattr(self.state, 'g_GeneralOrders'):
+        if hasattr(self.state, 'g_general_orders'):
             for _p in range(num_powers):
-                _destroy_candidate_tree(self.state.g_GeneralOrders.get(_p))
-            self.state.g_GeneralOrders = {}
-        # Mirror the wipe for g_AllianceOrders — ScoreOrderCandidates' C
+                _destroy_candidate_tree(self.state.g_general_orders.get(_p))
+            self.state.g_general_orders = {}
+        # Mirror the wipe for g_alliance_orders — ScoreOrderCandidates' C
         # writer (Source/ScoreOrderCandidates.c lines 79–85) reconstructs all
         # four sibling 21×12B arrays per call, so a fresh translator pass needs
         # an empty alliance set too.
-        if hasattr(self.state, 'g_AllianceOrders'):
-            self.state.g_AllianceOrders = {}
-        self.state.g_CandidateRecordList = []
+        if hasattr(self.state, 'g_alliance_orders'):
+            self.state.g_alliance_orders = {}
+        self.state.g_candidate_record_list = []
 
         # Translate inbound press registry → per-power general / alliance order
         # sets so MC sub-pass 1c can dispatch received-XDO orders.  Without
         # this call the binary's press-driven MTO/SUP path is unreachable in
-        # Python (g_GeneralOrders stays empty → 1c second pass is a no-op →
+        # Python (g_general_orders stays empty → 1c second pass is a no-op →
         # MC produces only default-HLD output).  See communications.py for the
         # ScoreOrderCandidates writer-loop port.
-        # The C binary never clears DAT_00bb65ec (g_BroadcastList), so received
+        # The C binary never clears DAT_00bb65ec (g_broadcast_list), so received
         # press accumulates for the lifetime of the game and the translator
-        # rebuilds g_GeneralOrders / g_AllianceOrders from the accumulated set
+        # rebuilds g_general_orders / g_alliance_orders from the accumulated set
         # on every call.  That, plus the per-phase wipe above, is what gives
         # press its multi-phase commitment semantics — no separate archive
         # needed.  See state.synchronize_from_game for the matching no-clear
         # rationale.
-        from ..communications import score_order_candidates_from_broadcast
+        from ...communications import score_order_candidates_from_broadcast
         try:
             score_order_candidates_from_broadcast(self.state)
         except Exception:
             logger.exception(
                 "score_order_candidates_from_broadcast raised; continuing"
-                " with empty g_GeneralOrders/g_AllianceOrders"
+                " with empty g_general_orders/g_alliance_orders"
             )
 
-        # Self-proposal fallback: when g_BroadcastList is empty (NO_PRESS
-        # or standalone mode), generate MTO proposals from FinalScoreSet
-        # and inject them into g_GeneralOrders so MC Phase 1c can dispatch
+        # Self-proposal fallback: when g_broadcast_list is empty (NO_PRESS
+        # or standalone mode), generate MTO proposals from final_score_set
+        # and inject them into g_general_orders so MC Phase 1c can dispatch
         # non-hold orders.  This replaces the press round-trip that normally
         # populates these tables via score_order_candidates_from_broadcast.
-        # Only fires when g_GeneralOrders is still empty after the broadcast
+        # Only fires when g_general_orders is still empty after the broadcast
         # pass — in a press game with active proposals, this is a no-op.
-        if movement_phase and not self.state.g_GeneralOrders:
-            from ..heuristics import generate_self_proposals
+        if movement_phase and not self.state.g_general_orders:
+            from ...heuristics import generate_self_proposals
             try:
                 n_self = generate_self_proposals(self.state, own_power_idx)
                 if n_self:
@@ -313,19 +329,19 @@ class _OrdersMixin:
                     "self-proposals"
                 )
 
-        # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_UnitCount)
+        # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_unit_count)
         # g_TrialScale = DAT_004c6bb8 = difficulty*2+60 (default difficulty=100 → 260)
-        # g_PressProposalsCap = DAT_004c6bbc = (difficulty*3)//10 capped at 30
-        trial_scale: int = getattr(self.state, 'g_TrialScale', 260)
-        press_cap: int = getattr(self.state, 'g_PressProposalsCap', 30)
-        unit_count = getattr(self.state, 'g_UnitCount', np.zeros(num_powers, dtype=np.int32))
+        # g_press_proposals_cap = DAT_004c6bbc = (difficulty*3)//10 capped at 30
+        trial_scale: int = getattr(self.state, 'g_trial_scale', 260)
+        press_cap: int = getattr(self.state, 'g_press_proposals_cap', 30)
+        unit_count = getattr(self.state, 'g_unit_count', np.zeros(num_powers, dtype=np.int32))
 
         # ── 10-round ProcessTurn loop with support-opportunity re-pass ───────
         # C binary (send_GOF.c lines 114–169): runs ProcessTurn 10 rounds.
         # Each round: for every power with sc_count > 0, run ProcessTurn with
-        # g_RingConvoyEnabled=0.  Then scan g_SupportOpportunitiesSet for
+        # g_ring_convoy_enabled=0.  Then scan g_support_opportunities_set for
         # matching-power entries; for each hit, copy the ring provinces from
-        # the opportunity into the state, set g_RingConvoyEnabled=1, and run
+        # the opportunity into the state, set g_ring_convoy_enabled=1, and run
         # ProcessTurn AGAIN.  This second pass generates ring-convoy MTO
         # patterns (A→B→C→A) that are the primary mechanism for non-hold
         # orders even in NO_PRESS mode.
@@ -333,8 +349,15 @@ class _OrdersMixin:
         # In a full-press game the 10-round loop also accumulates proposal-
         # driven candidates that get refined by later BuildAndSendSUB passes.
         MC_ROUNDS = 10 if movement_phase else 1
+        _mtl_fired = False
         for _mc_round in range(MC_ROUNDS):
+            if _mtl_fired:
+                break
             for p in range(num_powers):
+                # CheckTimeLimit gate (C: BuildAndSendSUB.c line 207,221)
+                if check_time_limit(self.state):
+                    _mtl_fired = True
+                    break
                 if int(unit_count[p]) <= 0:
                     continue
                 if press_cap == 0 and p != own_power_idx:
@@ -342,23 +365,26 @@ class _OrdersMixin:
                 else:
                     n_trials = (int(unit_count[p]) * trial_scale + 10) // 10
 
-                # Primary pass: g_RingConvoyEnabled = 0
-                self.state.g_RingConvoyEnabled = 0
+                # Primary pass: g_ring_convoy_enabled = 0
+                self.state.g_ring_convoy_enabled = 0
                 process_turn(self.state, p, num_trials=n_trials)
 
                 # Support-opportunity re-pass: scan for matching entries and
                 # run ProcessTurn again with ring convoy enabled.
-                sup_opps = getattr(self.state, 'g_SupportOpportunitiesSet', None)
+                sup_opps = getattr(self.state, 'g_support_opportunities_set', None)
                 if sup_opps:
                     for opp in sup_opps:
+                        if check_time_limit(self.state):
+                            _mtl_fired = True
+                            break
                         if int(opp.get('power', -1)) != p:
                             continue
                         # Copy ring provinces from the opportunity entry.
                         # C: memcpy(DAT_00bbf668, entry+0x10, 28); DAT_00baed5c=1
-                        self.state.g_RingProv_A = int(opp.get('mover_prov', -1))
-                        self.state.g_RingProv_B = int(opp.get('target_prov', -1))
-                        self.state.g_RingProv_C = int(opp.get('supporter_prov', -1))
-                        self.state.g_RingConvoyEnabled = 1
+                        self.state.g_ring_prov_a = int(opp.get('mover_prov', -1))
+                        self.state.g_ring_prov_b = int(opp.get('target_prov', -1))
+                        self.state.g_ring_prov_c = int(opp.get('supporter_prov', -1))
+                        self.state.g_ring_convoy_enabled = 1
                         # Trial count for re-pass: sc_count[p] * 10 / 10 = sc_count[p]
                         re_trials = max(int(self.state.sc_count[p]), 1)
                         if press_cap == 0 and p != own_power_idx:
@@ -369,15 +395,15 @@ class _OrdersMixin:
         # whose orders disagree with received-press XDOs with a -2.5e36
         # score so MC's selector skips them.
         #
-        # IMPORTANT: only fire when g_BroadcastList has actual received
-        # press — NOT when g_GeneralOrders was populated by
+        # IMPORTANT: only fire when g_broadcast_list has actual received
+        # press — NOT when g_general_orders was populated by
         # generate_self_proposals.  Self-proposals are synthetic guidance
         # to give MC some MTO candidates; penalising everything else would
         # collapse the candidate set and re-produce all-holds.
-        has_real_press = bool(getattr(self.state, 'g_BroadcastList', None))
+        has_real_press = bool(getattr(self.state, 'g_broadcast_list', None))
         if has_real_press:
             try:
-                from ..heuristics import apply_press_corroboration_penalty
+                from ...heuristics import apply_press_corroboration_penalty
                 n_penalised = apply_press_corroboration_penalty(self.state)
                 if n_penalised:
                     logger.debug(
@@ -391,30 +417,30 @@ class _OrdersMixin:
                     " without press-corroboration penalty"
                 )
 
-        best_orders = self.state.g_CandidateRecordList  # populated by process_turn
+        best_orders = self.state.g_candidate_record_list  # populated by process_turn
 
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
         if movement_phase:
             _post_process_orders(self.state)
 
         # 5h — ComputePress if press mode is active this turn
-        if self.state.g_PressFlag == 1:
+        if self.state.g_press_flag == 1:
             _compute_press(self.state)
 
-        # 5h.1 — Emit accumulated XDO support proposals into g_BroadcastList.
+        # 5h.1 — Emit accumulated XDO support proposals into g_broadcast_list.
         # build_support_proposals (called per MC trial in process_turn Step 5)
-        # accumulates proposals in g_XdoPressProposals.  Emit them now so
+        # accumulates proposals in g_xdo_press_proposals.  Emit them now so
         # that BuildAndSendSUB's broadcast-list pass can see them, and so
         # that future calls to score_order_candidates_from_broadcast pick
         # them up.  This mirrors the C emission at BuildSupportProposals.c
         # lines 396–427 (FUN_00466f80 + AppendList inside the proposal loop).
-        if movement_phase and getattr(self.state, 'g_XdoPressProposals', None):
-            from ..communications import emit_xdo_proposals_to_broadcast
+        if movement_phase and getattr(self.state, 'g_xdo_press_proposals', None):
+            from ...communications import emit_xdo_proposals_to_broadcast
             try:
                 n_emitted = emit_xdo_proposals_to_broadcast(self.state)
                 if n_emitted:
                     logger.debug(
-                        "Emitted %d XDO support proposals to g_BroadcastList",
+                        "Emitted %d XDO support proposals to g_broadcast_list",
                         n_emitted,
                     )
             except Exception:
@@ -430,8 +456,8 @@ class _OrdersMixin:
 
             # Year-1 non-SPR non-retreat: STABBED check.
             # Year >= 2 or retreat phase: DEVIATE_MOVE.
-            if self.state.g_DeceitLevel < 2 and phase not in ('AUT', 'WIN'):
-                if self.state.g_DeceitLevel == 1 and phase != 'SPR':
+            if self.state.g_deceit_level < 2 and phase not in ('AUT', 'WIN'):
+                if self.state.g_deceit_level == 1 and phase != 'SPR':
                     _stabbed(self.state)
             else:
                 _deviate_move(self.state)
@@ -467,19 +493,19 @@ class _OrdersMixin:
                 self.state.g_waive_count = 0
 
                 # Save real SC ownership before score_provinces clobbers it.
-                # score_provinces resets g_SCOwnership and repopulates it from
+                # score_provinces resets g_sc_ownership and repopulates it from
                 # unit positions (not center ownership), which breaks
                 # populate_build_candidates' eligibility check.
-                saved_sc_ownership = self.state.g_SCOwnership.copy()
+                saved_sc_ownership = self.state.g_sc_ownership.copy()
 
                 score_provinces(self.state, 0, 0, own_power_idx)
 
                 # Restore real SC ownership for build/remove candidate selection.
-                self.state.g_SCOwnership[:] = saved_sc_ownership
+                self.state.g_sc_ownership[:] = saved_sc_ownership
 
                 # Count units directly from unit_info (mirrors FUN_0040ab10 which
                 # counts from the unit list rather than any cached counter).
-                # g_UnitCount is only refreshed by _analyze_position in movement
+                # g_unit_count is only refreshed by _analyze_position in movement
                 # phases, so it may be stale here.
                 sc    = int(self.state.sc_count[own_power_idx])
                 units = sum(
@@ -510,7 +536,7 @@ class _OrdersMixin:
         # and order map at +0x24c0 directly from the NOW message.  The Python
         # port bypasses DAIDE parsing; instead, we read dislodged units from
         # game.powers[power].retreats and choose the best destination using
-        # g_GlobalProvinceScore (populated by generate_orders).
+        # g_global_province_score (populated by generate_orders).
         if phase in ('SUM', 'AUT') and self.game is not None:
             self.state.g_retreat_order_list = _populate_retreat_orders(
                 self.state, self.game, self.power_name, own_power_idx)

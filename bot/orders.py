@@ -6,9 +6,15 @@ Pure transformations from order-table / retreat-list state into DAIDE-format
 token strings and retreat command lists.  Zero calls to other bot submodules.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from diplomacy.engine.game import Game
 
 from ..state import InnerGameState
 from ..monte_carlo import (
@@ -26,36 +32,36 @@ logger = logging.getLogger(__name__)
 
 def _init_position_for_orders(state: InnerGameState) -> None:
     """InitPositionForOrders. Sets up per-turn position state required 
-    before Monte Carlo order evaluation. Writes g_ScOwner, resets 
-    g_AllyMatrix, and zeros g_MoveHistoryMatrix."""
+    before Monte Carlo order evaluation. Writes g_sc_owner, resets 
+    g_ally_matrix, and zeros g_move_history_matrix."""
     num_powers = 7
     num_provinces = 256
     
     # Step 1 — Clear per-power order candidate lists
-    state.g_CandidateRecordList.clear()
+    state.g_candidate_record_list.clear()
     
-    # Step 2 — Initialize g_ScOwner to "unknown" (-1 = unoccupied, -2 = contested)
-    state.g_ScOwner = getattr(state, 'g_ScOwner', np.full(num_provinces, -1, dtype=np.int32))
-    state.g_ScOwner.fill(-1)
+    # Step 2 — Initialize g_sc_owner to "unknown" (-1 = unoccupied, -2 = contested)
+    state.g_sc_owner = getattr(state, 'g_sc_owner', np.full(num_provinces, -1, dtype=np.int32))
+    state.g_sc_owner.fill(-1)
     
-    # Step 4 — Populate g_ScOwner from unit list
+    # Step 4 — Populate g_sc_owner from unit list
     for prov, unit in state.unit_info.items():
         power = unit.get('power', -1)
         if power < 0:
             continue
-        if state.g_ScOwner[prov] == -1:
-            state.g_ScOwner[prov] = power
-        elif state.g_ScOwner[prov] != power:
-            state.g_ScOwner[prov] = -2  # contested (-2)
+        if state.g_sc_owner[prov] == -1:
+            state.g_sc_owner[prov] = power
+        elif state.g_sc_owner[prov] != power:
+            state.g_sc_owner[prov] = -2  # contested (-2)
             
-    # Step 5 — Zero g_AllyMatrix per power (to be rebuilt by FRIENDLY)
-    state.g_AllyMatrix.fill(0)
+    # Step 5 — Zero g_ally_matrix per power (to be rebuilt by FRIENDLY)
+    state.g_ally_matrix.fill(0)
     
     # Step 6 — Convoy reach and history
-    if not hasattr(state, 'g_MoveHistoryMatrix'):
-        state.g_MoveHistoryMatrix = np.zeros((num_powers, num_provinces, num_provinces), dtype=np.int32)
+    if not hasattr(state, 'g_move_history_matrix'):
+        state.g_move_history_matrix = np.zeros((num_powers, num_provinces, num_provinces), dtype=np.int32)
     else:
-        state.g_MoveHistoryMatrix.fill(0)
+        state.g_move_history_matrix.fill(0)
         
     # C: Albert+0x3ffc = victory_threshold = sc_count/2 + 1
     # (InitPositionForOrders.c:236 — `local_de8 / 2 + 1`, where local_de8 is
@@ -68,7 +74,7 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     #
     # Python canonical: state.win_threshold (read throughout heuristics/board.py,
     # heuristics/scoring.py, heuristics/_primitives.py).  Keep both in sync so
-    # the C-faithful name (g_VictoryThreshold) also has a live writer matching
+    # the C-faithful name (g_victory_threshold) also has a live writer matching
     # whatever state.win_threshold reflects.
     sc_count = len(getattr(state, 'sc_provinces', ()))
     if sc_count > 0:
@@ -77,7 +83,7 @@ def _init_position_for_orders(state: InnerGameState) -> None:
         # Pre-init / mock states without sc_provinces populated — preserve the
         # state.py:249 default rather than computing a degenerate value.
         victory_threshold = int(getattr(state, 'win_threshold', 18))
-    state.g_VictoryThreshold = victory_threshold
+    state.g_victory_threshold = victory_threshold
     state.win_threshold      = victory_threshold
 
 
@@ -109,7 +115,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         DAT_004c7688 = SUP (0x4324)
         DAT_004c768c = VIA (0x4325)
 
-    Python mapping of param_2 fields → g_OrderTable columns:
+    Python mapping of param_2 fields → g_order_table columns:
         param_2[4]   order type  → _F_ORDER_TYPE  (1-indexed; 0/1→HLD=1, 2→MTO=2, …)
         param_2[7]   target prov → _F_SECONDARY   (SUP target or CVY army)
         param_2[5,8] dest prov   → _F_DEST_PROV   (MTO/CTO dest; SUP_MTO/CVY dest)
@@ -124,7 +130,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         FUN_00466c40 → wrap sub-list in parens (absorbed as f"( {via_str} )")
         UnitList_FindOrInsert → state.unit_info.get(target_prov)
     """
-    order_type = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
+    order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
     if order_type == 0:
         return None
 
@@ -151,9 +157,9 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
 
     # FUN_0045fca0: build dest token — PROVINCE or ( PROVINCE COAST )
     # param_2[5] = dest province, param_2[6] = dest coast (high byte 0x46 = coast category)
-    dest_id       = int(state.g_OrderTable[prov, _F_DEST_PROV])
+    dest_id       = int(state.g_order_table[prov, _F_DEST_PROV])
     dest_name     = id_to_prov.get(dest_id, str(dest_id))
-    dest_coast_tok = int(state.g_OrderTable[prov, _F_DEST_COAST])
+    dest_coast_tok = int(state.g_order_table[prov, _F_DEST_COAST])
     dest_coast_str = _DAIDE_COAST_TO_STR.get(dest_coast_tok, '')
     if dest_coast_str:
         dest_tok = f"( {dest_name} {dest_coast_str} )"
@@ -190,7 +196,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         #         FUN_0045ffa0(target) → target_tok
         #         FUN_0045ffa0(self)   → unit_tok
         #         FUN_00466480(unit_tok, SUP=DAT_004c7688); FUN_00466330(+target_tok); AppendList
-        target_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        target_prov = int(state.g_order_table[prov, _F_SECONDARY])
         target_tok  = _target_unit_tok(target_prov)
         if target_tok is None:
             return None
@@ -203,7 +209,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         #         FUN_00466480(unit_tok, SUP); concat(+target_tok)
         #         FUN_00466480(+MTO=DAT_004c7684); FUN_00466480(+dest_province); AppendList
         # param_2[7] = _F_SECONDARY (supported unit); param_2[8] = _F_DEST_PROV (its destination)
-        target_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        target_prov = int(state.g_order_table[prov, _F_SECONDARY])
         target_tok  = _target_unit_tok(target_prov)
         if target_tok is None:
             return None
@@ -216,7 +222,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         #         FUN_00466480(unit_tok, CVY=DAT_004c767c); concat(+army_tok)
         #         FUN_00466480(+CTO=DAT_004c7678); FUN_00466480(+dest_province); AppendList
         # param_2[7] = army prov (_F_SECONDARY); param_2[8] = army dest (_F_DEST_PROV)
-        army_prov = int(state.g_OrderTable[prov, _F_SECONDARY])
+        army_prov = int(state.g_order_table[prov, _F_SECONDARY])
         army_tok  = _target_unit_tok(army_prov)
         if army_tok is None:
             return None
@@ -232,7 +238,7 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         # param_2[10] via list → _F_CONVOY_LEG0/_LEG1/_LEG2 (non-zero fleet province IDs)
         via_provs = []
         for leg_col in (_F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2):
-            leg_prov = int(state.g_OrderTable[prov, leg_col])
+            leg_prov = int(state.g_order_table[prov, leg_col])
             if leg_prov:
                 via_provs.append(id_to_prov.get(leg_prov, str(leg_prov)))
         if via_provs:
@@ -330,7 +336,7 @@ def _populate_retreat_orders(
     Build g_retreat_order_list entries for the current retreat phase.
 
     For each dislodged own-power unit (from game.powers[power_name].retreats),
-    evaluate possible retreat destinations using g_GlobalProvinceScore and pick
+    evaluate possible retreat destinations using g_global_province_score and pick
     the best one.  If no valid retreat exists, order a disband (DSB).
 
     Returns a list of dicts matching the schema at state.py line 539:
@@ -344,7 +350,7 @@ def _populate_retreat_orders(
         return []
 
     prov_to_id = state.prov_to_id
-    scores = state.g_GlobalProvinceScore  # [256] float array from generate_orders
+    scores = state.g_global_province_score  # [256] float array from generate_orders
 
     result = []
     for unit_spec, destinations in power.retreats.items():
@@ -367,7 +373,7 @@ def _populate_retreat_orders(
                 "Retreat: cannot resolve province %r → skipping", u_loc)
             continue
 
-        # Evaluate each destination by g_GlobalProvinceScore
+        # Evaluate each destination by g_global_province_score
         best_score = -1e30
         best_dest_id = -1
         best_dest_coast = 0
@@ -523,14 +529,14 @@ def get_sub_list(press_seq: 'str | list[str]', index: int) -> list:
 
 def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None:
     """
-    Builds a dispatch_single_order-compatible order dict from g_OrderTable[prov].
+    Builds a dispatch_single_order-compatible order dict from g_order_table[prov].
     Returns None if the province has no active order or no unit present.
 
     Mirrors the DispatchSingleOrder (FUN_0044cc50) input construction step —
-    reading g_OrderTable fields and converting province IDs to name strings via
+    reading g_order_table fields and converting province IDs to name strings via
     the state.prov_to_id reverse map.
     """
-    order_type = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
+    order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
     if order_type == 0:
         return None
 
@@ -549,11 +555,11 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
     loc_str = f"{prov_name}/{coast}" if coast else prov_name
     unit_str = f"{unit_chr} {loc_str}"
 
-    dest_id   = int(state.g_OrderTable[prov, _F_DEST_PROV])
+    dest_id   = int(state.g_order_table[prov, _F_DEST_PROV])
     dest_name = id_to_prov.get(dest_id, str(dest_id))
-    sec_id    = int(state.g_OrderTable[prov, _F_SECONDARY])
+    sec_id    = int(state.g_order_table[prov, _F_SECONDARY])
     sec_name  = id_to_prov.get(sec_id, str(sec_id))
-    dest_coast_tok = int(state.g_OrderTable[prov, _F_DEST_COAST])
+    dest_coast_tok = int(state.g_order_table[prov, _F_DEST_COAST])
     dest_coast = _DAIDE_COAST_TO_STR.get(dest_coast_tok, '')
 
     _ORDER_TYPE_MAP = {

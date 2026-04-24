@@ -202,6 +202,19 @@ def validate_and_dispatch_order(
                     "to %r", prov_raw, check_prov_name,
                 )
                 return _ERR_ADJACENCY
+
+        # SUP-MTO dual alliance check (C lines 515+537):
+        # First check: supported unit's current province (where unit currently sits).
+        # Second check: target destination (where unit is moving to).
+        # SUP-HLD has only one check (the supported unit's province IS the target).
+        if target_dest and sup_prov_id is not None:
+            sup_dest_power = state.get_unit_power(sup_prov_id)
+            rc = check_order_alliance(state, own_power_idx, sup_prov_id,
+                                      own_power_idx, sup_dest_power)
+            if rc != 0:
+                return rc
+
+        # Second check: target destination (existing check for SUP-MTO/HLD)
         if check_prov_id is not None:
             dest_power = state.get_unit_power(check_prov_id)
             rc = check_order_alliance(state, own_power_idx, check_prov_id,

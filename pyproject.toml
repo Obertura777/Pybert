@@ -12,5 +12,5 @@ dependencies = [
 [tool.uv.sources]
 diplomacy = { git = "https://github.com/ALLAN-DIP/diplomacy.git", rev = "dev" }
 
-[tool.ty.environment]
-root = [".."]
+[tool.ty.rules]
+unresolved-import = "ignore"

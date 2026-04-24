@@ -3,7 +3,7 @@
 Split from dispatch.py during the 2026-04 refactor.
 
 Two short predicates used by ``validate_and_dispatch_order`` before a
-move / convoy order is committed to ``g_OrderTable``:
+move / convoy order is committed to ``g_order_table``:
 
   * ``_is_legal_mto``       — province-adjacency gate.
   * ``is_convoy_reachable`` — ``FUN_004619f0`` convoy-path BFS gate.

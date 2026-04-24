@@ -15,11 +15,14 @@ Composed with ``_LifecycleMixin`` and ``_OrdersMixin`` to form
 call time.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 import random
 import time
+from typing import Any, Callable
 
 import numpy as np
 
@@ -72,6 +75,15 @@ logger = logging.getLogger(__name__)
 
 
 class _PressMixin:
+    # Declared for type checkers — assigned in _LifecycleMixin.__init__
+    state: InnerGameState
+    power_name: str
+    game: Any
+    current_phase: str | None
+
+    # Cross-mixin method (provided by _OrdersMixin)
+    _validate_orders: Callable[..., None]
+
     def _send_dm(self, msg: object) -> None:
         """
         Send DAIDE direct-message using python-diplomacy NetworkGame API.
@@ -147,7 +159,7 @@ class _PressMixin:
         # rejected even if scoring_phase == server_phase a moment ago.
         phase = server_phase or scoring_phase
 
-        body = str(msg)
+        body = ' '.join(str(tok) for tok in msg) if isinstance(msg, list) else str(msg)
         is_network = hasattr(self.game, 'send_game_message')
         import asyncio as _asyncio
 
@@ -173,11 +185,12 @@ class _PressMixin:
                     try:
                         fut = self.game.send_game_message(message=message_obj)
                         if _asyncio.iscoroutine(fut):
+                            coro = fut
                             try:
                                 loop = _asyncio.get_running_loop()
-                                fut = loop.create_task(fut)
+                                fut = loop.create_task(coro)
                             except RuntimeError:
-                                _asyncio.run(fut)
+                                _asyncio.run(coro)
                                 break
                         if hasattr(fut, 'add_done_callback'):
                             def _log_send_error(f, _r=recipient, _p=phase):
@@ -228,7 +241,7 @@ class _PressMixin:
         Port of BuildAndSendSUB (FUN_00457890).
 
         In the C bot this is a multi-trial proposal-scoring loop over
-        g_BroadcastList; Monte Carlo (process_turn) plays that role in Python,
+        g_broadcast_list; Monte Carlo (process_turn) plays that role in Python,
         so only the surrounding press/submission scaffold is ported here.
 
         Structure (mirroring FUN_00457890 at each labelled site):
@@ -238,12 +251,12 @@ class _PressMixin:
                                          collapsed to game.set_orders (MC already ran).
           4. UpdateScoreState           — refresh ally order tables after commit
                                          (line 395 inside inner loop, post-submission).
-          5. SendAllyPressByPower loop  — for each power when g_HistoryCounter > 0
+          5. SendAllyPressByPower loop  — for each power when g_history_counter > 0
                                          (lines 659–666).
-          6. g_ProposalHistoryMap press — iterate received/sent proposals, check
+          6. g_proposal_history_map press — iterate received/sent proposals, check
                                          province overlap and trust, send DM press
                                          (lines 847–1271; STUB — awaits RECEIVE_PROPOSAL
-                                         / RESPOND / g_ProposalHistoryMap port).
+                                         / RESPOND / g_proposal_history_map port).
           7. CancelPriorPress           — withdraw stale prior-press token (line 693).
 
         Callees still unported: ScoreOrderCandidates (FUN_004559c0),
@@ -275,33 +288,33 @@ class _PressMixin:
             best = None
             order_pairs = []
 
-        self.state.g_SubmittedOrders = []
-        # Restore g_OrderTable from the candidate snapshot for our own provinces.
-        # process_turn resets g_OrderTable per-trial and per-power, so by the
+        self.state.g_submitted_orders = []
+        # Restore g_order_table from the candidate snapshot for our own provinces.
+        # process_turn resets g_order_table per-trial and per-power, so by the
         # time we read it here it reflects the *last* trial of the *last*
         # power — not the trial that produced the chosen own-power candidate.
         # The candidate carries the per-order field snapshot (see
         # evaluate_order_proposal in monte_carlo.py); rehydrate the relevant
         # rows before calling _build_order_seq_from_table.
-        from ..monte_carlo import _F_SECONDARY as _MC_F_SECONDARY  # local import
+        from ...monte_carlo import _F_SECONDARY as _MC_F_SECONDARY  # local import
         for entry in order_pairs:
             if len(entry) >= 5:
                 prov, order_type, dest_prov, dest_coast, secondary = entry[:5]
-                self.state.g_OrderTable[prov, _F_ORDER_TYPE] = float(order_type)
-                self.state.g_OrderTable[prov, _F_DEST_PROV]  = float(dest_prov)
-                self.state.g_OrderTable[prov, _F_DEST_COAST] = float(dest_coast)
-                self.state.g_OrderTable[prov, _MC_F_SECONDARY] = float(secondary)
+                self.state.g_order_table[prov, _F_ORDER_TYPE] = float(order_type)
+                self.state.g_order_table[prov, _F_DEST_PROV]  = float(dest_prov)
+                self.state.g_order_table[prov, _F_DEST_COAST] = float(dest_coast)
+                self.state.g_order_table[prov, _MC_F_SECONDARY] = float(secondary)
             else:
                 prov = entry[0]
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
                 validate_and_dispatch_order(self.state, own_power_idx, seq)
 
-        formatted = list(getattr(self.state, 'g_SubmittedOrders', []))
+        formatted = list(getattr(self.state, 'g_submitted_orders', []))
 
         # Safety net: if MC still produced no usable orders for our units,
         # default every own unit to a HOLD. process_turn now seeds
-        # g_OrderTable[prov, _F_ORDER_TYPE] = _ORDER_HLD for every own unit
+        # g_order_table[prov, _F_ORDER_TYPE] = _ORDER_HLD for every own unit
         # at trial start (Phase 1b'), so MC normally returns a non-empty
         # candidate even on a fresh / no-press game. This branch only
         # triggers if a trial bug or upstream reset clears the table after
@@ -333,7 +346,7 @@ class _PressMixin:
         # ── 3b. RankCandidatesForPower — inner-loop candidate selection ─────
         # C: FUN_00424850(piVar10, '\0') called per-power in BuildAndSendSUB
         # inner loop after ScoreOrderCandidates.  In Python, MC has already
-        # run; call once per power to rank g_CandidateRecordList entries.
+        # run; call once per power to rank g_candidate_record_list entries.
         for power_i in range(n_powers):
             _rank_candidates_for_power(self.state, power_i)
 
@@ -341,27 +354,27 @@ class _PressMixin:
         update_score_state(self.state)
 
         # ── 5. SendAllyPressByPower loop (lines 659–666) ─────────────────────
-        # C: if puVar18[4] == DAT_00baed60 AND g_HistoryCounter > 0:
+        # C: if puVar18[4] == DAT_00baed60 AND g_history_counter > 0:
         #      for i in range(n_powers): SendAllyPressByPower(i)
-        # The g_BroadcastList node condition collapses to "own proposal processed"
+        # The g_broadcast_list node condition collapses to "own proposal processed"
         # which is always true here after order submission.
-        if self.state.g_HistoryCounter > 0:
+        if self.state.g_history_counter > 0:
             for power_i in range(n_powers):
                 _send_ally_press_by_power(self.state, power_i)
 
         # ── 6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass ───────────────
-        # C: BuildAndSendSUB outer loop (lines 490–569) processes g_BroadcastList
+        # C: BuildAndSendSUB outer loop (lines 490–569) processes g_broadcast_list
         #    entries where received_flag==1 AND type_flag==0 AND
-        #    trial_count == g_PressProposalsCap.
+        #    trial_count == g_press_proposals_cap.
         # Python: MC already ran; treat all received entries as fully scored.
         # After RESPOND, C calls FUN_00457520 (EvaluateOrderProposalsAndSendGOF).
-        from ..communications import (
+        from ...communications import (
             receive_proposal as _receive_proposal,
             evaluate_press   as _evaluate_press,
             respond          as _respond,
         )
-        press_cap = getattr(self.state, 'g_PressProposalsCap', 30)
-        for _entry in list(self.state.g_BroadcastList):
+        press_cap = getattr(self.state, 'g_press_proposals_cap', 30)
+        for _entry in list(self.state.g_broadcast_list):
             if not _entry.get('received_flag'):
                 continue
             if _entry.get('type_flag', 0) != 0:
@@ -392,18 +405,18 @@ class _PressMixin:
             # C line 569: FUN_00457520 = EvaluateOrderProposalsAndSendGOF
             _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
 
-        # ── 6b. g_DealList press deal matching (lines 847–1271, g_HistoryCounter>19)
-        # C iterates g_BroadcastList for own-proposal entries; for each entry
+        # ── 6b. g_deal_list press deal matching (lines 847–1271, g_history_counter>19)
+        # C iterates g_broadcast_list for own-proposal entries; for each entry
         #   with trust ≥ 1/2 and province overlap, sends SUB press via
-        #   SendAlliancePress.  Proxy: iterate g_DealList (trust ≥ 3, overlap).
-        if self.state.g_HistoryCounter > 19:
-            from ..communications import send_alliance_press
-            submitted_provs = {prov for prov, _ in order_pairs}
-            for deal in list(getattr(self.state, 'g_DealList', [])):
+        #   SendAlliancePress.  Proxy: iterate g_deal_list (trust ≥ 3, overlap).
+        if self.state.g_history_counter > 19:
+            from ...communications import send_alliance_press
+            submitted_provs = {entry[0] for entry in order_pairs if entry}
+            for deal in list(getattr(self.state, 'g_deal_list', [])):
                 other = deal.get('power', -1)
                 if other < 0:
                     continue
-                trust = int(self.state.g_AllyTrustScore[own_power_idx, other])
+                trust = int(self.state.g_ally_trust_score[own_power_idx, other])
                 if trust < 3:
                     continue
                 deal_provs = deal.get('province_set', set())
@@ -427,6 +440,13 @@ class _PressMixin:
 
         # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)
+
+        # ── 8. Final dispatch — flush any THN/SND entries scheduled during
+        # steps 5–7.  In the C binary these fire via the real-time scheduler;
+        # in Python everything is synchronous so we need an explicit final
+        # pass to deliver press that was enqueued after the initial step-1
+        # dispatch.
+        dispatch_scheduled_press(self.state, self._send_dm)
 
 
     def _submit_draw_vote(self) -> None:
