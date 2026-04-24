@@ -120,8 +120,14 @@ class InnerGameState:
     # `&DAT_00bb6d00 + p*0xc` which is the std::set _Mysize field of slot p
     # inside g_AllianceOrders, not a separate array. Use len(...) instead.
     g_AllyOrderHistory: "Any"
-    g_ConvoyRoute: "Any"
-    g_CoopFlag: "Any"
+    # g_ConvoyRoute moved to __init__ (2026-04-16): initialised as dict and
+    # populated per-trial by moves.convoy.populate_convoy_routes().  Previously
+    # a class-level annotation only, which caused hasattr() checks to pass
+    # without the attribute actually existing at trial time → convoy orders
+    # were never emitted.
+    # g_CoopFlag removed 2026-04-16: phantom alias of g_CoopScoreFlag_B
+    # (DAT_0062be98).  Reader in senders.py now uses g_CoopScoreFlag_B
+    # directly; writer in bot/strategy.py already used the canonical name.
     g_DesigCountA: "Any"
     g_DesigCountB: "Any"
     g_DesigListA: "Any"
@@ -129,7 +135,9 @@ class InnerGameState:
     g_DmzOrderList: "Any"
     # g_GeneralOrdersPresent removed: phantom global (see g_AllianceOrdersPresent).
     g_LoneLeadPower: "Any"
-    g_MoveTimeLimit: "Any"
+    # g_MoveTimeLimit removed: phantom alias of g_MoveTimeLimitSec
+    # (DAT_00624ef4 — MTL deadline in seconds).  The canonical
+    # attribute is declared in __init__ as `self.g_MoveTimeLimitSec`.
     g_OrderHistory: "Any"
     g_OtherScore: "Any"
     g_PressCandidateA: "Any"
@@ -144,7 +152,9 @@ class InnerGameState:
     g_RingProv_A: "Any"
     g_RingProv_B: "Any"
     g_RingProv_C: "Any"
-    g_SomeCoopScore: "Any"
+    # g_SomeCoopScore removed 2026-04-16: phantom alias of g_CoopScoreFlag_A
+    # (DAT_0062c580).  Reader in senders.py now uses g_CoopScoreFlag_A
+    # directly; writer in bot/strategy.py already used the canonical name.
     g_StabMode: "Any"
     g_SupportOpportunitiesSet: "Any"
     g_SupportProposals: "Any"
@@ -233,9 +243,30 @@ class InnerGameState:
         # DAT_006190e8/ec[pow*0x40+prov*8] — {0} = no build pending; gate in AssignSupportOrder LAB_0044150f
         self.g_BuildOrderPending = np.zeros((7, 256), dtype=np.int32)
         self.g_ProvinceWeight = np.zeros((7, 256), dtype=np.float64)
-        
+
+        # DAT_005164e8[pow*0x100+prov] — g_FriendlyUnitFlag.
+        # DAT_0050bce8[pow*0x100+prov] — g_EstablishedAllyFlag.
+        # Both written by ScoreProvinces inside the outer-power loop
+        # (ScoreProvinces.c:813-826).  The Python port collapses the outer-
+        # power dimension: heuristics/_primitives.py:87 consumes the flags as
+        # 1D [prov] arrays, so we mirror score_provinces's final outer_power
+        # (== own_power) pass.  FriendlyUnitFlag = 1 iff a non-hostile,
+        # non-Albert unit is at province.  EstablishedAllyFlag = 1 iff that
+        # unit's RelationScore (DAT_00634e90) is <= 9 — note this is the
+        # OPPOSITE of "established" in the colloquial sense; the C guard
+        # (line 819: `if 9 < relation goto advance`) explicitly skips the
+        # flag set for relations > 9.  Kept as C-faithful name in spite of
+        # the counterintuitive semantic; see ScoreProvinces.c:819 trace.
+        self.g_FriendlyUnitFlag     = np.zeros(256, dtype=np.int32)
+        self.g_EstablishedAllyFlag  = np.zeros(256, dtype=np.int32)
+
         # Flags
         self.g_UniformMode = 0
+        # DAT_00baed40 (char) — "guaranteed/minimal press" mode, set by the
+        # `-G`/`-g` CLI arg.  Not yet wired to any CLI parser in the Python
+        # port; any external caller can set this to 1 before game start to
+        # force g_HistoryCounter=0 in communications/inbound/history.py.
+        self.g_MinimalPressMode = 0
         self.win_threshold = 18
         self.ScoreCurrent = 0
         self.ScoreBaseline = 0
@@ -291,6 +322,30 @@ class InnerGameState:
         # Companion map dst_province → src_province written by ConvoyList_Insert
         # (the node field set via *ppiVar5 = src immediately after insert).
         self.g_ConvoyDstToSrc: dict = {}
+
+        # *(Albert+8 + prov*0x14 + 0x214) family — per-province convoy route
+        # reachability struct populated by ProcessTurn's convoy chain BFS
+        # (Source/ProcessTurn.c:1425–1929).  Each trial rewrites this.
+        #
+        # Narrow-port shape (option 1 chosen 2026-04-16): keyed by the army's
+        # *source* province.  Each entry is the shortest fleet chain that can
+        # convoy that army off its coast, regardless of destination:
+        #
+        #     g_ConvoyRoute[army_src] = {
+        #         'fleet_count': int,            # len(fleets), 1..3
+        #         'fleets':      [f1, f2, f3],   # province ids of convoying fleets
+        #     }
+        #
+        # Armies with no viable chain are absent from the dict.  Readers in
+        # moves/convoy.py:build_convoy_orders and monte_carlo/trial.py gate on
+        # fleet_count > 0 before emitting CVY orders.
+        #
+        # NOTE: this diverges from the C layout, which stores per-destination
+        # fleet_count at offset 0x214 of a per-province struct.  The current
+        # Python readers use src-keyed lookup, so a destination-blind shortest
+        # chain is the compatible narrow port.  See TODO(fidelity) in
+        # moves/convoy.py:populate_convoy_routes for the fuller port.
+        self.g_ConvoyRoute: dict = {}
 
         # Current game season token: 'SPR'|'SUM'|'FAL'|'AUT'|'WIN'
         self.g_season = 'SPR'
@@ -465,6 +520,13 @@ class InnerGameState:
         self.g_SCPercent = np.zeros(7, dtype=np.float64)
         # DAT_004cf568[power] — 1 = this power is designated enemy this turn
         self.g_EnemyFlag = np.zeros(7, dtype=np.int32)
+        # DAT_004cf56c[power] — hi-word of the int64 pair whose lo-word is
+        # g_EnemyFlag.  C code rarely writes non-zero here (int32 store into
+        # int64 leaves hi=0), so this array is effectively always zero; kept
+        # so communications/evaluators/handlers.py:283 can index it directly
+        # instead of defaulting.  No writer exists on the Python side yet —
+        # add one if a C code path that writes DAT_004cf56c is ported.
+        self.g_EnemyFlag_Hi = np.zeros(7, dtype=np.int32)
         # DAT_00633ec0[power] — count of genuine enemies for each power
         self.g_EnemyCount = np.zeros(7, dtype=np.int32)
         # DAT_00633e68[power] — 1 = ally is distressed (attacked by both top enemies)
@@ -500,6 +562,30 @@ class InnerGameState:
         # Own power index (0-based); set at turn start by AlbertBot from power_name.
         # C: *(byte *)(state->inner + 0x2424)
         self.albert_power_idx: int = 0
+
+        # DAT_00624124 — C-faithful name for Albert's own power index.
+        # Mirror of albert_power_idx kept in sync by bot/client/_orders.py so
+        # that code paths still using the C name (e.g. trial.py:849) resolve
+        # correctly.  Previously read but never written → getattr defaulted
+        # to albert_power_idx which is correct, but left the identity check
+        # permissive (never distinguished own from other powers in the
+        # "g_AlbertPower != power_index" branch).
+        self.g_AlbertPower: int = 0
+
+        # Diplomacy is a 7-power game; the C binary uses this as a shape
+        # bound in several per-power loops.  Previously only read via
+        # getattr(..., 7) fallback; providing a real default makes the
+        # attribute visible to later writers (e.g. variant host negotiation
+        # where num_powers differs).
+        self.g_NumPowers: int = 7
+
+        # True once the server has sent an OFF or SMR message (game ended).
+        # Read by bot/client/_orders.py:125 as a loop-exit guard.  No Python
+        # writer yet — the game-end inbound handler is not ported; when it
+        # is, it should set this to True.  Default False preserves the
+        # previous getattr(..., False) semantics while making the attribute
+        # real so writers don't silently no-op via typos.
+        self.g_game_over: bool = False
 
         # DAT_00baed2b — result of PrepareDrawVoteSet / ComputeDrawVote.
         # 1 = propose DRW this turn; 0 = do not.
@@ -736,6 +822,14 @@ class InnerGameState:
         self.g_AllyPressCount   = np.zeros(7, dtype=np.int32)
         # DAT_004d6248[power] — ally press hi-word counter
         self.g_AllyPressHi      = np.zeros(7, dtype=np.int32)
+        # DAT_004d5480[power*2] / DAT_004d5484[power*2] — per-power int64 snapshot of
+        # Albert's trust toward that power (lo-word / hi-word respectively).  Written
+        # by HOSTILITY Block 4 every SPR/FAL press-on turn: zeroed first, then when
+        # g_HistoryCounter > 0 overwritten with g_AllyTrustScore[own, p] before press
+        # dispatch.  Read by evaluators/_common.py, evaluators/flags.py,
+        # evaluators/handlers.py, scheduling.py (both _execute_aly_vss and DMZ gate).
+        self.g_DiplomacyStateA  = np.zeros(7, dtype=np.int32)
+        self.g_DiplomacyStateB  = np.zeros(7, dtype=np.int32)
         # DAT_0062480c — power index of the committed strategic enemy
         self.g_CommittedEnemy: int = -1
         # DAT_00633f20[power*5+rank] — pre-sorted power proximity ranks (stride 5)
