@@ -421,7 +421,17 @@ def evaluate_order_proposal(state: InnerGameState, power_idx: int) -> None:
                     prox  = float(state.g_ProximityScore[power, src])
                     own_r = float(state.g_OwnReachScore[power_idx, src])
                     if prox > own_r:
+                        # H1 fix: filter adjacencies by unit type, matching C's
+                        # AdjacencyList_FilterByUnitType (EvaluateOrderProposal.c:485-552).
+                        # Without this, fleets see landlocked adjacencies and armies
+                        # see sea zones, inflating heat scores for unreachable provinces.
+                        unit_type = info.get('type', 'A')
                         for adj_q in state.get_unit_adjacencies(prov):
+                            # Skip provinces this unit type cannot reach
+                            if unit_type in ('A', 'AMY') and adj_q in state.water_provinces:
+                                continue
+                            if unit_type in ('F', 'FLT') and adj_q in state.land_provinces:
+                                continue
                             if state.g_OwnReachScore[power_idx, adj_q] > 1:
                                 heat_scores[power] += src + dest + 1000
                                 break
@@ -458,11 +468,17 @@ def evaluate_order_proposal(state: InnerGameState, power_idx: int) -> None:
     early_game_bonus = 0
     if state.g_NearEndGameFactor == 1.0 and state.g_DeceitLevel == 1:
         # Count how many own-unit adjacencies cover each province
+        # H1 fix: filter adjacencies by unit type (armies skip water, fleets skip land)
         adj_order_count = [0] * 256
         for prov, info in state.unit_info.items():
             if info['power'] != power_idx:
                 continue
+            unit_type = info.get('type', 'A')
             for adj in state.get_unit_adjacencies(prov):
+                if unit_type in ('A', 'AMY') and adj in state.water_provinces:
+                    continue
+                if unit_type in ('F', 'FLT') and adj in state.land_provinces:
+                    continue
                 adj_order_count[adj] += 1
 
         for prov in range(256):

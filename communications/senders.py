@@ -510,8 +510,13 @@ def friendly(state: InnerGameState) -> None:
 
             stab      = int(state.g_StabFlag[row, col])
             cease     = int(state.g_CeaseFire[row, col])
-            coop      = int(state.g_CoopFlag[row, col])
-            some_coop = int(state.g_SomeCoopScore[row, col])
+            # g_CoopScoreFlag_B (DAT_0062be98) — fall/autumn cooperation flag
+            # g_CoopScoreFlag_A (DAT_0062c580) — spring/summer cooperation flag
+            # Both are tested in the FRIENDLY conjunction (C: FRIENDLY.c:123-124)
+            # regardless of season.  Previously read the phantom names
+            # g_CoopFlag / g_SomeCoopScore, which were never populated.
+            coop      = int(state.g_CoopScoreFlag_B[row, col])
+            some_coop = int(state.g_CoopScoreFlag_A[row, col])
             trust_lo  = int(state.g_AllyTrustScore[row, col])
             trust_hi  = int(state.g_AllyTrustScore_Hi[row, col])
             peace_sig = int(state.g_PeaceSignal[row, col])
@@ -644,11 +649,31 @@ def _friendly_peace_signal_check(state: InnerGameState, col: int,
                                   trust_lo: int, trust_hi: int,
                                   neutral: int, peace_sig: int,
                                   relation: int, _log) -> None:
-    """LAB_0042df19 sub-routine: log/clear betrayal counter when own power receives peace signal."""
+    """LAB_0042df19 sub-routine: clear betrayal counter AND send peace
+    press when own power receives a peace signal.
+
+    C (FRIENDLY.c lines 160-178) builds a press entry with token 0x19
+    (PCE press type) and inserts it into g_BroadcastList via
+    FUN_0041c450 (SendAlliancePress).  The Python version was missing
+    the press-sending half.  Fixed 2026-04-20 (audit finding M12).
+    """
     if (trust_lo == 0 and trust_hi == 0 and neutral == 0 and
             peace_sig == 1 and relation >= 0):
         state.g_BetrayalCounter[col] = 0
         _log.debug("FRIENDLY: getting peace signal from power %d", col)
+
+        # ── Press-sending (C: FRIENDLY.c lines 166-178) ──────────────
+        # C builds token = col | 0x4100, sets uStack_4c = 0x19 (PCE
+        # press type), then calls FUN_00410b40 → FUN_0041c450 to insert
+        # into g_BroadcastList.  Mirror this as a send_alliance_press
+        # call with type='PCE' so BuildAndSendSUB picks it up.
+        peace_entry = {
+            'type': 'PCE',
+            'from_power_tok': col | 0x4100,
+            'sublist3': [0x19],  # C: uStack_4c = 0x19
+        }
+        send_alliance_press(state, key=len(state.g_BroadcastList),
+                            entry_data=peace_entry)
 
 
 # ── CancelPriorPress ──────────────────────────────────────────────────────────

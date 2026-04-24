@@ -58,15 +58,26 @@ def dispatch_single_order(state: InnerGameState, power_index: int, order_seq: di
             formatted_order = f"{unit_str} S {target_unit}"
             
     elif token_head == 'CTO':
-        # BuildOrder_CTO translating convoy fleet actions
-        target_army = order_seq.get('target_unit', '')
-        dest_prov = order_seq.get('target_dest', '')
-        formatted_order = f"{unit_str} C {target_army} - {dest_prov}"
-        
-    elif token_head == 'CVY':
-        # BuildOrder_CVY translating the army moving via convoy
+        # BuildOrder_CTO: army moving to destination via convoy
+        # C: DispatchSingleOrder lines 140-144 calls ClearConvoyState() and
+        # zeroes g_ConvoySourceProv before CTO dispatch to avoid stale routing
+        # data from a previous trial. Fixed 2026-04-20 (audit finding C8).
+        if hasattr(state, 'g_ConvoySourceProv'):
+            state.g_ConvoySourceProv.fill(-1)
+        if hasattr(state, 'g_ConvoyDstToSrc'):
+            state.g_ConvoyDstToSrc.clear() if isinstance(state.g_ConvoyDstToSrc, dict) else state.g_ConvoyDstToSrc.fill(-1)
         dest_prov = order_seq.get('target_dest', '')
         formatted_order = f"{unit_str} - {dest_prov} VIA"
+
+    elif token_head == 'CVY':
+        # BuildOrder_CVY: fleet convoying an army to destination
+        target_army = order_seq.get('target_unit', '')
+        if target_army and not target_army.startswith('A'):
+            logger.warning(
+                "CVY target_unit %r is not an army — convoy orders "
+                "require an army unit", target_army)
+        dest_prov = order_seq.get('target_dest', '')
+        formatted_order = f"{unit_str} C {target_army} - {dest_prov}"
         
     else:
         logger.warning(f"Unknown DAIDE dispatch token branch: {token_head}")

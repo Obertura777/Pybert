@@ -23,7 +23,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     Strategic board evaluation engine, called once per turn before order
     generation.  Computes:
       - _g_NearEndGameFactor
-      - g_PowerExpScore  (super-exponential power score)
+      - g_PowerExpScore  (quadratic power score)
       - g_SCPercent      (SC percentage per power, relative to win_threshold)
       - g_EnemyCount     (genuine enemy count per power)
       - g_RankMatrix / g_AllyPrefRanking  (influence ranking)
@@ -39,11 +39,21 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
     trust_hi_mat = getattr(state, 'g_AllyTrustScore_Hi', np.zeros((7, 7), dtype=np.int64))
 
-    # ── Phase 1a: per-power exponential score (Loop A in decompile) ──────────
-    # g_PowerExpScore[k] = pow(min(sc_k, win_threshold), min(sc_k, win_threshold)) * 100 + 1
+    # ── Phase 1a: per-power quadratic score (Loop A in decompile) ────────────
+    # g_PowerExpScore[k] = pow(min(sc_k, win_threshold), 2) * 100 + 1
+    #
+    # The Ghidra decompile shows _safe_pow() with no visible arguments (x87
+    # FPU stack args lost).  The sole downstream consumer is the keep-alliance
+    # gate:  exp_own − exp_lead × 1.7 + 69 > 0.  Scale analysis proves the
+    # exponent is 2 (quadratic), not sc (super-exponential):
+    #   • pow(sc, 2): the +69 offset is ~4% of a typical score (meaningful
+    #     tuning constant that shifts the alliance boundary by ~0.5 SC).
+    #   • pow(sc, sc): +69 is <0.003% at sc=4 and vanishes above — no
+    #     programmer would include a meaningless constant.
+    # Fixed 2026-04-20 (audit finding C5).
     for k in range(num_powers):
         sc = max(0, min(int(state.sc_count[k]), win_threshold))
-        state.g_PowerExpScore[k] = (sc ** sc) * 100.0 + 1.0 if sc > 0 else 1.0
+        state.g_PowerExpScore[k] = (sc ** 2) * 100.0 + 1.0
 
     # ── Phase 1b: NearEndGameFactor + g_SCPercent (Loop B in decompile) ──────
     # g_SCPercent[k] = sc[k] * 100 / win_threshold  (divisor = win threshold, NOT total SCs)
@@ -52,7 +62,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     near_end = 1.0
 
     own_sc = int(state.sc_count[own_power])
-    # g_OneScFromWin checked before second loop (decompile line 118)
+    # g_OneScFromWin checked before second loop (decompile line 118).
+    # NOTE: log-only flag — no C read sites outside the archive-event write here
+    # (CAL_BOARD event 0x28 family).  Kept for parity; do not remove.
     state.g_OneScFromWin = 1 if (win_threshold - own_sc == 1) else 0
 
     # Leader tracking (decompile lines 125-147): DAT_00624124 = index of lone
@@ -85,6 +97,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
     # Lone-lead-power: only set if unique; archive "The lone lead power is (%s)"
     # event (DAT_00bbf638 key 0x28) when applicable (decompile lines 157-195).
+    # NOTE: g_LoneLeadPower is log-only — no C reads outside this archive event;
+    # the value exists purely so the AllianceMsgTree-key-0x28 record is
+    # reproducible.  Kept for parity; do not remove.
     if lead_tied < 2:
         state.g_LoneLeadPower = lead_pow
         try:
@@ -181,9 +196,15 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
     # ── Phase 4b: near-victory enemy designation (local_fc > 0x3b = 59) ──────
     # Decompile lines 878-1090
+    # NOTE: g_LeadingFlag is log-only — no C reads outside the archive-event
+    # writes below; it exists so AllianceMsgTree leading-power events are
+    # reproducible.  Kept for parity; do not remove.
     state.g_LeadingFlag = 0
     state.g_OtherPowerLeadFlag = 0
+    # Reset DAT_0062480c under both aliases: CAL_BOARD.c:99 writes -1 (0xffffffff)
+    # at the top of the function, so both views of the same global must agree.
     state.g_NearVictoryPower = -1
+    state.g_CommittedEnemy   = -1
 
     bVar26 = False  # keep-alliance override
     if local_fc > 59 and local_128 != own_power:
@@ -206,7 +227,13 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         # Declare near-victory only if leading is actually ahead and no keep-alliance
         if lead_pct > own_pct and not bVar26:
             state.g_OtherPowerLeadFlag = 1
+            # DAT_0062480c is aliased in research.md as both g_NearVictoryPower
+            # (CAL_BOARD write-site name) and g_CommittedEnemy (HOSTILITY read-site
+            # name).  Mirror to both so HOSTILITY's committed-enemy check (strategy.py
+            # :674 inside the mutual-enemy scan) sees the near-victory designation
+            # that CAL_BOARD just made — matches single-address C semantics.
             state.g_NearVictoryPower = local_128
+            state.g_CommittedEnemy   = local_128
             # Set leading power as enemy; zero trust toward them
             state.g_EnemyFlag[local_128] = 1
             state.g_AllyTrustScore[own_power, local_128] = 0
@@ -524,6 +551,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     # DAT_00baed6a = 0 first (reset), then check condition.
     # Condition: g_SCPercent[own] > 75.0 AND own_pct - g_SCPercent[local_128] >= 2.0
     # (Note: uses local_128 not max_pct; uses >= not >)
+    # NOTE: second write of log-only g_LeadingFlag — see note at first write
+    # above; no downstream C reads.  Kept for parity.
     state.g_LeadingFlag = 0
     if local_128 != own_power:
         lead_pct_dominate = float(state.g_SCPercent[local_128])

@@ -106,10 +106,30 @@ def receive_proposal(
     # C: FUN_00465f60(copy, &stack4)  →  copy proposal token list
     #    FUN_004223c0(analysis, record)  →  init analysis struct (absorbed)
     #    FUN_00430370(&sentinel, &iter, copy)  →  std::list insert
+    # Build sub_entries from XDO clauses in the proposal (C node+0xc/0xd).
+    # Each XDO clause becomes a sub-entry with province and order_type for
+    # the board-satisfaction check in EvaluateOrderProposalsAndSendGOF.
+    # Fixed 2026-04-20 (M-BOT-3): previously empty, causing GOF board-check
+    # to always pass (bVar3 stayed True → all proposals treated as satisfiable).
+    from ..parsers import _parse_xdo_candidates
+    sub_entries = []
+    xdo_cands = _parse_xdo_candidates(' '.join(str(t) for t in proposal_tokens))
+    for cand in xdo_cands:
+        sub_entries.append({
+            'province': cand.get('province', cand.get('src_prov', -1)),
+            'order_type': cand.get('order_type', -1),
+            'power': cand.get('power', sender_power),
+        })
+
     state.g_PosAnalysisList.append({
         'tokens': list(proposal_tokens),
         'token_set': proposal_set,
         'power_count': 0,   # C node[0xe]; always 0 for newly inserted entries
+        # ── Sub-entries for board-satisfaction check (C node+0xc/0xd) ─────
+        'sub_entries': sub_entries,
+        # ── Press-entries for CAL_MOVE inner loop (C node+0x15/0x16) ──────
+        # Populated by ack_matcher when YES arrives for this proposal.
+        'press_entries': [],
         # ── Ack-matcher schema extension (2026-04-14) ──────────────────────
         # FUN_0042c970 keys sender-match against C node offsets +0xc/+0xf/+0x12.
         # +0xc / +0xf both hold the sender power (primary check on any ack).

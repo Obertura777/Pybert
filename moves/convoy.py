@@ -19,22 +19,20 @@ Module-level deps: ``..state.InnerGameState``, ``.support.assign_support_order``
 
 from ..state import InnerGameState
 from .support import assign_support_order
-
-# ── g_OrderTable field indices (subset needed here; full list in monte_carlo.py) ─
-_F_ORDER_TYPE    =  0   # 1=HLD 2=MTO 3=SUP_HLD 4=SUP_MTO 5=CVY 6=CTO
-_F_DEST_PROV     =  2   # destination province (MTO/CTO)
-_F_INCOMING_MOVE = 13   # 1 = province has incoming MTO/CTO (DAT_00baedd4 = g_ProvinceBaseScore)
-_F_ORDER_ASGN    = 20   # 1 = support order committed
-_F_CONVOY_LEG0   =  8   # CTO convoy leg 0 (DAT_00baee08)
-_F_CONVOY_LEG1   =  9   # CTO convoy leg 1 (DAT_00baee0c)
-_F_CONVOY_LEG2   = 10   # CTO convoy leg 2 (DAT_00baee10)
-_F_SOURCE_PROV   = 16   # source province; SUP = supported unit's province
-
-_ORDER_MTO = 2
-_ORDER_CVY = 5
-_ORDER_CTO = 6
-
-_MAX_CONVOY_CHAIN_DEPTH = 10  # 0xb bound from research.md §EnumerateConvoyReach
+from ._constants import (
+    _F_ORDER_TYPE,
+    _F_DEST_PROV,
+    _F_INCOMING_MOVE,
+    _F_ORDER_ASGN,
+    _F_CONVOY_LEG0,
+    _F_CONVOY_LEG1,
+    _F_CONVOY_LEG2,
+    _F_SOURCE_PROV,
+    _ORDER_MTO,
+    _ORDER_CVY,
+    _ORDER_CTO,
+    _MAX_CONVOY_CHAIN_DEPTH,
+)
 
 
 def _harmonic_dist_weight(n: int, base: float) -> float:
@@ -169,7 +167,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
                     army_reach.add(adj)
                     if adj not in in_reach:
                         in_reach.add(adj)
-                        reach_candidates.append((adj, 'A',fc_wave))
+                        reach_candidates.append((adj, fc_coast, fc_wave))
 
         # Sub-pass D: 10-hop convoy chain completion pass.
         # local_1a8 counts from 0..MAX_CONVOY_CHAIN_DEPTH (< 0xb in original).
@@ -216,19 +214,140 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
             state.g_ProvinceScoreTrial[adj] = 1
 
 
+def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
+    """
+    Narrow port of ProcessTurn's convoy-chain BFS
+    (Source/ProcessTurn.c:1425-1929 - per-trial convoy route table init
+    plus the fleet-chain walk that threads armies across water).
+
+    For each army owned by ``power_idx``, enumerates *every* destination
+    reachable via a fleet chain (1, 2, or 3 fleets) and records the
+    shortest chain for each (src, dst) pair in
+    ``state.g_ConvoyRoute[army_src][dst_prov]``.  Armies with no viable
+    chain are absent from the outer dict.
+
+    This per-destination keying matches the C layout
+    (Source/ProcessTurn.c:1628 etc., stride 0x14 at +0x214): an army
+    with two candidate destinations requiring different fleet chains
+    gets the right fleets for each.  Previously this was destination-
+    blind (one chain per source), which caused the wrong fleets to be
+    committed on per-turn re-evaluation.  Fixed 2026-04-18
+    (AUDIT_moves_and_messages.md #7).
+
+    Mutates only ``state.g_ConvoyRoute``.
+    """
+    for src_prov, unit_data in list(state.unit_info.items()):
+        if unit_data.get('power') != power_idx:
+            continue
+        if unit_data.get('type') != 'A':
+            continue
+
+        chains_by_dst = _enumerate_convoy_chains_for_src(state, src_prov)
+        if not chains_by_dst:
+            # No viable chain - clear any stale entry from prior trials.
+            state.g_ConvoyRoute.pop(src_prov, None)
+            continue
+
+        state.g_ConvoyRoute[src_prov] = {
+            dst: {'fleet_count': len(chain), 'fleets': list(chain)}
+            for dst, chain in chains_by_dst.items()
+        }
+
+
+def _get_convoy_route(state: InnerGameState, src_prov: int, dst_prov: int):
+    """
+    Public helper used by the MC readers to look up the fleet chain for
+    a specific (src, dst) convoy pair.  Returns ``(fleet_count, fleets)``.
+    ``fleet_count == 0`` and an empty list mean "no chain registered".
+
+    Tolerates the legacy destination-blind shape
+    (``g_ConvoyRoute[src] = {'fleet_count': ..., 'fleets': [...]}``) so
+    callers or test fixtures still holding that shape continue to work
+    during the migration.  Prefer the new nested shape for fresh writes.
+    """
+    src_entry = state.g_ConvoyRoute.get(src_prov)
+    if not src_entry:
+        return 0, []
+    # Legacy flat shape: recognised by presence of 'fleet_count' at the
+    # top of the src entry instead of a nested dst → info mapping.
+    if 'fleet_count' in src_entry:
+        return int(src_entry.get('fleet_count', 0)), list(src_entry.get('fleets', []))
+    dst_entry = src_entry.get(dst_prov)
+    if not dst_entry:
+        return 0, []
+    return int(dst_entry.get('fleet_count', 0)), list(dst_entry.get('fleets', []))
+
+
+def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> dict:
+    """
+    BFS over fleet chains starting from fleets adjacent to ``army_src``.
+    Returns ``{dst_prov: chain}`` where ``dst_prov`` is a non-fleet,
+    non-source landing province and ``chain`` is the *shortest* fleet
+    tuple (1..3 elements) that convoys ``army_src`` to ``dst_prov``.
+
+    Depth-1 seeds are fleets directly adjacent to the army.  At each
+    chain step we record every landing reachable via the terminal
+    fleet (only the first — i.e. shortest — chain per dst wins, so a
+    longer chain that also reaches the same dst does NOT overwrite).
+    The BFS caps at 3 fleets, matching the C struct's three convoy-leg
+    slots at +0x218, +0x21c, +0x220.
+    """
+    MAX_CHAIN = 3
+
+    depth_1_fleets = [
+        adj for adj in state.get_unit_adjacencies(army_src)
+        if state.get_unit_type(adj) == 'F'
+    ]
+    if not depth_1_fleets:
+        return {}
+
+    result: dict = {}                           # dst -> shortest chain
+    frontier = [(f,) for f in depth_1_fleets]
+    visited_fleets = set(depth_1_fleets)
+
+    for depth in range(1, MAX_CHAIN + 1):
+        next_frontier: list = []
+        for chain in frontier:
+            terminal = chain[-1]
+            # Record every landing square reachable from this terminal.
+            for adj in state.get_unit_adjacencies(terminal):
+                if adj == army_src:
+                    continue
+                if state.get_unit_type(adj) == 'F':
+                    continue
+                # First chain reaching this dst wins (BFS order →
+                # shortest by fleet count).
+                if adj not in result:
+                    result[adj] = chain
+
+            # Extend the chain through another fleet — but only if we
+            # haven't hit the max chain length yet.
+            if depth < MAX_CHAIN:
+                for adj in state.get_unit_adjacencies(terminal):
+                    if state.get_unit_type(adj) != 'F':
+                        continue
+                    if adj in visited_fleets:
+                        continue
+                    visited_fleets.add(adj)
+                    next_frontier.append(chain + (adj,))
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return result
+
+
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int) -> None:
     """
     Port of FUN_0044b760 = BuildConvoyOrders.
-    
+
     Builds the complete CTO + CVY order chain for a convoy attempt. Reads
     g_MaxProvinceScore to seed each fleet's score, while the army inherits
     the ordered-set score for the destination province.
     """
-    fleet_count = state.g_ConvoyRoute.get(src_prov, {}).get('fleet_count', 0)
+    fleet_count, route = _get_convoy_route(state, src_prov, dst_prov)
     if fleet_count <= 0:
         return
-        
-    route = state.g_ConvoyRoute[src_prov].get('fleets', [])
     
     # Army setup (CTO)
     state.g_OrderTable[src_prov, _F_ORDER_TYPE] = _ORDER_CTO

@@ -112,14 +112,16 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
                     scratch = tok
                     scratch_count = 1
                 else:
-                    # C: (rand()/0x17)%100 < 0x33  → 51% keep, 49% replace
+                    # C: (rand()/0x17)%100 < 0x33  → values 0..50 keep (51%),
+                    # 51..99 replace (49%).  Python inverts: >= 0x33 triggers replace.
                     rv = _random.randint(0, 0x7FFF)
                     if (rv // 23) % 100 >= 0x33:
                         scratch = tok
-                # C: FUN_00419300(&DAT_00bb65d4, ppvVar4, local_6c)
-                state.g_AcceptedProposals.append(tok)
 
         if scratch_count > 0:
+            # C: only the randomly-selected winner goes into the accepted list
+            # (FUN_00419300 is called once after the loop, not per-iteration).
+            state.g_AcceptedProposals.append(scratch)
             _log.debug("evaluate_press: ORR proposal accepted")
             return _YES
 

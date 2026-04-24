@@ -20,6 +20,7 @@ from ..state import InnerGameState
 from ..moves import (
     enumerate_hold_orders,
     enumerate_convoy_reach,
+    populate_convoy_routes,
     compute_safe_reach,
     build_support_opportunities,
 )
@@ -127,15 +128,20 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
         state.g_HeatMovement[p] = heat_move
 
         # 1h — Accumulate g_InfluenceMatrix[col, p]
-        # research.md §5516–5522: g_InfluenceMatrix_B[col*21+p] =
-        #   Σ(heat_build + heat_move) for provinces where unit.power != col AND col != p.
-        # Empty provinces (unit_power == -1) contribute; -1 != col for all valid col.
+        # GenerateOrders.c L366: two-condition gate:
+        #   (puVar11[1] != local_6054) && (local_60b4 != local_60bc)
+        # Ghidra conflates the outer loop counter with GameBoard_GetPowerRec's
+        # output param (same stack slot reuse).  Resolved semantics:
+        #   condition 1: unit_power_at_prov != col
+        #   condition 2: p != unit_power_at_prov  (excludes own-power provinces)
+        # Empty provinces (unit_power == -1) pass both gates (−1 != any 0..6).
         for col in range(NUM_POWERS):
             if col == p:
                 continue
             total = 0.0
             for prov in range(NUM_PROVINCES):
-                if state.get_unit_power(prov) != col:
+                unit_power = state.get_unit_power(prov)
+                if unit_power != col and p != unit_power:
                     total += heat_build[prov] + heat_move[prov]
             state.g_InfluenceMatrix[col, p] = total
 
@@ -191,8 +197,15 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
         for p in range(NUM_POWERS):
             best_score = float('-inf')
             for prov in range(NUM_PROVINCES):
-                unit_power = state.get_unit_power(prov)
-                if unit_power != -1 and unit_power != p:
+                unit_info = state.unit_info.get(prov)
+                if unit_info is None:
+                    continue
+                unit_power = unit_info['power']
+                # C (GenerateOrders.c L189-191): non-Army units have power
+                # overridden to 0x14, so own fleets always pass this gate.
+                if unit_info.get('type', '') != 'A':
+                    unit_power = 0x14  # always != any real power 0–6
+                if unit_power != p:
                     gps = float(state.g_GlobalProvinceScore[prov])
                     if gps > 0.0:
                         sc = random.uniform(0.0, 1.0) * 2.0 / gps
@@ -216,5 +229,11 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     for p in range(NUM_POWERS):
         enumerate_hold_orders(state, p)
         enumerate_convoy_reach(state, p)
+        # Populates state.g_ConvoyRoute[army_src] for each army of p with a
+        # shortest fleet chain (option-1 narrow port of ProcessTurn's convoy
+        # route BFS — see moves/convoy.py:populate_convoy_routes).  Without
+        # this, the CTO branches in trial.py:553 and :1046 silently fall
+        # back to direct moves and no CVY orders are ever emitted.
+        populate_convoy_routes(state, p)
     compute_safe_reach(state)
     build_support_opportunities(state)

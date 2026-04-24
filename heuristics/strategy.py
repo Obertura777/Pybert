@@ -406,15 +406,23 @@ def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
                 # Cross-power influence score as tiebreaker
                 score += float(state.g_MaxProvinceScore[adj]) * 0.1
 
-                if score > 0:
-                    candidates.append((score, adj))
+                # Heat-diffusion score as fallback (ensures water provinces
+                # and non-SC provinces still get move proposals).
+                if score == 0.0:
+                    score += float(state.g_CandidateScores[power, adj]) * 0.01
+                    # Final fallback: any reachable province gets a tiny score
+                    # so that MC can at least consider moves vs holds.
+                    if score == 0.0:
+                        score = 0.001
+
+                candidates.append((score, adj))
 
             if not candidates:
                 continue
 
-            # Sort descending, take top 2 (give MC some variety)
+            # Sort descending, take top 3 (give MC variety for move selection)
             candidates.sort(reverse=True)
-            for _score, best_adj in candidates[:2]:
+            for _score, best_adj in candidates[:3]:
                 prov_name = state._id_to_prov.get(prov, str(prov))
                 adj_name = state._id_to_prov.get(best_adj, str(best_adj))
                 order_seq = {

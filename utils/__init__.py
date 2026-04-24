@@ -35,10 +35,7 @@ from .translate import (
     dipnet_order,
     daidefy_order,
 )
-from .messages import (
-    process_now,
-    process_ord,
-    process_sco,
-    process_mrt,
-    process_frm,
-)
+# LEGACY — message processors removed from public API (2026-04-20).
+# The runtime inbound pipeline lives in communications.inbound.parse_message.
+# If you need these for offline format-conversion, import directly:
+#   from albert.utils.messages import process_now, process_ord, ...

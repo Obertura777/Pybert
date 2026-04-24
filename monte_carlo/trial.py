@@ -354,13 +354,12 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
              (chain broken) on accum_prov.
 
         Simplifications from the literal decompile:
-          - AdjacencyList_FilterByUnitType is replaced with state.adj_matrix
-            (coast-agnostic).  Scoring impact: FLT→land-via-coast adjacency
-            isn't filtered out, which over-counts fleet-seen chains by ~5%
-            on the standard map.
           - The "chain topology flag" branch (DAT_00baede0 == 1/2) is
             elided — nothing in the codebase currently writes that field
             to those sentinel values, so the branch is effectively dead.
+        Fixed 2026-04-20 (M-MC-1): adjacency scan now uses
+        can_reach_by_type for coast-aware filtering instead of raw
+        adj_matrix, matching C's AdjacencyList_FilterByUnitType.
         """
         # Threat gate (L55-57, and L61-64 for SUP_MTO).
         threat = float(state.g_ProximityScore[power_index, supporter])
@@ -374,7 +373,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             state.g_OrderTable[accum_prov, _F_SUP_CHAIN_CONFLICT] += 1.0
             return
 
-        # Adjacency scan.
+        # Adjacency scan — uses unit-type-aware adjacency (coast filtering).
         chain_ok = True
         for this_prov, this_unit in state.unit_info.items():
             # Skip if no enemy pressure at this unit's province (C has
@@ -385,7 +384,11 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             if not (er_flag or sec_flag):
                 continue
 
-            adjs = state.adj_matrix.get(this_prov, [])
+            # C uses AdjacencyList_FilterByUnitType to get only provinces
+            # this unit can legally reach given its type (army/fleet).
+            unit_type = this_unit.get('type', 'A')
+            adjs = [p for p in state.adj_matrix.get(this_prov, [])
+                    if state.can_reach_by_type(this_prov, p, unit_type)]
             b_sup = supporter in adjs
             b_tgt = supported in adjs
 
@@ -546,12 +549,14 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             if dst < 0:
                 return
             # build_convoy_orders handles the full CTO + CVY chain, but it
-            # requires state.g_ConvoyRoute[src] to be populated (route-
-            # planning output).  If unavailable, fall back to a direct CTO
-            # write without the fleet CVY chain — mirrors the C fallback
-            # when no valid convoy route is registered.
-            if (hasattr(state, 'g_ConvoyRoute')
-                    and state.g_ConvoyRoute.get(src, {}).get('fleet_count', 0) > 0):
+            # requires state.g_ConvoyRoute[src][dst] to be populated for
+            # this specific destination (route-planning output, per-dst
+            # shape from Fix #7).  If unavailable, fall back to a direct
+            # CTO write without the fleet CVY chain — mirrors the C
+            # fallback when no valid convoy route is registered.
+            from ..moves.convoy import _get_convoy_route
+            _fc, _ = _get_convoy_route(state, src, dst)
+            if _fc > 0:
                 build_convoy_orders(state, power_index, src, dst)
             else:
                 if int(state.g_OrderTable[src, _F_ORDER_TYPE]) == _ORDER_HLD:
@@ -731,7 +736,11 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # Fixed 2026-04-14 — was 0.0, which conflated "zero score" with "unset".
         state.g_OrderTable[:num_provinces, 18] = -1.0
         state.g_OrderTable[:num_provinces, 19] = -1.0
-        state.g_ConvoySourceProv[:num_provinces]  = -1.0  # g_SupportAssignmentMap sentinel
+        # H3 verified: g_ConvoySourceProv IS g_SupportAssignmentMap — C uses a
+        # single array at one address for both support assignment and convoy
+        # source tracking.  ProcessTurn.c:580 resets it to 0xffffffff each
+        # trial, then support and convoy dispatch write sequentially (no conflict).
+        state.g_ConvoySourceProv[:num_provinces]  = -1.0  # g_SupportAssignmentMap sentinel (0xffffffff)
         state.g_ConvoyActiveFlag[:num_provinces]  = 0
         state.g_ProvinceScoreTrial[:num_provinces] = 0
         state.g_ArmyAdjCount[:num_provinces]      = 0
@@ -752,33 +761,15 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 for adj in state.get_unit_adjacencies(prov):
                     state.g_ArmyAdjCount[adj] += 1
 
-        # 1b'. Default-HOLD seed for power_index's own units ──────────────────
-        # The C binary's MC trial loop always writes *some* order_type into
-        # g_OrderTable for each power's units — the combination of
-        # EnumerateHoldOrders, AssignHoldSupports, and BuildOrder_SUP_HLD in
-        # ProcessTurn ensures every unit has a default order before
-        # evaluate_order_proposal runs.
+        # 1b'. Default-HOLD seed — MOVED to after evaluate_order_proposal ────
+        # H2 fix: In C, units without orders remain at order_type==0 and are
+        # skipped by EvaluateOrderProposal (which checks order_type != 0).
+        # Pre-seeding HLD before dispatch made all own units enter the HLD
+        # branch of Step 3, inflating heat scores for units that C would skip.
         #
-        # The Python ports of those sub-passes (1d ring-convoy, 1f hold-
-        # support, 1g convoy-chain) only partially reproduce that seeding —
-        # in particular, _assign_hold_supports populates the convoy fleet
-        # candidate BST but does not write SUP HLD into g_OrderTable, and the
-        # convoy-chain pass only writes when g_ConvoyDstList is non-empty.
-        #
-        # Without a baseline seed, fresh-game / no-press scenarios leave
-        # g_OrderTable[prov, _F_ORDER_TYPE] == 0 for every own unit, which
-        # makes evaluate_order_proposal produce empty candidates (it skips
-        # provinces with order_type == 0).  bot.py then falls through to the
-        # all-HOLD safety path (bot.py:_submit_orders).
-        #
-        # Seed _ORDER_HLD here so that subsequent dispatch passes (1c, 1d,
-        # 1e, 1g BuildOrder_MTO etc.) can OVERWRITE with movement orders,
-        # but units that nothing touches still produce a real candidate.
-        # This matches the observable behavior of the C trial loop without
-        # requiring a full port of AssignHoldSupports / BuildOrder_SUP_HLD.
-        for prov, unit in state.unit_info.items():
-            if unit['power'] == power_index:
-                state.g_OrderTable[prov, _F_ORDER_TYPE] = float(_ORDER_HLD)
+        # The HLD seed is now applied AFTER evaluate_order_proposal (see
+        # "1b'-post" below) so that evaluation matches C's skip-zero behavior,
+        # while still ensuring every unit has an order for submission.
 
         # 1c. Dispatch existing orders (priority HLD→MTO→CTO→CVY→SUP) ─────────
         # First pass: alliance orders (DAT_00bb65f8[power*0xc]) — own or trusted ally.
@@ -1037,13 +1028,15 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 if not province_has_coast:
                     _build_order_mto(army_src, dst, coast)
                 else:
-                    # build_convoy_orders requires g_ConvoyRoute[src] pre-
-                    # populated with the fleet chain (see _dispatch_to_order_table
-                    # CTO branch).  If unavailable, fall back to a direct CTO
-                    # write — matches the C fallback when route planning has
-                    # not registered a valid fleet chain.
-                    if (hasattr(state, 'g_ConvoyRoute')
-                            and state.g_ConvoyRoute.get(army_src, {}).get('fleet_count', 0) > 0):
+                    # build_convoy_orders requires g_ConvoyRoute[src][dst]
+                    # pre-populated with the fleet chain for this dst
+                    # (per-dst shape from Fix #7).  If unavailable, fall
+                    # back to a direct MTO write — matches the C fallback
+                    # when route planning has not registered a valid
+                    # fleet chain for the (src, dst) pair.
+                    from ..moves.convoy import _get_convoy_route
+                    _fc, _ = _get_convoy_route(state, army_src, dst)
+                    if _fc > 0:
                         build_convoy_orders(state, power_index, army_src, dst)
                     else:
                         if int(state.g_OrderTable[army_src, _F_ORDER_TYPE]) == _ORDER_HLD:
@@ -1103,17 +1096,10 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                         _build_order_sup_hld(src_prov, dst_prov)
                         break  # one SUP HLD per supporter
 
-        # 1f.7  Emit SUP MTO orders for committed move-support triangles ───────
+        # 1f.7  Emit SUP MTO orders from g_SupportOpportunitiesSet ─────────────
         # build_support_opportunities populates g_SupportOpportunitiesSet during
         # Phase 0 setup with (mover, target, supporter) triples that satisfy
-        # the triangle-geometry gate.  Here we emit a SUP MTO whenever, after
-        # Phase 1c–1g ran, the mover has an MTO/CTO into target AND the
-        # supporter is unordered (or still at the default HLD from 1b').
-        #
-        # Mirrors the C emission path in ProcessTurn (BuildOrder_SUP_MTO call
-        # inside the own-power convoy-chain second pass), guarded by the same
-        # triangle-closed precondition that built the opportunity in the first
-        # place.  One SUP MTO per supporter per trial.
+        # the triangle-geometry gate (defensive only — requires own-SC target).
         if power_index == own_power:
             sup_opps = getattr(state, 'g_SupportOpportunitiesSet', None) or []
             consumed_supporters: set = set()
@@ -1126,28 +1112,87 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
                 if supporter in consumed_supporters:
                     continue
-                # Supporter must be an own unit.
                 sup_unit = state.unit_info.get(supporter)
                 if sup_unit is None or sup_unit['power'] != power_index:
                     continue
-                # Supporter must have no explicit order — allow HLD default
-                # to be upgraded, same as 1f.5 SUP_HLD path.
                 cur = int(state.g_OrderTable[supporter, _F_ORDER_TYPE])
                 if cur not in (0, _ORDER_HLD):
                     continue
-                # Mover must actually have a move into target this trial.
                 mover_ot   = int(state.g_OrderTable[mover, _F_ORDER_TYPE])
                 mover_dst  = int(state.g_OrderTable[mover, _F_DEST_PROV])
                 if mover_ot not in (_ORDER_MTO, _ORDER_CTO) or mover_dst != target:
                     continue
-                # Supporter must be adjacent to target (double-check — the
-                # triangle gate already guarantees it, but cheap to verify).
                 if target not in state.adj_matrix.get(supporter, []):
                     continue
 
                 state.g_OrderTable[supporter, _F_ORDER_TYPE] = 0.0
                 _build_order_sup_mto(supporter, mover, target)
                 consumed_supporters.add(supporter)
+
+        # 1f.8  Direct adjacency SUP MTO — C second pass port ─────────────────
+        # ProcessTurn.c lines 1411-1800+: after the MTO adjacency walk generates
+        # a move for unit X from province A to target B, re-iterate the unit
+        # candidate BST and find any own-power unit Y at province C (adjacent
+        # to B) that can support X's move.  The C code forcefully OVERWRITES
+        # existing MTO orders with support assignments (via BuildOrderSpec).
+        #
+        # The C second pass has a 30% random gate (line 1523) controlling
+        # which adjacency walk entries generate scored MTOs vs plain MTOs.
+        # The support assignment happens for each generated MTO regardless.
+        #
+        # Python implementation: post-hoc scan after Phase 1c dispatches all
+        # g_GeneralOrders.  Collect own-power MTO/CTO orders, then find
+        # adjacent own-power units to convert to SUP_MTO.  Unlike Phase 1f.7,
+        # this allows overwriting existing MTO orders (matching C behavior).
+        # A random gate (50%) prevents every trial from having identical
+        # support patterns — the MC evaluation picks the best combination.
+        if power_index == own_power:
+            # Collect all own-power MTO/CTO targets: {target_prov: mover_prov}
+            mto_targets: dict = {}
+            for prov, unit in state.unit_info.items():
+                if unit['power'] != power_index:
+                    continue
+                ot = int(state.g_OrderTable[prov, _F_ORDER_TYPE])
+                if ot in (_ORDER_MTO, _ORDER_CTO):
+                    dst = int(state.g_OrderTable[prov, _F_DEST_PROV])
+                    if dst not in mto_targets:
+                        mto_targets[dst] = prov
+
+            # Find supporters: own-power units adjacent to an MTO target.
+            # Allow overwriting existing MTO (C second pass does this).
+            # Constraints matching C behavior:
+            #   - At most ONE supporter per MTO target (C inner loop fires
+            #     once per BST entry, then moves on).
+            #   - Random gate (50%) when overwriting an existing MTO —
+            #     ensures candidate diversity across trials.
+            if not hasattr(consumed_supporters, '__contains__'):
+                consumed_supporters = set()
+            supported_targets: set = set()  # max 1 supporter per target
+            for sup_prov, sup_unit in state.unit_info.items():
+                if sup_unit['power'] != power_index:
+                    continue
+                if sup_prov in consumed_supporters:
+                    continue
+                cur = int(state.g_OrderTable[sup_prov, _F_ORDER_TYPE])
+                # Allow overwrite of HLD, empty (0), or MTO.
+                # Do NOT overwrite SUP_HLD, SUP_MTO, CVY, CTO — those are
+                # higher-commitment orders from earlier phases.
+                if cur not in (0, _ORDER_HLD, _ORDER_MTO):
+                    continue
+                # Random gate: 50% chance when overwriting an existing MTO.
+                if cur == _ORDER_MTO and random.randrange(100) >= 50:
+                    continue
+                # Check each adjacent province for an incoming own MTO.
+                for adj_prov in state.adj_matrix.get(sup_prov, []):
+                    if adj_prov in mto_targets and adj_prov not in supported_targets:
+                        mover_prov = mto_targets[adj_prov]
+                        if mover_prov == sup_prov:
+                            continue  # can't support own move
+                        state.g_OrderTable[sup_prov, _F_ORDER_TYPE] = 0.0
+                        _build_order_sup_mto(sup_prov, mover_prov, adj_prov)
+                        consumed_supporters.add(sup_prov)
+                        supported_targets.add(adj_prov)
+                        break  # one SUP_MTO per supporter
 
         # 1g. Convoy chain assignment ─────────────────────────────────────────
         # Iterate g_ConvoyDstList (DAT_00bb65a4); for each prov with enemy presence /
@@ -1260,6 +1305,18 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # Mirrors: EvaluateOrderProposal(param_1_00, power_index) at decompile line 3747.
         evaluate_order_proposal(state, power_index)
 
+        # 1b'-post. Default-HOLD seed for unassigned own units ────────────────
+        # H2 fix: In C, EvaluateOrderProposal skips units with order_type==0.
+        # After evaluation, seed HLD for any own units that still have no
+        # order so that the submission pipeline has a valid order for every
+        # unit.  Dispatch passes (1c-1h) already wrote non-zero order types
+        # for units with movement/support/convoy orders; only truly idle
+        # units remain at 0 here.
+        for prov, unit in state.unit_info.items():
+            if unit['power'] == power_index:
+                if int(state.g_OrderTable[prov, _F_ORDER_TYPE]) == 0:
+                    state.g_OrderTable[prov, _F_ORDER_TYPE] = float(_ORDER_HLD)
+
 
 # ── UpdateScoreState ──────────────────────────────────────────────────────────
 
@@ -1292,39 +1349,98 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
 def _refresh_order_table(state: InnerGameState, power: int) -> None:
     """
     Port of RefreshOrderTable (FUN_00424490).
-    Rebuilds g_OrderTable entries for the given power.
+
+    Populates g_CurrentBestOrder[power] with up to 30 (province, order_type)
+    pairs selected from the candidate pool via weighted random sampling.
+
+    The C code iterates a local BST of order entries and for each of the 30
+    slots independently selects one entry using (1000 - pressure_cost) weights
+    with supply-center threshold gates that reject low-quality candidates for
+    weak powers.
+
+    Fix 2026-04-20 (M-MC-3): previously wrote to g_OrderTable (wrong target)
+    and missed the SC threshold gates entirely.
     """
     import random
-    
+
     candidates = [c for c in state.g_CandidateRecordList if c.get('power') == power]
     if not candidates:
         return
-        
-    num_candidates = len(candidates)
-    
-    # Monte Carlo probabilistic selection modeling
-    selected_idx = 0
-    if num_candidates > 1:
-        # Re-creating the randomized float matching distribution map (1000 - pressure)
-        max_score = sum(1000 - min(1000, max(0, int(c.get('pressure_cost', 0)))) for c in candidates)
-        if max_score > 0:
-            threshold = random.randrange(1000)
-            
-            accum = 0.0
-            for i, c in enumerate(candidates):
-                cost_val = min(1000, max(0, int(c.get('pressure_cost', 0))))
-                score = 1000.0 - cost_val
-                
-                if (score + accum) > threshold:
-                    selected_idx = i
-                    break
-                accum += score
 
-    selected_candidate = candidates[selected_idx]
-    
-    # 3. Apply selected orders to g_OrderTable fields mapped locally
-    for prov, order_type in selected_candidate.get('orders', []):
-        state.g_OrderTable[prov, _F_ORDER_TYPE] = float(order_type)
+    # Flatten individual order entries from all candidates into a pool.
+    # Each entry carries the pressure_cost of its parent candidate.
+    order_pool: list = []  # [(prov, order_type, pressure_cost), ...]
+    for c in candidates:
+        cost = min(1000, max(0, int(c.get('pressure_cost', 0))))
+        for prov, order_type in c.get('orders', []):
+            order_pool.append((prov, order_type, cost))
+
+    if not order_pool:
+        return
+
+    # SC threshold gates (C: lines 157-186 of RefreshOrderTable.c).
+    # On the FIRST slot (local_54 == 0), reject entries with cost < threshold
+    # depending on game state.
+    own_power = getattr(state, 'g_AlbertPower', getattr(state, 'albert_power_idx', 0))
+    war_mode = getattr(state, 'g_WarModeFlag', 0)
+    press_flag = getattr(state, 'g_PressFlag', 0)
+    sc_cnt = int(state.sc_count[power]) if power < len(state.sc_count) else 0
+
+    def _passes_sc_gate(cost: int, slot_idx: int) -> bool:
+        """Return False if entry should be rejected on first-slot SC gates."""
+        if slot_idx != 0:
+            return True
+        score_val = 1000 - cost
+        # Gate 1: war mode AND not own power → reject if score < 50
+        if war_mode == 1 and own_power != power:
+            if score_val < 50:
+                return False
+        # Gate 2: SC count < 4 AND press off → reject if score < 50
+        if sc_cnt < 4 and press_flag == 0:
+            if score_val < 50:
+                return False
+        # Gate 3: SC count < 6 → reject if score < 20
+        if sc_cnt < 6:
+            if score_val < 20:
+                return False
+        return True
+
+    # Fill up to 30 slots via per-slot weighted random selection.
+    _MAX_SLOTS = 30
+    result_orders: list = []
+
+    for slot_idx in range(_MAX_SLOTS):
+        if not order_pool:
+            break
+
+        # Weighted selection: weight = 1000 - cost for entries that pass gates.
+        eligible = [(p, ot, c) for p, ot, c in order_pool if _passes_sc_gate(c, slot_idx)]
+        if not eligible:
+            # If no entries pass the gate, fall back to the full pool.
+            eligible = order_pool
+
+        # Compute accumulated weights.
+        weights = [1000.0 - c for (_, _, c) in eligible]
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            # All entries have cost >= 1000; pick uniformly.
+            sel = eligible[random.randrange(len(eligible))]
+        else:
+            # C uses rand()/0x17 % 1000 with possible multi-roll; simplify to
+            # single threshold in [0, total_weight).
+            threshold = random.random() * total_weight
+            accum = 0.0
+            sel = eligible[-1]  # fallback
+            for entry in eligible:
+                accum += 1000.0 - entry[2]
+                if accum > threshold:
+                    sel = entry
+                    break
+
+        result_orders.append((sel[0], sel[1]))
+
+    # Write to g_CurrentBestOrder (DAT_00bbf690/94) — NOT g_OrderTable.
+    state.g_CurrentBestOrder[power] = result_orders
 
 
 def update_score_state(state: InnerGameState) -> None:

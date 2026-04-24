@@ -108,24 +108,29 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
 
     prov_ids = _extract_provs(state, provs_section)
     order_list = getattr(state, 'g_OrderList', []) or []
-    from_in_dmz = from_power in dmz_powers
 
     for prov in prov_ids:
         # Walk g_OrderList for a node justifying DMZ on this province.
+        # C BST loop (lines 120-155): for each entry matching (province, ally_power),
+        # apply three gates.  The third gate does a per-entry lookup of the entry's
+        # ally_power in the DMZ-powers std::map (local_48) via GameBoard_GetPowerRec.
+        # A hit means the entry's ally_power is a DMZ participant → disqualify.
         found_qualifying = False
         for entry in order_list:
             if entry.get('province') != prov:
                 continue
-            if entry.get('ally_power') != from_power:
+            entry_ally = entry.get('ally_power')
+            if entry_ally != from_power:
                 continue
             # Match candidate; apply the three gating checks from the BST loop.
             if not entry.get('flag1', False):
                 continue
             if not entry.get('flag3', False) and own_in_dmz:
                 continue
-            if from_in_dmz:
-                # Last gate: presence in the dmz-powers std::map (local_48)
-                # disqualifies this match.  See NOTE above.
+            # Gate 3: per-entry DMZ-powers membership check.  C looks up the
+            # *entry's* ally_power in local_48 (the DMZ-powers map built from
+            # the proposal).  A match disqualifies this entry.
+            if entry_ally in dmz_powers:
                 continue
             found_qualifying = True
             break
@@ -188,14 +193,15 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         return _REJ
 
     # bVar4: per-pair compatibility.  This is the bulk of _eval_aly.c.
-    # We capture the sub-checks that are deterministic from current Albert
-    # state and skip the press-mode "promise queue" checks (DAT_004d5480/4
-    # = g_DiplomacyStateA/B), which are also gated on press_mode == 1.
+    # Fixed 2026-04-20 (M-COM-1): press-mode promise-queue gates now checked
+    # via g_DiplomacyStateA/B, matching C lines 180-210.
     press_mode = int(getattr(state, 'g_PressFlag', 0)) == 1
     enemy_flag = getattr(state, 'g_EnemyFlag', None)
     rel        = state.g_RelationScore           # DAT_00634e90
     ally_mat   = state.g_AllyMatrix              # DAT_006340c0/g_AllyMatrix overlap
     mutual_en  = getattr(state, 'g_MutualEnemyTable', None)  # DAT_00b9fdd8
+    diplo_a    = getattr(state, 'g_DiplomacyStateA', None)   # DAT_004d5480
+    diplo_b    = getattr(state, 'g_DiplomacyStateB', None)   # DAT_004d5484
 
     for aly_p in aly_powers:
         if aly_p == own:
@@ -203,6 +209,21 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         for vss_p in vss_powers:
             # Forward enemy/relation gate.
             if press_mode:
+                # Promise-queue gate (C _eval_aly.c lines 180-210):
+                # Check g_DiplomacyStateA[aly_p] and g_DiplomacyStateB[vss_p]
+                # to ensure we haven't already committed contradictory promises.
+                if diplo_a is not None and diplo_b is not None:
+                    dip_a = int(diplo_a[aly_p]) if aly_p < len(diplo_a) else 0
+                    dip_b = int(diplo_b[vss_p]) if vss_p < len(diplo_b) else 0
+                    # C: if DiplomacyStateA[aly_p] != 0 and already committed
+                    # to a different vss target, reject.
+                    if dip_a != 0 and dip_a != vss_p and dip_a != -1:
+                        return _REJ
+                    # C: if DiplomacyStateB[vss_p] != 0 and already committed
+                    # to a different aly partner, reject.
+                    if dip_b != 0 and dip_b != aly_p and dip_b != -1:
+                        return _REJ
+
                 ef = int(enemy_flag[aly_p]) if enemy_flag is not None else 0
                 if ef == 0 and int(rel[own, aly_p]) >= 0:
                     # vss must be a real opponent we're not already allied with
@@ -343,10 +364,12 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # Cross-slice call: ``legitimacy_gate`` still lives in the package
-    # ``__init__.py``.  Deferred import at call time avoids a circular import
-    # during package initialisation.
-    from . import legitimacy_gate
+    # Cross-slice call: ``legitimacy_gate`` lives in the parent
+    # ``communications`` package (re-exported from ``inbound.gate``).
+    # Deferred import at call time avoids a circular import during
+    # package initialisation.  Fixed 2026-04-20: was ``from .`` (evaluators
+    # package, which does not re-export it) → ``from ..`` (communications).
+    from .. import legitimacy_gate
 
     _YES, _REJ, _HUH, _BWX = 0x481C, 0x4814, 0x4806, 0x4A02
 
@@ -473,8 +496,8 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
             [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)
               if isinstance(c, dict) else 0} for c in cand_list],
         )
-    except Exception:
-        _log.exception("cal_value: legitimacy_gate raised; treating as non-blocking")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        _log.warning("cal_value: legitimacy_gate raised %s; treating as non-blocking", exc)
         gate_score = 0
 
     if yes_eligible and gate_score < 0:

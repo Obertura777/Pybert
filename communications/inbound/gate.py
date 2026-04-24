@@ -19,20 +19,25 @@ Module-level deps: ``...state.InnerGameState``;
 ``..parsers._parse_xdo_candidates`` and ``..senders.send_alliance_press``
 (register_received_press).
 
-NOTE: ``delay_review`` contains a function-local
-``from .dispatch import validate_and_dispatch_order`` that has been
-broken since the original single-file split (the intended target is
-``albert.dispatch`` via ``...dispatch`` from here).  Preserved verbatim
-for behaviour equivalence — if that call site is ever reached, it will
-raise ImportError exactly as it did before.
+NOTE: ``delay_review`` contained a broken function-local import
+``from .dispatch import …`` (one dot, targeting non-existent
+``communications/inbound/dispatch.py``).  Fixed 2026-04-20 to
+``from ...dispatch import …`` (three dots → ``albert.dispatch``).
+The import was subsequently promoted to module level (C1 hardening,
+2026-04-20) so that startup fails loudly if dispatch is unavailable.
+All callers' ``except Exception`` narrowed to specific types.
 """
 
+import logging as _logging
 import time as _time
 
 from ...state import InnerGameState
+from ...dispatch import validate_and_dispatch_order
 from ..parsers import _parse_xdo_candidates
 from ..senders import send_alliance_press
 from ..evaluators import _split_xdo_clauses
+
+_log = _logging.getLogger(__name__)
 
 
 def legitimacy_gate(
@@ -80,10 +85,7 @@ def legitimacy_gate(
 
     Returns the aggregate minimum (defaults to 0 for an empty set).
     """
-    import logging as _logging
-    from .dispatch import validate_and_dispatch_order
-
-    _log = _logging.getLogger(__name__)
+    # validate_and_dispatch_order imported at module level (C1 fix 2026-04-20)
 
     aggregate: int | None = None
 
@@ -233,8 +235,8 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
                           'flag_bit': 0})
     try:
         score = legitimacy_gate(state, int(own_power_idx), cand_list)
-    except Exception:
-        _log.exception("delay_review: cheap scorer raised; defaulting to 0")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        _log.warning("delay_review: cheap scorer raised %s; defaulting to 0", exc)
         return 0
 
     _log.debug("delay_review: novel proposal cheap_score=%d orr=%s",
@@ -244,6 +246,15 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
     # check is deliberate — nonzero scores (positive or negative) skip
     # the delay branch.
     if score == 0:
+        # Phase-aware REJ: in retreat (RVT) and build (WTA) phases, C's
+        # FRMHandler emits an explicit REJ for proposals it would otherwise
+        # defer, rather than silently dropping them.  Fixed 2026-04-20
+        # (audit finding M3).
+        phase = getattr(state, 'g_current_phase', getattr(state, 'g_season', 'SPR'))
+        if phase in ('RVT', 'WTA', 'AUT', 'WIN'):
+            _log.debug("delay_review: score==0 in %s phase → 2 (explicit REJ)", phase)
+            return 2  # caller interprets 2 as "send REJ, don't delay silently"
+
         import time as _t
         # Event key = (now - press_epoch) + 10000; use absolute wall time
         # plus the +10000 offset (press_epoch isn't tracked in Python;
@@ -326,18 +337,21 @@ def register_received_press(
     # and proceed (matching the observation that register_received_press
     # unconditionally enqueues in C too — the gate's effect is primarily
     # through CAL_VALUE, not here).
+    # Canonical Python name is albert_power_idx; g_AlbertPower is the
+    # C-faithful mirror (DAT_00624124) kept in sync by bot client.
+    own_power_idx = getattr(
+        state, 'albert_power_idx',
+        getattr(state, 'g_AlbertPower', 0),
+    )
     try:
-        own_power_idx = getattr(state, 'own_power_index', None)
-        if own_power_idx is None:
-            own_power_idx = getattr(state, 'g_OwnPowerIndex', 0)
         gate_score = legitimacy_gate(
             state, int(own_power_idx),
             [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
              for c in external_cands],
         )
         _log.debug("register_received_press: legitimacy_gate -> %d", gate_score)
-    except Exception:
-        _log.exception("register_received_press: legitimacy_gate failed; proceeding")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        _log.warning("register_received_press: legitimacy_gate raised %s; proceeding", exc)
 
     # C: local_1f8 = DAT_00bb65f4  (g_BroadcastList size before first insert)
     size_before = len(state.g_BroadcastList)
@@ -360,7 +374,7 @@ def register_received_press(
             # int range the C side would see at +0x48 (undefined4, but
             # CAL_VALUE only reads signed deltas from it).
             score_vec[pwr] = int(s)
-        except Exception:
+        except (KeyError, IndexError, TypeError, ValueError):
             score_vec[pwr] = 0
 
     # ── Pass 1: type_flag==0 entries, watermark=None ──────────────────────

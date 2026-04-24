@@ -254,8 +254,8 @@ def _stabbed(state: InnerGameState) -> None:
     # g_AllyPromiseList[row]: set of expected dest provinces for own's moves
     #   into row's territory (C: DAT_00bb6f28/2c per power)
     # Submitted orders in g_SubmittedOrderList lack order_type; treated as MTO.
-    ally_counter = getattr(state, 'g_AllyCounterList', None)
-    ally_promise = getattr(state, 'g_AllyPromiseList', None)
+    ally_counter = getattr(state, 'g_ally_counter_list', None)
+    ally_promise = getattr(state, 'g_ally_promise_list', None)
 
     def _in_list(lst, power, dest):
         if lst is None:
@@ -276,10 +276,19 @@ def _stabbed(state: InnerGameState) -> None:
         col = int(order.get('power', -1))
         if not (0 <= col < num_powers):
             continue
-        dest = int(order.get('dst_prov', -1))
+        # C discriminates order types: MTO/CTO (2/6) check dst_prov;
+        # SUP-MTO (4) checks support-target province instead.
+        # Fixed 2026-04-20 (audit finding C4).
+        order_type = int(order.get('order_type', order.get('type_id', 2)))
+        if order_type in (2, 6):  # MTO or CTO
+            dest = int(order.get('dst_prov', -1))
+        elif order_type == 4:     # SUP-MTO: use support-target province
+            dest = int(order.get('sup_dst', order.get('target_dest',
+                       order.get('dst_prov', -1))))
+        else:
+            continue  # HLD(1), SUP-HLD(3), CVY(5), etc. don't trigger stab
         if dest < 0:
             continue
-        # Treat all submitted orders as MTO-type (order_type not in Python state).
         # Case A: attacker (col) hits own_power (row==own_power)
         if col != own_power:
             row = own_power
@@ -309,13 +318,13 @@ def _stabbed(state: InnerGameState) -> None:
                 logger.info("We have been stabbed by (%d) during the turn", col)
                 state.g_StabbedFlag = 1
                 logger.info("Enemy desired because of stab")
-                _stab_clear_ally_list(state, 'g_AllyPromiseList', col)
-                _stab_clear_ally_list(state, 'g_AllyCounterList', col)
+                _stab_clear_ally_list(state, 'g_ally_promise_list', col)
+                _stab_clear_ally_list(state, 'g_ally_counter_list', col)
 
             # Stabber == own_power (C lines 368-398)
             if col == own_power:
-                _stab_clear_ally_list(state, 'g_AllyPromiseList', row)
-                _stab_clear_ally_list(state, 'g_AllyCounterList', row)
+                _stab_clear_ally_list(state, 'g_ally_promise_list', row)
+                _stab_clear_ally_list(state, 'g_ally_counter_list', row)
 
             # Season-dependent bilateral CoopScore flags (C lines 399-413)
             if season in ('SUM', 'FAL'):
@@ -374,7 +383,14 @@ def _deviate_move(state: InnerGameState) -> None:
     # Phase 3 continues at LAB_0043a175 line 382; UnitList_Advance at line 1323).
     # Outer loop is the victim-power loop; inner loop iterates g_RetreatList.
     retreat_list = getattr(state, 'g_RetreatList', [])
-    attack_map   = getattr(state, 'g_AttackMap', None)  # int64[pow*0x100+prov]; 2=active
+    # g_AttackMap (DAT_005d98e8) is a retreat-phase snapshot of g_TargetFlag
+    # (SnapshotProvinceState.c:729-732 copies g_TargetFlag → g_AttackMap).  The
+    # Python port doesn't run SnapshotProvinceState's copy pass, so we use
+    # g_TargetFlag directly when g_AttackMap isn't populated — same shape
+    # (7, 256) and same semantic (2 = active attacker).
+    attack_map = getattr(state, 'g_AttackMap', None)
+    if attack_map is None:
+        attack_map = getattr(state, 'g_TargetFlag', None)
 
     for p in range(num_powers):
         for rec in retreat_list:
@@ -561,9 +577,11 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
         state.g_CoopScoreFlag_B[attacker, p] = 1
         state.g_CoopScoreFlag_B[p, attacker] = 1
 
-    # Bilateral trust reset (C lines 358-366)
+    # Bilateral trust reset (C DEVIATE_MOVE.c lines 1185-1193: clears both lo and hi)
     state.g_AllyTrustScore[attacker, p] = 0
+    state.g_AllyTrustScore_Hi[attacker, p] = 0
     state.g_AllyTrustScore[p, attacker] = 0
+    state.g_AllyTrustScore_Hi[p, attacker] = 0
 
     if p == own_power:
         if retreat_phase:
@@ -574,8 +592,8 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
         # Clear per-power designation lists via _destroy_inner_list (FUN_00401950):
         # C: FUN_00401950(*(int**)(DAT_00bb6f2c[attacker*3]+4))  → g_AllyPromiseList
         #    FUN_00401950(*(int**)(DAT_00bb702c[attacker*3]+4))   → g_AllyCounterList
-        _stab_clear_ally_list(state, 'g_AllyPromiseList', attacker)
-        _stab_clear_ally_list(state, 'g_AllyCounterList', attacker)
+        _stab_clear_ally_list(state, 'g_ally_promise_list', attacker)
+        _stab_clear_ally_list(state, 'g_ally_counter_list', attacker)
 
         # Clear g_AllyMatrix[attacker row] (C lines 1219-1222)
         for j in range(num_powers):
@@ -597,9 +615,10 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
                 state.g_OpeningStickyMode = 0
 
     elif attacker == own_power:
-        # We (own_power) stabbed victim p: clear own AllyMatrix row (C lines 1243-1249)
+        # We (own_power) stabbed victim p: clear victim's AllyMatrix row (C lines 1243-1249,
+        # g_AllyMatrix + uStack_1c0 * 0x15 where uStack_1c0 = p the victim)
         for j in range(num_powers):
-            state.g_AllyMatrix[own_power, j] = 0
+            state.g_AllyMatrix[p, j] = 0
 
 
 def _friendly(state: InnerGameState) -> None:
@@ -698,8 +717,13 @@ def _hostility(state: InnerGameState) -> None:
         # C: runs every SPR/FAL with press_on (not gated by g_HistoryCounter==0).
         if press_on:
             # Zero per-power press counters.
+            # C (HOSTILITY.c:177-188): zeroes six arrays every press-on SPR/FAL turn,
+            # including the DiplomacyState int64 snapshot used by evaluators and the
+            # DMZ/ALY-VSS scheduling gates.
             state.g_AllyPressCount.fill(0)
             state.g_AllyPressHi.fill(0)
+            state.g_DiplomacyStateA.fill(0)  # DAT_004d5480[p*2]
+            state.g_DiplomacyStateB.fill(0)  # DAT_004d5484[p*2]
 
             # Trust init from g_InfluenceMatrix_B for ALL power pairs (not just own).
             # ≤ 17.0 → nearby (trust 5); > 17.0 → distant (trust 3).
@@ -757,10 +781,23 @@ def _hostility(state: InnerGameState) -> None:
                                 if getattr(state, attr) == own_power:
                                     setattr(state, attr, -1)
 
-            # g_HistoryCounter > 0 path: snapshot own-power trust row and send press.
-            # C: saves g_AllyTrustScore[own_power, p] to DAT_004d5480/4, clears low trust,
-            #    then calls SendAllyPressByPower(p) for each p.
-            # Deferred: press dispatch requires send_fn; handled by caller after _hostility.
+            # g_HistoryCounter > 0 path: snapshot own-power trust row into
+            # g_DiplomacyStateA/B (DAT_004d5480/4), clear low trust, then dispatch press.
+            # C (HOSTILITY.c:308-323): iterates p=0..num_powers-1, copies trust[own,p]
+            # into DiplomacyStateA[p] (lo) / DiplomacyStateB[p] (hi); if the snapshot
+            # represents low trust (hi < 1 AND (hi < 0 OR lo < 5)) the live trust row is
+            # cleared so the rest of HOSTILITY sees zero trust for weak allies.
+            # Press dispatch (SendAllyPressByPower) still deferred: caller owns send_fn.
+            if int(getattr(state, 'g_HistoryCounter', 0)) > 0:
+                for p in range(num_powers):
+                    lo = int(state.g_AllyTrustScore[own_power, p])
+                    hi = int(state.g_AllyTrustScore_Hi[own_power, p])
+                    state.g_DiplomacyStateA[p] = lo
+                    state.g_DiplomacyStateB[p] = hi
+                    # C: if ((int)hi < 1) && ((int)hi < 0 || lo < 5) → clear trust
+                    if hi < 1 and (hi < 0 or lo < 5):
+                        state.g_AllyTrustScore[own_power, p]    = 0
+                        state.g_AllyTrustScore_Hi[own_power, p] = 0
 
             # ── Near-end-game overrides (inside press_on + SPR/FAL block) ─────
             if state.g_NearEndGameFactor > 5.0:

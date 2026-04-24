@@ -16,6 +16,15 @@ Module-level deps: ``..state.InnerGameState``.
 """
 
 from ..state import InnerGameState
+from ._constants import (
+    _F_ORDER_TYPE,
+    _F_DEST_PROV,
+    _F_INCOMING_MOVE,
+    _F_ORDER_ASGN,
+    _ORDER_MTO,
+    _ORDER_CTO,
+    _ORDER_CVY,
+)
 
 def build_support_opportunities(state: InnerGameState):
     """
@@ -115,17 +124,32 @@ def assign_support_order(
       6  Section 3: proximity score update (g_ProximityScore / g_CoverageFlag)
     """
     # ── Section 1 — Adjacency-confirm gate ─────────────────────────────────
-    # g_SupportableFlag = DAT_00535ce8 (state.g_EnemyReachScore); {1,0} = src can support
-    supportable = int(state.g_EnemyReachScore[power_idx, src_prov])
+    # g_EnemyReachScore (DAT_00535ce8) is the lo-word of a 64-bit counter
+    # whose hi-word is g_EnemyPressureSecondary (DAT_00535cec); see the
+    # CARRY4 64-bit-add at ScoreProvinces.c:404-409.  The C gate reads
+    # 'lo==1 && hi==0' (= int64 value == 1), and the LAB_0044150f goto
+    # reads 'lo!=0 || hi!=0' (= int64 != 0).  Consult both halves — same
+    # pattern as monte_carlo/trial.py:371-384 and heuristics/scoring.py:145.
+    # Fixed 2026-04-18 (AUDIT_moves_and_messages.md #1): previous read of
+    # only the lo word could misclassify any counter value whose lo half
+    # happened to equal 1 regardless of the hi half.
+    reach_lo = int(state.g_EnemyReachScore[power_idx, src_prov])
+    reach_hi = int(state.g_EnemyPressureSecondary[power_idx, src_prov])
+    reach_eq_1 = (reach_lo == 1 and reach_hi == 0)
+    reach_eq_0 = (reach_lo == 0 and reach_hi == 0)
+
     # g_UnitPresence[(dst+pow*0x40)*8]: power has a unit at dst_prov
     dst_has_own_unit = (state.unit_info.get(dst_prov, {}).get('power', -1) == power_idx)
 
     bVar16 = False  # adjacency confirmed
-    if supportable == 1 and dst_has_own_unit:
+    if reach_eq_1 and dst_has_own_unit:
         bVar16 = dst_prov in state.adj_matrix.get(src_prov, [])
 
-    # Gate 2: abort → skip score assignment, fall through to build-center commit
-    go_to_score = not ((not bVar16 or supportable != 1) and supportable != 0)
+    # C gate (lines 62-65) simplifies to: go to LAB_0044150f (skip score)
+    # unless (reach_i64 == 0) OR bVar16.  Note that bVar16 = True already
+    # implies reach_i64 == 1 by the line-32 gate, so the reach_eq_1 clause
+    # that appeared in the previous formulation is redundant.
+    go_to_score = reach_eq_0 or bVar16
 
     # ── Section 2 — Occupancy check ────────────────────────────────────────
     if go_to_score:
@@ -224,7 +248,7 @@ def assign_support_order(
             for a in state.adj_matrix.get(dst_prov, []):
                 if a != src_prov:
                     state.g_ProximityScore[w_power, a] += 1
-                if a == src_prov and int(state.g_CoverageFlag[w_power, src_prov]) == 1:
+                if a == src_prov and int(state.g_ThreatLevel[w_power, src_prov]) == 1:
                     state.g_ProximityScore[w_power, src_prov] += 2
 
 

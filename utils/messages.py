@@ -1,10 +1,14 @@
-"""DAIDE incoming-message processors.
+"""DAIDE incoming-message processors — **LEGACY / DEAD CODE**.
 
 Split from utils.py during the 2026-04 refactor.
 
-Each ``process_<TAG>`` function takes the tokenized payload of an
-incoming DAIDE message of that type and returns/updates the DipNet
-representation the bot consumes. Ordered loosely by arrival frequency:
+.. deprecated:: 2026-04-20
+   These helpers pre-date the ``communications.inbound`` package which
+   now handles all runtime DAIDE message processing.  The five
+   ``process_*`` functions below are **never called** at runtime —
+   they remain only for offline format-conversion / test utilities.
+   Do NOT add new callers; use ``communications.inbound.parse_message``
+   instead.  See AUDIT_exhaustive_2026-04-20.docx finding M15.
 
   * ``process_now`` — NOW (current-positions broadcast).
   * ``process_ord`` — ORD (order adjudication results).

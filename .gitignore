@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+*.md
+all_games/
+all_games_albert

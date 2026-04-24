@@ -18,6 +18,11 @@ from ..state import InnerGameState
 
 from ._primitives import evaluate_province_score
 
+# M2: ScoreProvinces normalization exponent — the C binary's _safe_pow call
+# uses an FPU-stack argument not recoverable from Ghidra decompile.
+# Default 0.5 (sqrt); sweep [0.3, 1.0] during parity calibration.
+SCORE_NORM_EXPONENT = 0.5
+
 
 def score_order_candidates_all_powers(state: InnerGameState, round_weights: list, dominant_power_idx: int):
     """
@@ -36,7 +41,14 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                 score = state.get_candidate_score(power, province, i)
                 total += score * round_weights[i]
                 
-            if getattr(state, 'g_DominantPowerMode', 0) == 1 and power != dominant_power_idx:
+            # C (ScoreOrderCandidates_AllPowers.c:106): war-mode bonus fires when
+            # DAT_00baed6c == 1 AND DAT_00624124 != local_f4.  The canonical Python
+            # name for DAT_00baed6c is g_WarModeFlag (written by heuristics/board.py).
+            # g_DominantPowerMode is the legacy alias per GlobalDataRefs.md:135 and
+            # research.md:3531 — kept as a fallback for any transitional callers.
+            war_mode = int(getattr(state, 'g_WarModeFlag',
+                           getattr(state, 'g_DominantPowerMode', 0)))
+            if war_mode == 1 and power != dominant_power_idx:
                 main_candidate_score = state.get_candidate_score(power, province, 0)
                 total += main_candidate_score * dominance_weight
                 
@@ -48,9 +60,8 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
     # Pass 2 - Score normalization (C Phase 1b, lines 131-211)
     # Rewritten 2026-04-14: per-power max/min now tracked via
     # g_MaxProvScorePerPower / g_MinProvScorePerPower (was only global).
-    # Sub-threshold nonzero/non-min branch now uses _safe_pow sqrt proxy
-    # instead of collapsing to 1.0.
-    import math
+    # Sub-threshold nonzero/non-min branch now uses _safe_pow proxy
+    # with configurable SCORE_NORM_EXPONENT (default 0.5).
     import random as _rnd
     global_max = np.max(state.g_MaxProvinceScore)
     threshold = global_max / 100.0
@@ -73,10 +84,18 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                     score = float(_rnd.randint(1, 10))
                 else:
                     # _safe_pow proxy — C applies pow(score/min, exponent).
-                    # Exponent not recoverable from Ghidra; use 0.5 (sqrt)
-                    # consistent with the CAL_BOARD parity notes.
+                    # The exponent is an FPU-stack argument in the Ghidra
+                    # decompile (ScoreOrderCandidates_AllPowers.c:178) and
+                    # cannot be recovered from the binary.  Candidate values:
+                    #   0.5  (sqrt) — diminishing returns, conservative
+                    #   0.75       — moderate compression
+                    #   1.0        — linear (no compression)
+                    # Using 0.5 as default; tune via SCORE_NORM_EXPONENT.
+                    # M2: If game output parity testing reveals systematic
+                    # divergence in province scoring, sweep [0.3, 1.0].
                     denom = max(float(state.g_MinScore[province]), 1.0)
-                    score = math.sqrt(max(raw_score / denom, 0.0))
+                    ratio = max(raw_score / denom, 0.0)
+                    score = pow(ratio, SCORE_NORM_EXPONENT)
                 if score > 10.0:
                     score = 10.0
 
@@ -372,9 +391,20 @@ def score_provinces(state: InnerGameState,
     state.g_MaxProvinceScore.fill(0)
     state.g_MinScore.fill(1_000_000)    # g_MinScore sentinel
 
-    # Friendly/unit-presence flags (new in this pass)
-    g_FriendlyUnitFlag = np.zeros(num_provinces, dtype=np.int32)
-    g_UnitPresence     = np.zeros(num_provinces, dtype=np.int32)
+    # Friendly/unit-presence flags.
+    # g_FriendlyUnitFlag and g_EstablishedAllyFlag are *persisted* to state
+    # (ScoreProvinces.c:813-826, DAT_005164e8 / DAT_0050bce8) because
+    # heuristics/_primitives.py:compute_winter_builds consumes them via
+    # `state.g_FriendlyUnitFlag[target]` / `state.g_EstablishedAllyFlag[target]`.
+    # The C code indexes them as [outer_power * 0x100 + prov]; the Python port
+    # collapses outer_power into the own-power view, which is the perspective
+    # compute_winter_builds cares about.  Reset each trial; re-filled below.
+    state.g_FriendlyUnitFlag.fill(0)
+    state.g_EstablishedAllyFlag.fill(0)
+    g_FriendlyUnitFlag    = state.g_FriendlyUnitFlag
+    g_EstablishedAllyFlag = state.g_EstablishedAllyFlag
+    # g_UnitPresence stays local — only consumed below inside Section 4g.
+    g_UnitPresence        = np.zeros(num_provinces, dtype=np.int32)
 
     # Section 2 — build reachability matrix from unit list
     # reachability[province][power] = units of power that can reach province
@@ -412,6 +442,18 @@ def score_provinces(state: InnerGameState,
             g_UnitPresence[prov] = 1
         else:
             g_FriendlyUnitFlag[prov] = 1
+            # g_EstablishedAllyFlag (DAT_0050bce8) — ScoreProvinces.c:819-826.
+            # Set iff g_RelationScore[own_power, unit.power] <= 9.  The C
+            # `goto LAB_004486a4` on `9 < relation` SKIPS the flag set, so
+            # the flag fires for RECENT (relation ≤ 9) alliance history.
+            # Used by compute_winter_builds to give extra weight to trusted
+            # allies' territory (_primitives.py:87,91).
+            try:
+                relation = int(state.g_RelationScore[own_power, power])
+            except (AttributeError, IndexError, TypeError):
+                relation = 0
+            if relation <= 9:
+                g_EstablishedAllyFlag[prov] = 1
 
     # Section 4 — per-power outer loop: alliance-gated reach → scored tables
     for outer_power in range(num_powers):

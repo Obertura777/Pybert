@@ -58,7 +58,7 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg
+    from ..alliance import build_alliance_msg
 
     import logging
     _log = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg
+    from ..alliance import build_alliance_msg
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -380,7 +380,7 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg
+    from ..alliance import build_alliance_msg
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -599,7 +599,8 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg, _ordered_token_seq_insert
+    from ..alliance import build_alliance_msg
+    from ..alliance import _ordered_token_seq_insert
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
