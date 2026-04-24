@@ -1,12 +1,12 @@
 """Integration tests for build_convoy_orders (moves/convoy.py).
 
 Verifies that the simplified Python convoy-order assembly correctly sets
-g_OrderTable fields, scores, and fleet registration for 1-, 2-, and 3-fleet
+g_order_table fields, scores, and fleet registration for 1-, 2-, and 3-fleet
 convoy chains.  These scenarios exercise the code path that diverges most
 from the C original (BuildConvoyOrders.c), which used BuildOrder_CTO,
 BuildOrder_CVY, ConvoyList_Insert, and MoveCandidate helpers.
 
-Compares against expected g_OrderTable state derived from the C decompile.
+Compares against expected g_order_table state derived from the C decompile.
 """
 
 import numpy as np
@@ -72,7 +72,7 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     state.land_provinces = frozenset()  # treat src/dst as coastal (not land-only)
 
     # Pre-populate convoy route (normally done by populate_convoy_routes).
-    state.g_ConvoyRoute = {
+    state.g_convoy_route = {
         army_src: {
             army_dst: {
                 'fleet_count': len(fleet_provs),
@@ -82,22 +82,22 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     }
 
     # Seed scores so we can verify they propagate.
-    state.g_CandidateScores = np.zeros((7, 256), dtype=np.float64)
-    state.g_CandidateScores[POWER_ENG, army_dst] = 42.0  # army inherits this
+    state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
+    state.g_candidate_scores[POWER_ENG, army_dst] = 42.0  # army inherits this
 
     for fp in fleet_provs:
-        state.g_MaxProvinceScore[fp] = 10.0 + fp  # distinct per fleet
+        state.g_max_province_score[fp] = 10.0 + fp  # distinct per fleet
 
     # register_convoy_fleet needs these:
-    state.g_ArmyAdjCount = np.zeros(256, dtype=np.int32)
-    state.g_ProvinceAccessFlag = np.zeros((7, 256), dtype=np.int32)
-    state.g_ProvinceScoreTrial = np.zeros(256, dtype=np.int32)
-    state.g_ConvoyFleetRegistered = set()
+    state.g_army_adj_count = np.zeros(256, dtype=np.int32)
+    state.g_province_access_flag = np.zeros((7, 256), dtype=np.int32)
+    state.g_province_score_trial = np.zeros(256, dtype=np.int32)
+    state.g_convoy_fleet_registered = set()
 
     # assign_support_order reads several arrays — stub them to avoid crashes.
     # (We're testing the order-table writes, not the full support pipeline.)
-    state.g_SupportableFlag = np.zeros(256, dtype=np.int32)
-    state.g_EnemyReachScore = np.zeros((7, 256), dtype=np.float64)
+    state.g_supportable_flag = np.zeros(256, dtype=np.int32)
+    state.g_enemy_reach_score = np.zeros((7, 256), dtype=np.float64)
 
     return state
 
@@ -120,55 +120,55 @@ class TestSingleFleetConvoy:
 
     def test_army_order_type_is_cto(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_TYPE] == _ORDER_CTO
+        assert state.g_order_table[LON, _F_ORDER_TYPE] == _ORDER_CTO
 
     def test_army_destination(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_DEST_PROV] == STP
+        assert state.g_order_table[LON, _F_DEST_PROV] == STP
 
     def test_army_committed(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_ASGN] == 1
+        assert state.g_order_table[LON, _F_ORDER_ASGN] == 1
 
     def test_convoy_leg0_set(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG0] == NTH
+        assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
 
     def test_convoy_leg1_unset(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         # Only 1 fleet — leg1 should remain at initial value (0).
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG1] == 0
+        assert state.g_order_table[LON, _F_CONVOY_LEG1] == 0
 
     def test_fleet_order_type_is_cvy(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[NTH, _F_ORDER_TYPE] == _ORDER_CVY
+        assert state.g_order_table[NTH, _F_ORDER_TYPE] == _ORDER_CVY
 
     def test_fleet_source_prov(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[NTH, _F_SOURCE_PROV] == LON
+        assert state.g_order_table[NTH, _F_SOURCE_PROV] == LON
 
     def test_fleet_dest_prov(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[NTH, _F_DEST_PROV] == STP
+        assert state.g_order_table[NTH, _F_DEST_PROV] == STP
 
     def test_fleet_committed(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[NTH, _F_ORDER_ASGN] == 1
+        assert state.g_order_table[NTH, _F_ORDER_ASGN] == 1
 
     def test_army_score_propagated(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_ConvoyChainScore[LON] == 42.0
-        assert state.g_OrderScoreHi[LON] == 42.0
+        assert state.g_convoy_chain_score[LON] == 42.0
+        assert state.g_order_score_hi[LON] == 42.0
 
     def test_fleet_score_from_max_province(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        expected = 10.0 + NTH  # g_MaxProvinceScore[NTH]
-        assert state.g_ConvoyChainScore[NTH] == expected
-        assert state.g_OrderScoreHi[NTH] == expected
+        expected = 10.0 + NTH  # g_max_province_score[NTH]
+        assert state.g_convoy_chain_score[NTH] == expected
+        assert state.g_order_score_hi[NTH] == expected
 
     def test_convoy_dst_to_src(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_ConvoyDstToSrc[STP] == LON
+        assert state.g_convoy_dst_to_src[STP] == LON
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -190,23 +190,23 @@ class TestTwoFleetConvoy:
 
     def test_army_cto_with_two_legs(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_TYPE] == _ORDER_CTO
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG0] == NTH
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG1] == NWG
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG2] == 0  # unused
+        assert state.g_order_table[LON, _F_ORDER_TYPE] == _ORDER_CTO
+        assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
+        assert state.g_order_table[LON, _F_CONVOY_LEG1] == NWG
+        assert state.g_order_table[LON, _F_CONVOY_LEG2] == 0  # unused
 
     def test_both_fleets_get_cvy_orders(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         for fleet_prov in [NTH, NWG]:
-            assert state.g_OrderTable[fleet_prov, _F_ORDER_TYPE] == _ORDER_CVY
-            assert state.g_OrderTable[fleet_prov, _F_SOURCE_PROV] == LON
-            assert state.g_OrderTable[fleet_prov, _F_DEST_PROV] == STP
-            assert state.g_OrderTable[fleet_prov, _F_ORDER_ASGN] == 1
+            assert state.g_order_table[fleet_prov, _F_ORDER_TYPE] == _ORDER_CVY
+            assert state.g_order_table[fleet_prov, _F_SOURCE_PROV] == LON
+            assert state.g_order_table[fleet_prov, _F_DEST_PROV] == STP
+            assert state.g_order_table[fleet_prov, _F_ORDER_ASGN] == 1
 
     def test_fleet_scores_distinct(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_ConvoyChainScore[NTH] == 10.0 + NTH
-        assert state.g_ConvoyChainScore[NWG] == 10.0 + NWG
+        assert state.g_convoy_chain_score[NTH] == 10.0 + NTH
+        assert state.g_convoy_chain_score[NWG] == 10.0 + NWG
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -229,25 +229,25 @@ class TestThreeFleetConvoy:
 
     def test_army_cto_with_three_legs(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_TYPE] == _ORDER_CTO
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG0] == NTH
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG1] == NWG
-        assert state.g_OrderTable[LON, _F_CONVOY_LEG2] == BAR
+        assert state.g_order_table[LON, _F_ORDER_TYPE] == _ORDER_CTO
+        assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
+        assert state.g_order_table[LON, _F_CONVOY_LEG1] == NWG
+        assert state.g_order_table[LON, _F_CONVOY_LEG2] == BAR
 
     def test_all_three_fleets_get_cvy(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         for fp in [NTH, NWG, BAR]:
-            assert state.g_OrderTable[fp, _F_ORDER_TYPE] == _ORDER_CVY
-            assert state.g_OrderTable[fp, _F_ORDER_ASGN] == 1
+            assert state.g_order_table[fp, _F_ORDER_TYPE] == _ORDER_CVY
+            assert state.g_order_table[fp, _F_ORDER_ASGN] == 1
 
     def test_all_fleet_scores(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         for fp in [NTH, NWG, BAR]:
-            assert state.g_ConvoyChainScore[fp] == 10.0 + fp
+            assert state.g_convoy_chain_score[fp] == 10.0 + fp
 
     def test_army_score(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_ConvoyChainScore[LON] == 42.0
+        assert state.g_convoy_chain_score[LON] == 42.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -258,20 +258,20 @@ class TestConvoyEdgeCases:
     """No route, empty route, etc."""
 
     def test_no_route_is_noop(self):
-        """build_convoy_orders with no g_ConvoyRoute entry should be a no-op."""
+        """build_convoy_orders with no g_convoy_route entry should be a no-op."""
         state = InnerGameState()
-        state.g_ConvoyRoute = {}
-        state.g_CandidateScores = np.zeros((7, 256), dtype=np.float64)
+        state.g_convoy_route = {}
+        state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
         # Should not raise or modify order table.
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_TYPE] == 0  # untouched
+        assert state.g_order_table[LON, _F_ORDER_TYPE] == 0  # untouched
 
     def test_zero_fleet_count_is_noop(self):
         """Route registered but fleet_count == 0 → no-op."""
         state = InnerGameState()
-        state.g_ConvoyRoute = {
+        state.g_convoy_route = {
             LON: {STP: {'fleet_count': 0, 'fleets': []}}
         }
-        state.g_CandidateScores = np.zeros((7, 256), dtype=np.float64)
+        state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_OrderTable[LON, _F_ORDER_TYPE] == 0
+        assert state.g_order_table[LON, _F_ORDER_TYPE] == 0

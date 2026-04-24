@@ -1,13 +1,13 @@
 """Monte-Carlo order-table field indices and order-type constants.
 
 Split from monte_carlo.py during the 2026-04 refactor. These are the
-numeric field positions into the g_OrderTable row-per-province table and
+numeric field positions into the g_order_table row-per-province table and
 the six order-type tags consumed by the dispatch/evaluation pipeline.
 No runtime behavior — this module is constants only.
 """
 
 # ── Order-table field indices ────────────────────────────────────────────────
-# g_OrderTable[prov, field]  mirrors  DAT_00baeda0[prov*0x1e + field*4]
+# g_order_table[prov, field]  mirrors  DAT_00baeda0[prov*0x1e + field*4]
 # Layout from research.md §DispatchSingleOrder "complete field map (updated)"
 # and §AssignSupportOrder.  Field [3] is ushort read via ptr-to-short at
 # stride 0x3c × 2 = 0x78 (same row width as the int fields).
@@ -40,7 +40,7 @@ _F_SUP_TARGET    = 18   # AssignSupportOrder: assigned target-role province (DAT
 _F_ORDER_ASGN    = 20   # 1 = support order committed (DAT_00baedf0)
 _F_CUM_SCORE     = 27   # cumulative trial score
 
-# Order type constants (g_OrderTable[prov, _F_ORDER_TYPE])
+# Order type constants (g_order_table[prov, _F_ORDER_TYPE])
 _ORDER_HLD      = 1
 _ORDER_MTO      = 2
 _ORDER_SUP_HLD  = 3

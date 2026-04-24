@@ -6,20 +6,25 @@ Early-pipeline helpers run by ``generate_orders`` before support and convoy
 enumeration:
 
   * ``enumerate_hold_orders`` — full port of ``EnumerateHoldOrders``
-    (``FUN_00455fd0``).  Populates ``g_HoldWeight``, builds per-power
-    ordered province sets, and fills ``g_UnitProvinceReach`` /
-    ``g_MaxNonAllyReach`` (consumed by ``EvaluateAllianceScore``).
+    (``FUN_00455fd0``).  Populates ``g_hold_weight``, builds per-power
+    ordered province sets, and fills ``g_unit_province_reach`` /
+    ``g_max_non_ally_reach`` (consumed by ``EvaluateAllianceScore``).
+    Phase 6 builds per-power default-hold DAIDE token sequences
+    (``g_hold_order_seqs``) for the fallback submission path.
   * ``compute_safe_reach``    — port of ``FUN_0043dfb0`` computing the
-    per-unit safe-reach score (``g_SafeReachScore``).
+    per-unit safe-reach score (``g_safe_reach_score``).
 
-Module-level deps: ``bisect``, ``numpy``, ``..state.InnerGameState``.
+Module-level deps: ``bisect``, ``logging``, ``numpy``, ``..state.InnerGameState``.
 """
 
 import bisect
+import logging
 
 import numpy as np
 
 from ..state import InnerGameState
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -56,28 +61,28 @@ def _get_ally_trust_for_adj(state: InnerGameState,
     value.  Later designations overwrite earlier ones (C > B > A).
     """
     trust = 0
-    # Slot A  — g_AllyDesignation_A[adj_prov]
-    desig_a = int(state.g_AllyDesignation_A[adj_prov])
+    # Slot A  — g_ally_designation_a[adj_prov]
+    desig_a = int(state.g_ally_designation_a[adj_prov])
     if 0 <= desig_a < NUM_POWERS:
-        t = int(state.g_AllyTrustScore[unit_power * NUM_POWERS + desig_a]
-                if state.g_AllyTrustScore.ndim == 1
-                else state.g_AllyTrustScore[unit_power, desig_a])
+        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_a]
+                if state.g_ally_trust_score.ndim == 1
+                else state.g_ally_trust_score[unit_power, desig_a])
         trust = t
 
-    # Slot B  — g_AllyDesignation_B[adj_prov]
-    desig_b = int(state.g_AllyDesignation_B[adj_prov])
+    # Slot B  — g_ally_designation_b[adj_prov]
+    desig_b = int(state.g_ally_designation_b[adj_prov])
     if 0 <= desig_b < NUM_POWERS:
-        t = int(state.g_AllyTrustScore[unit_power * NUM_POWERS + desig_b]
-                if state.g_AllyTrustScore.ndim == 1
-                else state.g_AllyTrustScore[unit_power, desig_b])
+        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_b]
+                if state.g_ally_trust_score.ndim == 1
+                else state.g_ally_trust_score[unit_power, desig_b])
         trust = t
 
-    # Slot C  — g_AllyDesignation_C[adj_prov]
-    desig_c = int(state.g_AllyDesignation_C[adj_prov])
+    # Slot C  — g_ally_designation_c[adj_prov]
+    desig_c = int(state.g_ally_designation_c[adj_prov])
     if 0 <= desig_c < NUM_POWERS:
-        t = int(state.g_AllyTrustScore[unit_power * NUM_POWERS + desig_c]
-                if state.g_AllyTrustScore.ndim == 1
-                else state.g_AllyTrustScore[unit_power, desig_c])
+        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_c]
+                if state.g_ally_trust_score.ndim == 1
+                else state.g_ally_trust_score[unit_power, desig_c])
         trust = t
 
     return trust
@@ -97,26 +102,25 @@ def enumerate_hold_orders(state: InnerGameState, power_idx: int):
     ``power_idx > 0`` only run the per-power hold-weight pass unless the
     matrices are stale.
 
-    **Phase 1** — Zero ``g_UnitProvinceReach`` and ``g_MaxNonAllyReach``.
+    **Phase 1** — Zero ``g_unit_province_reach`` and ``g_max_non_ally_reach``.
 
     **Phase 2** — Walk every unit.  For each unit insert its province into
     every power's ordered province set and record the rank as
-    ``g_UnitProvinceReach[power, province]``.  Then filter adjacencies by
-    unit type, initialise ``g_MaxNonAllyReach[unit.power, province]``, and
+    ``g_unit_province_reach[power, province]``.  Then filter adjacencies by
+    unit type, initialise ``g_max_non_ally_reach[unit.power, province]``, and
     walk adjacent provinces.  For each adjacent province that is NOT
     controlled by a trusted ally (checked via the three ``g_AllyDesignation``
     slots), insert it into the unit's power's ordered set; if the resulting
-    rank exceeds the current ``g_MaxNonAllyReach``, update it.
+    rank exceeds the current ``g_max_non_ally_reach``, update it.
 
     **Phase 5** — Hold-weight population (the only part the prior stub had).
 
-    **Phase 6** — Per-power hold-order sequence generation.  This calls
-    ``BuildOrder_RTO``, ``FUN_00463690``, and ``FUN_00466c40`` which are
-    opaque Ghidra stubs.  The Python trial loop already seeds HLD orders
-    via ``trial.py:784-786`` and generates movement orders through its own
-    pipeline, so this phase is **not yet ported**.  If you have access to
-    cleaner Ghidra decompile output for FUN_00463690 / FUN_00466c40 please
-    provide it so the hold-order sequence generation can be completed.
+    **Phase 6** — Per-power hold-order sequence generation.  Calls
+    ``BuildOrder_RTO`` (sets order type = HLD), ``FUN_00463690`` (DAIDE
+    token serializer, ported as ``_build_movement_order_token``), and
+    ``FUN_00466c40`` (token list concatenator).  Builds per-power default
+    hold DAIDE sequences in ``g_hold_order_seqs[power]`` for the fallback
+    submission path (``BuildAndSendSUB``).  Ported 2026-04-21 (MV-1 fix).
     """
 
     # ── Phase 1 + 2: Reach matrices (run once, on first power) ────────────
@@ -130,30 +134,53 @@ def enumerate_hold_orders(state: InnerGameState, power_idx: int):
     # ── Phase 5: Hold-weight population ───────────────────────────────────
     for prov in range(NUM_PROVINCES):
         if state.has_own_unit(power_idx, prov):
-            if state.g_ThreatLevel[power_idx, prov] > 0:
-                state.g_HoldWeight[prov] = max(state.g_HoldWeight[prov], 0.4)
+            if state.g_threat_level[power_idx, prov] > 0:
+                state.g_hold_weight[prov] = max(state.g_hold_weight[prov], 0.4)
             else:
-                state.g_HoldWeight[prov] = 1.0
+                state.g_hold_weight[prov] = 1.0
 
-    # ── Phase 6: Hold-order sequence generation ───────────────────────────
-    # NOT YET PORTED — requires Ghidra decompile for FUN_00463690 and
-    # FUN_00466c40.  The Python MC trial loop (trial.py) already seeds HLD
-    # orders and generates candidates through its own pipeline.
+    # ── Phase 6: Hold-order sequence generation ─────────────────────────
+    # Port of EnumerateHoldOrders.c lines 227-293.
+    #
+    # C algorithm:
+    #   1. For each power with SC count > 0: clear DAT_00b954d0[power] = 0
+    #   2. For each power (local_7c = 0..num_powers-1):
+    #      a. ResetPerTrialState(gamestate)
+    #      b. Build "SUB" prefix + DAT_00bc1e0c → token accumulator
+    #      c. Walk UnitList: for each unit where unit.power == power:
+    #         - BuildOrder_RTO(gamestate, prov, prov) → set order type = HLD (1)
+    #         - FUN_00463690(gamestate, buf, unit_record) → serialize to DAIDE tokens
+    #           (already ported as _build_movement_order_token in bot/orders.py)
+    #         - FUN_00466c40(accum, buf, tokens) → concatenate with DAIDE brackets
+    #      d. Store accumulated tokens in g_HoldOrderSeqs[power]
+    #
+    # FUN_00463690 is a switch on order type → DAIDE token serializer.
+    # FUN_00466c40 is a token list concatenator (wraps in DAIDE parentheses).
+    # BuildOrder_RTO simply sets the unit's order field to 1 (HLD).
+    #
+    # The Python bot's order submission path (_build_gof_seq in bot/gof.py)
+    # constructs DAIDE tokens on-the-fly from the order table, so
+    # g_hold_order_seqs is not consumed by the current submission pipeline.
+    # We build it here for completeness and potential press-mode use.
+    #
+    # Fix 2026-04-21 (MV-1): Ported from Ghidra decompiles of FUN_00463690
+    # and FUN_00466c40.
+    _build_hold_order_seqs(state, power_idx)
 
 
 def _build_reach_matrices(state: InnerGameState):
     """Phases 1-2 of EnumerateHoldOrders: build reach matrices.
 
     Populates:
-      * ``state.g_UnitProvinceReach[power, province]`` — rank of *province*
+      * ``state.g_unit_province_reach[power, province]`` — rank of *province*
         in *power*'s ordered province set.
-      * ``state.g_MaxNonAllyReach[power, province]``   — max rank among
+      * ``state.g_max_non_ally_reach[power, province]``   — max rank among
         non-ally adjacent provinces for the unit's own power.
     """
 
     # ── Phase 1: Zero arrays ──────────────────────────────────────────────
-    state.g_UnitProvinceReach[:] = 0
-    state.g_MaxNonAllyReach[:] = 0
+    state.g_unit_province_reach[:] = 0
+    state.g_max_non_ally_reach[:] = 0
 
     # Per-power ordered province sets.  C uses STL ordered-set (RB-tree);
     # we use sorted lists with bisect (same semantics, O(n) insert).
@@ -167,10 +194,10 @@ def _build_reach_matrices(state: InnerGameState):
 
         # 2a. Insert province into each power's ordered set and record rank.
         # C (lines 68-87): for each power, OrderedSet_FindOrInsert →
-        #   g_UnitProvinceReach[province + power*256] = rank
+        #   g_unit_province_reach[province + power*256] = rank
         for p in range(NUM_POWERS):
             rank = _find_or_insert(power_sets[p], prov_id)
-            state.g_UnitProvinceReach[p, prov_id] = rank
+            state.g_unit_province_reach[p, prov_id] = rank
 
         # 2b. Get type-filtered adjacencies.
         # C (line 99): AdjacencyList_FilterByUnitType(gamestate, unit_type)
@@ -186,10 +213,10 @@ def _build_reach_matrices(state: InnerGameState):
 
         # 2c. Initialise MaxNonAllyReach for this unit's province to its own
         #     UnitProvinceReach rank.
-        # C (lines 108-110): g_MaxNonAllyReach[power*256+prov] =
-        #                     g_UnitProvinceReach[power*256+prov]
-        state.g_MaxNonAllyReach[unit_power, prov_id] = \
-            state.g_UnitProvinceReach[unit_power, prov_id]
+        # C (lines 108-110): g_max_non_ally_reach[power*256+prov] =
+        #                     g_unit_province_reach[power*256+prov]
+        state.g_max_non_ally_reach[unit_power, prov_id] = \
+            state.g_unit_province_reach[unit_power, prov_id]
 
         # 2d. Walk adjacencies — ally-trust gate.
         # C (lines 111-166): for each adj province, check 3 designation
@@ -200,9 +227,9 @@ def _build_reach_matrices(state: InnerGameState):
             trust = _get_ally_trust_for_adj(state, unit_power, adj_prov)
             if trust == 0:
                 adj_rank = _find_or_insert(power_sets[unit_power], adj_prov)
-                cur_max = state.g_MaxNonAllyReach[unit_power, prov_id]
+                cur_max = state.g_max_non_ally_reach[unit_power, prov_id]
                 if adj_rank > cur_max:
-                    state.g_MaxNonAllyReach[unit_power, prov_id] = adj_rank
+                    state.g_max_non_ally_reach[unit_power, prov_id] = adj_rank
 
 
 def compute_safe_reach(state: InnerGameState):
@@ -212,10 +239,10 @@ def compute_safe_reach(state: InnerGameState):
     Builds a [province][power] contestedness matrix, then for each unit checks
     whether its province and all adjacent provinces are uncontested from its
     power's perspective.  If so, writes the max sorted-set rank across those
-    provinces to g_SafeReachScore[unit.province]; otherwise leaves the sentinel
+    provinces to g_safe_reach_score[unit.province]; otherwise leaves the sentinel
     0xffffffff in place.
 
-    Phase 1 — initialise g_SafeReachScore and contested matrix.
+    Phase 1 — initialise g_safe_reach_score and contested matrix.
     Phase 2 — for each unit, mark unit.province + adjacencies contested for all
                other powers  (AdjacencyList call #1).
     Phase 3 — province token pass: AMY units re-mark their own province for
@@ -223,14 +250,14 @@ def compute_safe_reach(state: InnerGameState):
                their province contested for ALL powers including their own
                (fleets block army safe-reach universally).
     Phase 4 — second unit pass: compute max sorted-set rank across unit.province
-               and adjacencies; store to g_SafeReachScore only when all squares
+               and adjacencies; store to g_safe_reach_score only when all squares
                are uncontested  (AdjacencyList call #2).
     """
     num_provinces = 256
     num_powers = 7
 
     # Phase 1 — initialise
-    state.g_SafeReachScore = np.full(num_provinces, 0xFFFFFFFF, dtype=np.uint32)
+    state.g_safe_reach_score = np.full(num_provinces, 0xFFFFFFFF, dtype=np.uint32)
     contested = np.zeros((num_provinces, num_powers), dtype=np.int32)
 
     # Phase 2 — mark unit province + adjacencies contested for all other powers
@@ -287,6 +314,115 @@ def compute_safe_reach(state: InnerGameState):
                 is_safe = False
 
         if is_safe:
-            state.g_SafeReachScore[prov_id] = score
+            state.g_safe_reach_score[prov_id] = score
+
+
+# ---------------------------------------------------------------------------
+#  Phase 6 — Hold-order sequence generation
+# ---------------------------------------------------------------------------
+
+def _build_hold_order_seqs(state: InnerGameState, power_idx: int) -> None:
+    """Port of EnumerateHoldOrders Phase 6 (lines 227-293).
+
+    Builds per-power default-hold DAIDE token sequences and stores them
+    in ``state.g_hold_order_seqs[power]``.  Only runs on the power_idx==0
+    call (Phase 6 in C iterates all powers in one pass).
+
+    C algorithm:
+      1. For each power with SC count > 0: clear DAT_00b954d0[power] = 0.
+      2. For each power (local_7c):
+         a. ResetPerTrialState(gamestate)
+         b. Prepend 'SUB' token (FUN_00466f80 with &SUB + DAT_00bc1e0c)
+         c. Walk UnitList: for each unit where unit.power == local_7c:
+            - BuildOrder_RTO(gamestate, prov, prov) → sets order type to HLD (1)
+            - FUN_00463690(gamestate, buf, unit_record) → serialize order to
+              DAIDE tokens (ported as _build_movement_order_token in bot/orders.py)
+            - FUN_00466c40(accum, buf, tokens) → concatenate with DAIDE
+              parenthesis wrapping
+         d. Store in g_HoldOrderSeqs[power]
+
+    FUN_00463690 switch cases:
+      0/1 (HLD): ``( POWER AMY|FLT PROV ) HLD``
+      2   (MTO): ``( POWER AMY|FLT PROV ) MTO DEST``
+      3   (SUP_HLD): ``( POWER AMY|FLT PROV ) SUP ( TPOWER AMY|FLT TPROV )``
+      4   (SUP_MTO): ``( POWER AMY|FLT PROV ) SUP ( TPOWER AMY|FLT TPROV ) MTO DEST``
+      5   (CVY): ``( POWER AMY|FLT PROV ) CVY ( TPOWER AMY|FLT TPROV ) CTO DEST``
+      6   (CTO): ``( POWER AMY|FLT PROV ) CTO DEST VIA ( fleet_chain )``
+
+    Since Phase 6 forces all units to HLD via BuildOrder_RTO before serializing,
+    only case 0/1 is ever hit.  The resulting token is:
+      ``( POWER AMY|FLT PROV ) HLD``
+
+    FUN_00466c40 concatenates token lists with DAIDE bracket separators
+    (DAT_004c79b4/b8/7d14).  For the final sequence the structure is:
+      ``SUB ( ( POWER AMY|FLT PROV1 ) HLD ) ( ( POWER AMY|FLT PROV2 ) HLD ) ...``
+
+    Fix 2026-04-21 (MV-1): Ported from Ghidra decompiles of FUN_00463690
+    and FUN_00466c40.
+    """
+    # Only run on the first call (power_idx == 0) since C Phase 6 loops all
+    # powers in one pass.
+    if power_idx != 0:
+        return
+
+    # Lazy-init the per-power hold order sequences dict
+    if not hasattr(state, 'g_hold_order_seqs'):
+        state.g_hold_order_seqs = {}
+
+    # Lazy-import to avoid circular dependency (bot.orders → state → moves)
+    from ..bot.orders import _build_movement_order_token
+    from ..bot._shared import _DAIDE_POWER_NAMES
+
+    num_powers = state.g_num_powers if hasattr(state, 'g_num_powers') else NUM_POWERS
+
+    # Step 1: Clear per-power counter for powers with SCs
+    # C: if (curr_sc_cnt[iVar10] != 0) DAT_00b954d0[iVar10] = 0
+    # DAT_00b954d0 is not otherwise used in Python; skip for now.
+
+    # Step 2: Per-power loop
+    for power in range(num_powers):
+        # C lines 204-226: clear per-power province reach arrays BEFORE
+        # generating hold sequences.  C zeros g_UnitProvinceReach and
+        # g_MaxNonAllyReach for each province before each power's pass.
+        # Fixed 2026-04-23 (audit finding MOV-3): was missing, leaving
+        # stale reach data from prior powers.
+        state.g_unit_province_reach[power, :] = 0
+        state.g_max_non_ally_reach[power, :] = 0
+
+        # 2a. ResetPerTrialState — clear build list and waive count
+        if hasattr(state, 'g_build_order_list'):
+            state.g_build_order_list.clear()
+        state.g_waive_count = 0
+
+        # 2b. Build SUB prefix token
+        # C: FUN_00466f80(&SUB, &local_58, &DAT_00bc1e0c)
+        # DAT_00bc1e0c is the power-name token for the current power
+        power_name = _DAIDE_POWER_NAMES[power] if power < len(_DAIDE_POWER_NAMES) else 'UNO'
+        seq: list[str] = ['SUB']
+
+        # 2c. Walk units: for each unit belonging to this power
+        for prov, unit_data in state.unit_info.items():
+            if unit_data.get('power') != power:
+                continue
+
+            # BuildOrder_RTO: set order type = HLD (1) in g_order_table
+            # C: *(undefined4 *)(iVar2 + 0x20) = 1
+            state.g_order_table[prov, 0] = 1.0  # _F_ORDER_TYPE = HLD
+
+            # FUN_00463690: serialize order to DAIDE tokens
+            # Since we just set HLD, this will produce: ( POWER AMY|FLT PROV ) HLD
+            tok = _build_movement_order_token(state, prov)
+            if tok is not None:
+                # FUN_00466c40: wrap in DAIDE parentheses and concatenate
+                seq.append(f'( {tok} )')
+
+        # 2d. Store in g_hold_order_seqs[power]
+        state.g_hold_order_seqs[power] = seq
+
+    # Restore order table — Phase 6 was a serialization pass; the actual
+    # order table will be rebuilt by the MC trial loop.  C achieves this
+    # via ResetPerTrialState at the top of each trial; we zero explicitly
+    # to avoid stale HLD entries leaking into subsequent phases.
+    state.g_order_table[:, 0] = 0.0
 
 

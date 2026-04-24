@@ -6,19 +6,23 @@ Convoy-chain pipeline called from ``generate_orders`` and the MC trial
 loop:
 
   * ``enumerate_convoy_reach``   — port of ``FUN_0043ee00``; populates
-    ``g_ConvoyReachCount`` plus distance-decay weight tables
-    ``g_WinterScore_A/B`` for each of a power's units.
+    ``g_convoy_reach_count`` plus distance-decay weight tables
+    ``g_winter_score_a/B`` for each of a power's units.
   * ``register_convoy_fleet``    — register a fleet onto an existing
-    convoy chain (``g_ConvoyRoute``).
+    convoy chain (``g_convoy_route``).
   * ``build_convoy_orders``      — commit the winning convoy orders
-    (``_ORDER_CVY`` / ``_ORDER_CTO``) to ``g_OrderTable``, calling into
+    (``_ORDER_CVY`` / ``_ORDER_CTO``) to ``g_order_table``, calling into
     ``.support.assign_support_order`` for each convoying fleet.
 
 Module-level deps: ``..state.InnerGameState``, ``.support.assign_support_order``.
 """
 
+import logging
+
 from ..state import InnerGameState
 from .support import assign_support_order
+
+logger = logging.getLogger(__name__)
 from ._constants import (
     _F_ORDER_TYPE,
     _F_DEST_PROV,
@@ -33,6 +37,17 @@ from ._constants import (
     _ORDER_CTO,
     _MAX_CONVOY_CHAIN_DEPTH,
 )
+
+
+def _filtered_adj(state: InnerGameState, prov: int, unit_type: str) -> list:
+    """Return adjacencies filtered by unit type, matching C's
+    AdjacencyList_FilterByUnitType.  Armies skip water; fleets skip land."""
+    raw = state.get_unit_adjacencies(prov)
+    if unit_type in ('A', 'AMY'):
+        return [a for a in raw if a not in state.water_provinces]
+    if unit_type in ('F', 'FLT'):
+        return [a for a in raw if a not in state.land_provinces]
+    return list(raw)
 
 
 def _harmonic_dist_weight(n: int, base: float) -> float:
@@ -55,8 +70,8 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
     units, with full convoy-chain expansion for army units.
 
     Phase 1  Seed reachCandidates from the unit's province (wave 0).
-    Phase 2  Main BFS through g_BuildCandidateList provinces; write distance-
-             decay weights to g_WinterScore_A / g_WinterScore_B (base 7 / 8).
+    Phase 2  Main BFS through g_build_candidate_list provinces; write distance-
+             decay weights to g_winter_score_a / g_winter_score_b (base 7 / 8).
     Phase 3  (AMY only) Convoy sub-passes A–D:
              A  Seed fleetChainList from fleet neighbours of reached provinces;
                 collect their unoccupied neighbours into freeDestinations.
@@ -66,19 +81,19 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
              D  10-hop convoy chain completion pass (MAX_CONVOY_CHAIN_DEPTH).
 
     Writes:
-      g_ConvoyReachCount[power_idx, prov]  +1 for every convoy-reachable province
-      g_WinterScore_A[prov]               max harmonic weight (base 7.0)
-      g_WinterScore_B[prov]               max harmonic weight (base 8.0)
+      g_convoy_reach_count[power_idx, prov]  +1 for every convoy-reachable province
+      g_winter_score_a[prov]               max harmonic weight (base 7.0)
+      g_winter_score_b[prov]               max harmonic weight (base 8.0)
 
-    Requires state.g_BuildCandidateList (set of target province IDs) to be
+    Requires state.g_build_candidate_list (set of target province IDs) to be
     populated before calling.  Falls back to all occupied/SC provinces if unset.
     """
-    build_candidates: set = state.g_BuildCandidateList
+    build_candidates: set = state.g_build_candidate_list
     if not build_candidates:
         # Fallback: provinces that have any unit or are supply centres
         build_candidates = {
             prov for prov in range(256)
-            if state.has_unit(prov) or state.g_SCOwnership[:, prov].any()
+            if state.has_unit(prov) or state.g_sc_ownership[:, prov].any()
         }
 
     for src_prov, unit_data in list(state.unit_info.items()):
@@ -104,14 +119,14 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
                 dist_weight_a = _harmonic_dist_weight(wave, 7.0)
                 dist_weight_b = _harmonic_dist_weight(wave, 8.0)
 
-                for adj in state.get_unit_adjacencies(cur_prov):
+                for adj in _filtered_adj(state, cur_prov, unit_type):
                     if adj not in build_candidates:
                         continue
                     # Score with harmonic distance-decay weights
-                    if dist_weight_a > state.g_WinterScore_A[adj]:
-                        state.g_WinterScore_A[adj] = dist_weight_a
-                    if dist_weight_b > state.g_WinterScore_B[adj]:
-                        state.g_WinterScore_B[adj] = dist_weight_b
+                    if dist_weight_a > state.g_winter_score_a[adj]:
+                        state.g_winter_score_a[adj] = dist_weight_a
+                    if dist_weight_b > state.g_winter_score_b[adj]:
+                        state.g_winter_score_b[adj] = dist_weight_b
                     army_reach.add(adj)
                     if adj not in in_reach:
                         in_reach.add(adj)
@@ -123,7 +138,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
         # ── Phase 3: army-only convoy expansion ─────────────────────────────
         if unit_type != 'A':
             for prov in army_reach:
-                state.g_ConvoyReachCount[power_idx, prov] += 1
+                state.g_convoy_reach_count[power_idx, prov] += 1
             continue
 
         fleet_chain: list = []       # (prov, coast_tok, wave) fleet chain nodes
@@ -133,25 +148,27 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
         # Sub-pass A: for each reached province, find adjacent fleet units;
         #   seed fleetChainList with those fleets and collect their unoccupied
         #   neighbours into freeDestinations.
+        # Fixed 2026-04-20 (audit #2): filter adjacencies by unit type.
         for cur_prov, cur_coast, wave in reach_candidates:
-            # AdjacencyList call #2: fleet-type filter
-            for adj in state.get_unit_adjacencies(cur_prov):
+            # AdjacencyList call #2: army-type filter (army looking for fleets)
+            for adj in _filtered_adj(state, cur_prov, 'A'):
                 if state.get_unit_type(adj) != 'F':
                     continue
                 if adj not in in_fleet_chain:
                     in_fleet_chain.add(adj)
                     fleet_chain.append((adj, cur_coast, wave))
-                for fleet_adj in state.get_unit_adjacencies(adj):
+                # Fleet's neighbours: fleet-type filter
+                for fleet_adj in _filtered_adj(state, adj, 'F'):
                     if not state.has_unit(fleet_adj):    # unoccupied
                         free_destinations.add(fleet_adj)
 
         # Sub-pass B: BFS-expand fleet chain through further unoccupied provinces.
+        # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
         fc_idx = 0
         while fc_idx < len(fleet_chain):
             fc_prov, fc_coast, fc_wave = fleet_chain[fc_idx]
             fc_idx += 1
-            # AdjacencyList call #3
-            for adj in state.get_unit_adjacencies(fc_prov):
+            for adj in _filtered_adj(state, fc_prov, 'F'):
                 if not state.has_unit(adj):              # unoccupied
                     free_destinations.add(adj)
                     if adj not in in_fleet_chain:
@@ -160,9 +177,9 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
 
         # Sub-pass C: from fleet chain, detect convoy landing on occupied
         #   build-candidate squares (army crosses to a contested province).
+        # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
         for fc_prov, fc_coast, fc_wave in fleet_chain:
-            # AdjacencyList call #4
-            for adj in state.get_unit_adjacencies(fc_prov):
+            for adj in _filtered_adj(state, fc_prov, 'F'):
                 if state.has_unit(adj) and adj in build_candidates:
                     army_reach.add(adj)
                     if adj not in in_reach:
@@ -174,8 +191,8 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
         local_1a8 = 0
         while local_1a8 < _MAX_CONVOY_CHAIN_DEPTH:
             for cur_prov, cur_coast, wave in [e for e in reach_candidates if e[2] == local_1a8]:
-                # AdjacencyList call #5
-                for adj in state.get_unit_adjacencies(cur_prov):
+                # Fixed 2026-04-20 (audit #2): army-type adjacency filter.
+                for adj in _filtered_adj(state, cur_prov, 'A'):
                     if adj in build_candidates and adj not in army_reach:
                         army_reach.add(adj)
                         if adj not in in_reach:
@@ -185,7 +202,7 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
 
         # Commit convoy reach counts for all discovered destinations
         for prov in free_destinations | army_reach:
-            state.g_ConvoyReachCount[power_idx, prov] += 1
+            state.g_convoy_reach_count[power_idx, prov] += 1
 
 
 def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int) -> None:
@@ -193,12 +210,12 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
     Port of RegisterConvoyFleet.
 
     For fleet province `fleet_prov`, iterates all fleet-adjacent provinces.
-    For each adjacent province `adj` where g_ArmyAdjCount[adj] > 0 AND
-    g_ProvinceAccessFlag[power_idx, adj] > 0, marks g_ProvinceScoreTrial[adj] = 1.
+    For each adjacent province `adj` where g_army_adj_count[adj] > 0 AND
+    g_province_access_flag[power_idx, adj] > 0, marks g_province_score_trial[adj] = 1.
 
     The C++ guard (offset +4 in province record) prevents double-processing the
-    same province within a trial; in Python we use g_ConvoyFleetRegistered (a set
-    reset per trial alongside g_ArmyAdjCount / g_ProvinceScoreTrial).
+    same province within a trial; in Python we use g_convoy_fleet_registered (a set
+    reset per trial alongside g_army_adj_count / g_province_score_trial).
 
     AdjacencyList_FilterByUnitType(..., FLT) would return only fleet-navigable
     neighbours; the Python adj_matrix merges all adjacency types, so we use it
@@ -207,11 +224,12 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
     Unit-type terrain filtering for actual moves is enforced in _build_order_mto
     (monte_carlo.py) and _is_legal_mto (dispatch.py).
     """
-    if fleet_prov in state.g_ConvoyFleetRegistered:
+    if fleet_prov in state.g_convoy_fleet_registered:
         return
+    state.g_convoy_fleet_registered.add(fleet_prov)
     for adj in state.get_unit_adjacencies(fleet_prov):
-        if state.g_ArmyAdjCount[adj] > 0 and state.g_ProvinceAccessFlag[power_idx, adj] > 0:
-            state.g_ProvinceScoreTrial[adj] = 1
+        if state.g_army_adj_count[adj] > 0 and state.g_province_access_flag[power_idx, adj] > 0:
+            state.g_province_score_trial[adj] = 1
 
 
 def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
@@ -223,7 +241,7 @@ def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
     For each army owned by ``power_idx``, enumerates *every* destination
     reachable via a fleet chain (1, 2, or 3 fleets) and records the
     shortest chain for each (src, dst) pair in
-    ``state.g_ConvoyRoute[army_src][dst_prov]``.  Armies with no viable
+    ``state.g_convoy_route[army_src][dst_prov]``.  Armies with no viable
     chain are absent from the outer dict.
 
     This per-destination keying matches the C layout
@@ -234,7 +252,7 @@ def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
     committed on per-turn re-evaluation.  Fixed 2026-04-18
     (AUDIT_moves_and_messages.md #7).
 
-    Mutates only ``state.g_ConvoyRoute``.
+    Mutates only ``state.g_convoy_route``.
     """
     for src_prov, unit_data in list(state.unit_info.items()):
         if unit_data.get('power') != power_idx:
@@ -245,10 +263,10 @@ def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
         chains_by_dst = _enumerate_convoy_chains_for_src(state, src_prov)
         if not chains_by_dst:
             # No viable chain - clear any stale entry from prior trials.
-            state.g_ConvoyRoute.pop(src_prov, None)
+            state.g_convoy_route.pop(src_prov, None)
             continue
 
-        state.g_ConvoyRoute[src_prov] = {
+        state.g_convoy_route[src_prov] = {
             dst: {'fleet_count': len(chain), 'fleets': list(chain)}
             for dst, chain in chains_by_dst.items()
         }
@@ -261,11 +279,11 @@ def _get_convoy_route(state: InnerGameState, src_prov: int, dst_prov: int):
     ``fleet_count == 0`` and an empty list mean "no chain registered".
 
     Tolerates the legacy destination-blind shape
-    (``g_ConvoyRoute[src] = {'fleet_count': ..., 'fleets': [...]}``) so
+    (``g_convoy_route[src] = {'fleet_count': ..., 'fleets': [...]}``) so
     callers or test fixtures still holding that shape continue to work
     during the migration.  Prefer the new nested shape for fresh writes.
     """
-    src_entry = state.g_ConvoyRoute.get(src_prov)
+    src_entry = state.g_convoy_route.get(src_prov)
     if not src_entry:
         return 0, []
     # Legacy flat shape: recognised by presence of 'fleet_count' at the
@@ -294,8 +312,9 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
     """
     MAX_CHAIN = 3
 
+    # Fixed 2026-04-20 (audit #2): army-type filter for initial fleet search.
     depth_1_fleets = [
-        adj for adj in state.get_unit_adjacencies(army_src)
+        adj for adj in _filtered_adj(state, army_src, 'A')
         if state.get_unit_type(adj) == 'F'
     ]
     if not depth_1_fleets:
@@ -310,7 +329,8 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
         for chain in frontier:
             terminal = chain[-1]
             # Record every landing square reachable from this terminal.
-            for adj in state.get_unit_adjacencies(terminal):
+            # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
+            for adj in _filtered_adj(state, terminal, 'F'):
                 if adj == army_src:
                     continue
                 if state.get_unit_type(adj) == 'F':
@@ -323,7 +343,7 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
             # Extend the chain through another fleet — but only if we
             # haven't hit the max chain length yet.
             if depth < MAX_CHAIN:
-                for adj in state.get_unit_adjacencies(terminal):
+                for adj in _filtered_adj(state, terminal, 'F'):
                     if state.get_unit_type(adj) != 'F':
                         continue
                     if adj in visited_fleets:
@@ -342,42 +362,57 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     Port of FUN_0044b760 = BuildConvoyOrders.
 
     Builds the complete CTO + CVY order chain for a convoy attempt. Reads
-    g_MaxProvinceScore to seed each fleet's score, while the army inherits
+    g_max_province_score to seed each fleet's score, while the army inherits
     the ordered-set score for the destination province.
     """
+    # Validate that populate_convoy_routes() has been called for this power.
+    # C builds routes inline; Python pre-computes them via populate_convoy_routes.
+    # Fixed 2026-04-23 (audit finding MOV-2): warn if routes are empty.
+    if not state.g_convoy_route:
+        logger.warning(
+            "build_convoy_orders called but g_convoy_route is empty — "
+            "populate_convoy_routes() was likely not called for power %d. "
+            "Convoy orders will be skipped.", power_idx)
+
     fleet_count, route = _get_convoy_route(state, src_prov, dst_prov)
     if fleet_count <= 0:
         return
     
     # Army setup (CTO)
-    state.g_OrderTable[src_prov, _F_ORDER_TYPE] = _ORDER_CTO
-    state.g_OrderTable[src_prov, _F_DEST_PROV] = dst_prov
-    state.g_OrderTable[src_prov, _F_ORDER_ASGN] = 1  # Order committed
+    state.g_order_table[src_prov, _F_ORDER_TYPE] = _ORDER_CTO
+    state.g_order_table[src_prov, _F_DEST_PROV] = dst_prov
+    state.g_order_table[src_prov, _F_ORDER_ASGN] = 1  # Order committed
     
     if len(route) > 0:
-        state.g_OrderTable[src_prov, _F_CONVOY_LEG0] = route[0]
+        state.g_order_table[src_prov, _F_CONVOY_LEG0] = route[0]
     if len(route) > 1:
-        state.g_OrderTable[src_prov, _F_CONVOY_LEG1] = route[1]
+        state.g_order_table[src_prov, _F_CONVOY_LEG1] = route[1]
     if len(route) > 2:
-        state.g_OrderTable[src_prov, _F_CONVOY_LEG2] = route[2]
+        state.g_order_table[src_prov, _F_CONVOY_LEG2] = route[2]
         
-    state.g_ConvoyDstToSrc[dst_prov] = src_prov
-    
+    state.g_convoy_dst_to_src[dst_prov] = src_prov
+
+    # Mark the army's SOURCE province as having an incoming move.
+    # C: (&g_ProvinceBaseScore)[(int)army_province * 0x1e] = 1;
+    # Uses army_province (src_prov), NOT the destination.
+    # Fixed 2026-04-23 (audit finding MOV-1): was incorrectly dst_prov.
+    state.g_order_table[src_prov, _F_INCOMING_MOVE] = 1.0
+
     # Army inherits score from OrderedSet (via get_candidate_score)
     score = state.get_candidate_score(power_idx, dst_prov, 0)
-    state.g_ConvoyChainScore[src_prov] = score
-    state.g_OrderScoreHi[src_prov] = score
+    state.g_convoy_chain_score[src_prov] = score
+    state.g_order_score_hi[src_prov] = score
     
     # Fleet setup (CVY)
     for fleet_i in route:
-        max_score = state.g_MaxProvinceScore[fleet_i]
-        state.g_ConvoyChainScore[fleet_i] = max_score
-        state.g_OrderScoreHi[fleet_i] = max_score
+        max_score = state.g_max_province_score[fleet_i]
+        state.g_convoy_chain_score[fleet_i] = max_score
+        state.g_order_score_hi[fleet_i] = max_score
         
-        state.g_OrderTable[fleet_i, _F_ORDER_TYPE] = _ORDER_CVY
-        state.g_OrderTable[fleet_i, _F_SOURCE_PROV] = src_prov
-        state.g_OrderTable[fleet_i, _F_DEST_PROV] = dst_prov
-        state.g_OrderTable[fleet_i, _F_ORDER_ASGN] = 1
+        state.g_order_table[fleet_i, _F_ORDER_TYPE] = _ORDER_CVY
+        state.g_order_table[fleet_i, _F_SOURCE_PROV] = src_prov
+        state.g_order_table[fleet_i, _F_DEST_PROV] = dst_prov
+        state.g_order_table[fleet_i, _F_ORDER_ASGN] = 1
         
         register_convoy_fleet(state, power_idx, fleet_i)
         assign_support_order(state, power_idx, src_prov, dst_prov, 0, flag=1)

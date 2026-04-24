@@ -1,4 +1,4 @@
-"""Shared g_OrderTable field indices and order-type constants.
+"""Shared g_order_table field indices and order-type constants.
 
 Canonical source for constants consumed by convoy.py, support.py,
 and external callers (monte_carlo, heuristics).  Extracted to break
@@ -8,7 +8,7 @@ Full field list lives in monte_carlo.py; this is the subset needed
 by the moves package.
 """
 
-# ── g_OrderTable field indices ───────────────────────────────────────────────
+# ── g_order_table field indices ───────────────────────────────────────────────
 _F_ORDER_TYPE    =  0   # 1=HLD 2=MTO 3=SUP_HLD 4=SUP_MTO 5=CVY 6=CTO
 _F_DEST_PROV     =  2   # destination province (MTO/CTO)
 _F_INCOMING_MOVE = 13   # 1 = province has incoming MTO/CTO (DAT_00baedd4 = g_ProvinceBaseScore)
