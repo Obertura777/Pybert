@@ -125,6 +125,25 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
                          for adj in state.adj_matrix.get(prov, []))
         unit_type = 'FLT' if is_coastal else 'AMY'
         prov_name = id_to_prov.get(prov, str(prov))
+
+        # For fleet builds at multi-coast provinces (BUL, SPA, STP), append
+        # the coast suffix.  Pick the coast whose adjacency set has the
+        # highest total g_global_province_score — this mirrors C's
+        # UnitList_FindOrInsert which sets the coast from the province's
+        # adjacency structure.
+        if unit_type == 'FLT':
+            best_coast_suffix = ''
+            best_coast_score = -1.0
+            for (pid, coast_key), adj_list in state.fleet_coast_adj.items():
+                if pid == prov:
+                    total = sum(float(state.g_global_province_score[a])
+                                for a in adj_list if 0 <= a < 256)
+                    if total > best_coast_score:
+                        best_coast_score = total
+                        best_coast_suffix = coast_key  # e.g. '/NC'
+            if best_coast_suffix:
+                prov_name = prov_name + best_coast_suffix
+
         state.g_build_order_list.append(f'( {power_name} {unit_type} {prov_name} ) BLD')
 
     state.g_waive_count = max(0, delta - len(selected))

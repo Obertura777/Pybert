@@ -42,12 +42,12 @@ from ._constants import (
 def _filtered_adj(state: InnerGameState, prov: int, unit_type: str) -> list:
     """Return adjacencies filtered by unit type, matching C's
     AdjacencyList_FilterByUnitType.  Armies skip water; fleets skip land."""
-    raw = state.get_unit_adjacencies(prov)
     if unit_type in ('A', 'AMY'):
+        raw = state.get_unit_adjacencies(prov)
         return [a for a in raw if a not in state.water_provinces]
     if unit_type in ('F', 'FLT'):
-        return [a for a in raw if a not in state.land_provinces]
-    return list(raw)
+        return list(state.fleet_adj_matrix.get(prov, []))
+    return list(state.get_unit_adjacencies(prov))
 
 
 def _harmonic_dist_weight(n: int, base: float) -> float:

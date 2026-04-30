@@ -136,15 +136,6 @@ class _LifecycleMixin:
 
         self.game = await channel.join_game(game_id=target_game_id, power_name=self.power_name)
 
-        # ── Announce bot metadata to server ──────────────────────────────
-        try:
-            if hasattr(self.game, 'send_is_bot'):
-                self.game.send_is_bot(is_bot=True)
-            if hasattr(self.game, 'set_comm_status'):
-                self.game.set_comm_status(comm_status='ready')
-            logger.info("Announced bot metadata to server.")
-        except Exception as exc:
-            logger.debug("Bot metadata announcement failed (non-fatal): %s", exc)
 
         # ── Register notification callbacks ──────────────────────────────
         done_event = asyncio.Event()

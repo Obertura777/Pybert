@@ -865,6 +865,13 @@ class InnerGameState:
         # e.g. '/NC', '/SC', '/EC'.  Only populated for provinces with coasts.
         # can_reach_by_type checks this when a fleet has a known coast.
         self.fleet_coast_adj: dict = {}
+        # Fleet-specific adjacency matrix: prov_id → [adj_prov_ids] containing
+        # only fleet-reachable neighbours.  Built during synchronize_from_game
+        # using game.map.abuts('F', src, '-', dst) as the authoritative check.
+        # This correctly excludes land-only borders (e.g. ANK→SMY, SEV→MOS)
+        # that the terrain-only filter (not in land_provinces) missed.
+        # Used by can_reach_by_type and MC trial fleet filtering.
+        self.fleet_adj_matrix: dict = {}
         self.unit_info = {} # prov_id -> {'power': int, 'type': 'A'/'F', 'coast': str}
         # Set of province IDs whose underlying province type is 'WATER' (sea zones).
         # Populated once during synchronize_from_game from game.map.area_type().
@@ -971,18 +978,26 @@ class InnerGameState:
                 if _key not in _upper_lookup or '/' not in _p:
                     _upper_lookup[_key] = self.prov_to_id[_p]
 
-            # Build adjacency graph, water-province set, and land-province set
+            # Build adjacency graph, water-province set, and land-province set.
+            # Also build fleet_adj_matrix — fleet-specific adjacency that only
+            # includes fleet-reachable neighbours.  Built using
+            # game.map.abuts('F', src, '-', dst) as the authoritative check.
+            # The diplomacy library's abut_list case convention (lowercase =
+            # army-only) is incomplete — some coastal provinces list inland
+            # neighbours as uppercase even though fleets cannot traverse them
+            # (e.g. SEV lists 'MOS' uppercase but F SEV - MOS is illegal).
             water_prov_ids = set()
             land_prov_ids = set()
             for prov in self.prov_to_id:
                 base_prov = prov.split('/')[0] if '/' in prov else prov
-                self.adj_matrix[self.prov_to_id[prov]] = []
+                pid = self.prov_to_id[prov]
+                self.adj_matrix[pid] = []
                 seen_adj_ids: set = set()
                 for adj in game.map.abut_list(prov):
                     adj_base = adj.split('/')[0].upper() if '/' in adj else adj.upper()
                     adj_id = _upper_lookup.get(adj_base, -1)
                     if adj_id >= 0 and adj_id not in seen_adj_ids:
-                        self.adj_matrix[self.prov_to_id[prov]].append(adj_id)
+                        self.adj_matrix[pid].append(adj_id)
                         seen_adj_ids.add(adj_id)
                 # Canonicalise adjacency order (AUDIT_moves_and_messages.md #6).
                 # The C binary walks an OrderedSet keyed on province id, so
@@ -991,14 +1006,45 @@ class InnerGameState:
                 # diplomacy's abut_list returns map-definition order, which
                 # may differ. Sort once at build time so every downstream
                 # iteration matches C.
-                self.adj_matrix[self.prov_to_id[prov]].sort()
+                self.adj_matrix[pid].sort()
                 atype = game.map.area_type(base_prov)
-                pid = self.prov_to_id[prov]
                 if atype == 'WATER':
                     water_prov_ids.add(pid)
                 elif atype == 'LAND':
                     land_prov_ids.add(pid)
                 # COAST provinces are in neither set — accessible by both unit types
+
+            # Build fleet_adj_matrix using game.map.abuts('F', ...) as the
+            # authoritative source.  For each province, check which of its
+            # adj_matrix neighbours a fleet can actually reach.  This handles
+            # all edge cases: land-only borders between coastal provinces
+            # (ANK→SMY), inland neighbours of coastal provinces (SEV→MOS),
+            # and multi-coast restrictions.
+            _id_to_base: dict = {}
+            for _name, _pid in self.prov_to_id.items():
+                if '/' not in _name:
+                    _id_to_base[_pid] = _name
+            for pid, adj_ids in self.adj_matrix.items():
+                src_name = _id_to_base.get(pid, '')
+                if not src_name:
+                    # Coast-suffixed entry — share parent's fleet adjacency
+                    continue
+                fleet_ids: list = []
+                for adj_id in adj_ids:
+                    dst_name = _id_to_base.get(adj_id, '')
+                    if not dst_name:
+                        continue
+                    # game.map.abuts returns truthy (1) if legal, 0 if not.
+                    # Also try coasted variants for multi-coast destinations.
+                    if game.map.abuts('F', src_name, '-', dst_name):
+                        fleet_ids.append(adj_id)
+                    else:
+                        # Try coasted variants (BUL/EC, BUL/SC, SPA/NC, etc.)
+                        for coast in ('/NC', '/SC', '/EC', '/WC'):
+                            if game.map.abuts('F', src_name, '-', dst_name + coast):
+                                fleet_ids.append(adj_id)
+                                break
+                self.fleet_adj_matrix[pid] = fleet_ids  # already sorted (from adj_matrix)
 
             # M11 fix: build coast-specific fleet adjacency for multi-coast
             # provinces (STP, SPA, BUL).  Fleets on STP/NC can only reach
@@ -1273,6 +1319,8 @@ class InnerGameState:
         ``unit_info``), though ``'FLT'``/``'AMY'`` are also accepted.
         Falls back to ``can_reach`` for unknown types.
         """
+        logger.debug("can_reach_by_type: src=%d dst=%d type=%s adj=%s", 
+             src_prov, dst_prov, unit_type, self.adj_matrix.get(src_prov, []))
         # Fleet coast-specific adjacency check
         if unit_type in ('F', 'FLT') and src_coast:
             coast_key = src_coast.upper() if src_coast.startswith('/') else '/' + src_coast.upper()
@@ -1283,13 +1331,48 @@ class InnerGameState:
                 return dst_prov in coast_adjs
             # No coast data for this coast → fall through to base adjacency
 
-        if dst_prov not in self.adj_matrix.get(src_prov, []):
-            return False
-        if unit_type in ('F', 'FLT') and dst_prov in self.land_provinces:
-            return False   # fleet cannot enter landlocked province
-        if unit_type in ('A', 'AMY') and dst_prov in self.water_provinces:
-            return False   # army cannot enter sea zone
-        return True
+        if unit_type in ('F', 'FLT'):
+            # Use fleet_adj_matrix which only contains fleet-reachable
+            # neighbours (uppercase entries from abut_list).  This correctly
+            # excludes land-only borders between coastal provinces
+            # (e.g. ANK→SMY) that the terrain-only filter missed.
+            return dst_prov in self.fleet_adj_matrix.get(src_prov, [])
+        if unit_type in ('A', 'AMY'):
+            if dst_prov not in self.adj_matrix.get(src_prov, []):
+                return False
+            if dst_prov in self.water_provinces:
+                return False   # army cannot enter sea zone
+            return True
+        # Unknown unit type — fall back to basic adjacency
+        return dst_prov in self.adj_matrix.get(src_prov, [])
+
+    def resolve_fleet_coast(self, src_prov: int, dst_prov: int) -> int:
+        """Return the DAIDE coast token for a fleet moving from *src_prov* to
+        *dst_prov*, or 0 if *dst_prov* is not a multi-coast province.
+
+        In the C binary, each adjacency-list edge carries a coast token so
+        ``BuildOrder_MTO`` receives the correct coast from the candidate BST
+        node.  The Python ``adj_matrix`` only stores province IDs (no per-edge
+        coast), so the MC trial passes ``coast=0`` everywhere.
+
+        This helper performs a reverse lookup on ``fleet_coast_adj``:
+        for each ``(dst_prov, coast_suffix)`` entry, check whether *src_prov*
+        appears in the adjacency set.  If so, convert the suffix to the DAIDE
+        coast token and return it.
+
+        Standard multi-coast provinces: BUL (/EC, /SC), SPA (/NC, /SC),
+        STP (/NC, /SC).
+        """
+        # Quick check: does dst_prov appear as a multi-coast province at all?
+        # fleet_coast_adj keys are (prov_id, '/XX') tuples.
+        _COAST_SUFFIX_TO_DAIDE = {
+            '/NC': 0x4600, '/NE': 0x4602, '/EC': 0x4604,
+            '/SC': 0x4606, '/WC': 0x460C, '/NW': 0x460E,
+        }
+        for (pid, coast_suffix), adj_list in self.fleet_coast_adj.items():
+            if pid == dst_prov and src_prov in adj_list:
+                return _COAST_SUFFIX_TO_DAIDE.get(coast_suffix, 0)
+        return 0
 
     def get_max_threatening_adj_scs(self, prov_id: int, power_id: int) -> int:
         """Port of the tree-walk in EvaluateProvinceScore (FUN_00433ce0).

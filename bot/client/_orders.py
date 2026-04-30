@@ -246,6 +246,18 @@ class _OrdersMixin:
         from ...monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
 
+        # ── DIAGNOSTIC: log unit counts after generate_orders ────────────────
+        _diag_units = sum(1 for u in self.state.unit_info.values()
+                         if u.get('power') == own_power_idx)
+        logger.info(
+            "DIAG[%s] phase=%s unit_info_own=%d g_unit_count=%s "
+            "g_general_orders_keys=%s",
+            self.power_name, phase, _diag_units,
+            list(self.state.g_unit_count),
+            sorted(self.state.g_general_orders.keys())
+            if hasattr(self.state, 'g_general_orders') else 'N/A',
+        )
+
         # ── ScoreProvinces + ScoreOrderCandidates_AllPowers ──────────────────
         # C binary (send_GOF.c lines 56–62): for SPR/FAL movement phases,
         # ScoreProvinces computes per-province strategic scores, then
@@ -300,26 +312,42 @@ class _OrdersMixin:
         # press its multi-phase commitment semantics — no separate archive
         # needed.  See state.synchronize_from_game for the matching no-clear
         # rationale.
-        from ...communications import score_order_candidates_from_broadcast
-        try:
-            score_order_candidates_from_broadcast(self.state)
-        except Exception:
-            logger.exception(
-                "score_order_candidates_from_broadcast raised; continuing"
-                " with empty g_general_orders/g_alliance_orders"
-            )
+        # In NO_PRESS mode, g_broadcast_list only contains self-emitted XDO
+        # support proposals from prior phases.  Reading them back via
+        # score_order_candidates_from_broadcast would partially populate
+        # g_general_orders with stale proposals (wrong positions), then
+        # prevent generate_self_proposals from firing.  Skip entirely.
+        _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
+        if not _no_press:
+            from ...communications import score_order_candidates_from_broadcast
+            try:
+                score_order_candidates_from_broadcast(self.state)
+            except Exception:
+                logger.exception(
+                    "score_order_candidates_from_broadcast raised; continuing"
+                    " with empty g_general_orders/g_alliance_orders"
+                )
 
         # Self-proposal fallback: when g_broadcast_list is empty (NO_PRESS
         # or standalone mode), generate MTO proposals from final_score_set
         # and inject them into g_general_orders so MC Phase 1c can dispatch
         # non-hold orders.  This replaces the press round-trip that normally
         # populates these tables via score_order_candidates_from_broadcast.
-        # Only fires when g_general_orders is still empty after the broadcast
-        # pass — in a press game with active proposals, this is a no-op.
-        if movement_phase and not self.state.g_general_orders:
+        #
+        # In NO_PRESS mode, the C binary's Phase 1c dispatches nothing for
+        # the OWN power — all own-power order variation comes from Phase 2's
+        # adjacency walk.  But other powers DO need proposals for scoring
+        # context (evaluate_order_score reads all units' orders).
+        # generate_self_proposals is called with skip_power=own_power so
+        # that the own power's units enter Phase 2 (the MC randomization
+        # path) while other powers get reasonable pre-assigned orders.
+        if movement_phase and (_no_press or not self.state.g_general_orders):
             from ...heuristics import generate_self_proposals
             try:
-                n_self = generate_self_proposals(self.state, own_power_idx)
+                n_self = generate_self_proposals(
+                    self.state, own_power_idx,
+                    skip_power=own_power_idx if _no_press else -1,
+                )
                 if n_self:
                     logger.debug(
                         "Self-proposal fallback: generated %d proposals", n_self)
@@ -400,7 +428,20 @@ class _OrdersMixin:
         # generate_self_proposals.  Self-proposals are synthetic guidance
         # to give MC some MTO candidates; penalising everything else would
         # collapse the candidate set and re-produce all-holds.
-        has_real_press = bool(getattr(self.state, 'g_broadcast_list', None))
+        #
+        # g_broadcast_list accumulates forever (matching C).  It can contain
+        # BOTH received-press entries AND self-emitted XDO support proposals
+        # (written by emit_xdo_proposals_to_broadcast in step 5h.1).  The
+        # corroboration penalty must only fire when there's genuine received
+        # press from OTHER powers — not our own proposals.  In NO_PRESS mode
+        # (g_minimal_press_mode == 1 or g_history_counter == 0 with no
+        # incoming FRM messages) g_broadcast_list contains only self-emitted
+        # entries.  Use the watermark: register_received_press bumps it when
+        # real press arrives; self-emitted proposals do not.
+        _bl = getattr(self.state, 'g_broadcast_list', None)
+        _wm = getattr(self.state, 'g_broadcast_list_watermark', 0)
+        _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
+        has_real_press = bool(_bl) and _wm > 0 and not _no_press
         if has_real_press:
             try:
                 from ...heuristics import apply_press_corroboration_penalty
@@ -419,6 +460,29 @@ class _OrdersMixin:
 
         best_orders = self.state.g_candidate_record_list  # populated by process_turn
 
+        # ── DIAGNOSTIC: log candidate record list stats ──────────────────────
+        from collections import Counter as _Counter
+        _power_counts = _Counter(c.get('power') for c in best_orders)
+        _own_count = _power_counts.get(own_power_idx, 0)
+        logger.info(
+            "DIAG[%s] g_candidate_record_list size=%d own_power_candidates=%d "
+            "per_power=%s",
+            self.power_name, len(best_orders), _own_count,
+            dict(_power_counts),
+        )
+        if _own_count > 0:
+            _own_cands = [c for c in best_orders if c.get('power') == own_power_idx]
+            _best = max(_own_cands, key=lambda c: float(c.get('score', 0.0)))
+            _order_types = _Counter(
+                e[1] if isinstance(e, (list, tuple)) and len(e) > 1 else '?'
+                for e in _best.get('orders', [])
+            )
+            logger.info(
+                "DIAG[%s] best_candidate: score=%.1f n_orders=%d order_types=%s",
+                self.power_name, float(_best.get('score', 0)),
+                len(_best.get('orders', [])), dict(_order_types),
+            )
+
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
         if movement_phase:
             _post_process_orders(self.state)
@@ -434,7 +498,12 @@ class _OrdersMixin:
         # that future calls to score_order_candidates_from_broadcast pick
         # them up.  This mirrors the C emission at BuildSupportProposals.c
         # lines 396–427 (FUN_00466f80 + AppendList inside the proposal loop).
-        if movement_phase and getattr(self.state, 'g_xdo_press_proposals', None):
+        # Skip XDO emission in NO_PRESS mode — it pollutes g_broadcast_list
+        # with stale proposals that trigger the corroboration penalty and
+        # partial g_general_orders population in subsequent phases.
+        if (movement_phase
+                and not _no_press
+                and getattr(self.state, 'g_xdo_press_proposals', None)):
             from ...communications import emit_xdo_proposals_to_broadcast
             try:
                 n_emitted = emit_xdo_proposals_to_broadcast(self.state)
@@ -548,13 +617,7 @@ class _OrdersMixin:
                             self.power_name, retreat_cmds)
                 self._validate_orders(retreat_cmds)
                 try:
-                    self.game.set_orders(
-                        power_name=self.power_name, orders=retreat_cmds,
-                        wait=False)
-                except TypeError:
-                    # Older diplomacy lib doesn't support wait kwarg
-                    self.game.set_orders(
-                        power_name=self.power_name, orders=retreat_cmds)
+                    self._schedule_set_orders(retreat_cmds)
                 except Exception:
                     logger.exception(
                         "Failed to submit retreat orders to game engine")
@@ -637,11 +700,6 @@ class _OrdersMixin:
         if orders:
             logger.info("Adjustment orders for %s: %s", self.power_name, orders)
             self._validate_orders(orders)
-            try:
-                self.game.set_orders(
-                    power_name=self.power_name, orders=orders, wait=False)
-            except TypeError:
-                self.game.set_orders(
-                    power_name=self.power_name, orders=orders)
+            self._schedule_set_orders(orders)
         else:
             logger.info("Adjustment: no builds/removes/waives for %s", self.power_name)

@@ -334,7 +334,8 @@ def post_process_orders(state: InnerGameState) -> None:
 
 # ── Self-proposal generator ──────────────────────────────────────────────────
 
-def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
+def generate_self_proposals(state: InnerGameState, own_power: int,
+                            *, skip_power: int = -1) -> int:
     """Generate MTO proposals for all powers from candidate scoring tables.
 
     Mirrors the C bot's SerializeOrders → RegisterProposalOrders flow:
@@ -345,6 +346,10 @@ def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
 
     For own_power, proposals also go into g_alliance_orders (mirrors
     the trust gate in score_order_candidates_from_broadcast).
+
+    When *skip_power* >= 0, that power is excluded from proposal
+    generation so its units enter MC Phase 2 (adjacency-walk
+    randomisation) instead of receiving pre-assigned orders.
 
     Returns the number of proposals inserted.
     """
@@ -364,6 +369,8 @@ def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
     sc_set: set = set(getattr(state, 'sc_provinces', set()))
 
     for power in range(num_powers):
+        if power == skip_power:
+            continue
         # Phase 1: Score all candidate destinations per unit using
         # g_candidate_scores (the BFS heat diffusion output from
         # GenerateOrders, matching what C serializes)
@@ -374,13 +381,13 @@ def generate_self_proposals(state: InnerGameState, own_power: int) -> int:
             unit_type = info.get('type', 'A')
 
             candidates: list = []
-            raw_adj = state.get_adjacent_provinces(prov)
             if unit_type in ('A', 'AMY'):
+                raw_adj = state.get_adjacent_provinces(prov)
                 adj_list = [a for a in raw_adj if a not in state.water_provinces]
             elif unit_type in ('F', 'FLT'):
-                adj_list = [a for a in raw_adj if a not in state.land_provinces]
+                adj_list = list(state.fleet_adj_matrix.get(prov, []))
             else:
-                adj_list = list(raw_adj)
+                adj_list = list(state.get_adjacent_provinces(prov))
 
             for adj in adj_list:
                 # Primary: g_candidate_scores (BFS heat — matches C serialization)
@@ -488,14 +495,17 @@ def compute_press(state: InnerGameState, own_power: int = 0) -> None:  # noqa: A
         unit_type = info.get('type', 'A')
 
         # C uses AdjacencyList_FilterByUnitType — armies skip water,
-        # fleets skip land.  Fixed 2026-04-20 (audit finding M-HEUR-3).
-        raw_adj = state.get_unit_adjacencies(prov)
+        # fleets skip land-only borders.  Fixed 2026-04-20 (audit finding
+        # M-HEUR-3); upgraded 2026-04-26 to use fleet_adj_matrix which
+        # also excludes land-only borders between coastal provinces
+        # (e.g. ANK→SMY).
         if unit_type in ('A', 'AMY'):
+            raw_adj = state.get_unit_adjacencies(prov)
             adj_list = [a for a in raw_adj if a not in state.water_provinces]
         elif unit_type in ('F', 'FLT'):
-            adj_list = [a for a in raw_adj if a not in state.land_provinces]
+            adj_list = list(state.fleet_adj_matrix.get(prov, []))
         else:
-            adj_list = list(raw_adj)
+            adj_list = list(state.get_unit_adjacencies(prov))
 
         for adj in adj_list:
             adj_info = state.unit_info.get(adj)

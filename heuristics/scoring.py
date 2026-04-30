@@ -12,11 +12,14 @@ Module-level deps: ``numpy``, ``..state.InnerGameState``,
 ``_PRESS_DISAGREE_PENALTY`` consumed by ``apply_press_corroboration_penalty``.
 """
 
+import logging
 import numpy as np
 
 from ..state import InnerGameState
 
 from ._primitives import evaluate_province_score
+
+_dbg_log = logging.getLogger("pybert.scoring_dbg")
 
 # M2: ScoreProvinces normalization exponent — the C binary's _safe_pow call
 # uses an FPU-stack argument not recoverable from Ghidra decompile.
@@ -133,6 +136,25 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
             v = float(state.final_score_set[power, province])
             if v > state.g_max_province_score[province]:
                 state.g_max_province_score[province] = v
+
+    # Pass 3c - SC ownership override on final_score_set (mirrors
+    # ScoreProvinces Adjustment 9, C lines 1209-1228).
+    # In C the BFS that seeds candidates uses g_attack_count (which has the
+    # Adj 9 cap of 90/150 for own SCs), so final_score_set inherits low
+    # values for own SCs.  Python's BFS seeds with a flat 5000.0, so own
+    # SCs get inflated scores (760-1011 instead of 90/150).  Apply the same
+    # cap here so Phase 2 ranks expansion targets above own SCs.
+    for power in range(7):
+        for province in range(256):
+            if state.g_sc_ownership[power, province] != 1:
+                continue
+            if state.final_score_set[power, province] <= 0:
+                continue
+            unit_power = state.get_unit_power(province)
+            if unit_power == power:
+                state.final_score_set[power, province] = 90.0
+            else:
+                state.final_score_set[power, province] = 150.0
 
     # Pass 4 - g_prov_target_flag classification (C Phase 3, lines 265-316)
     # Ported 2026-04-14 — fixes dead-code bug (enemy_reach==0 duplicate branch)
@@ -558,20 +580,38 @@ def score_provinces(state: InnerGameState,
         # paths, so porting the C BFS would change boolean membership
         # at the edges but not any currently-read score value.
 
-        # Precompute once per outer_power: does any non-home-center alive
-        # province hold a unit of a different power?  (C local_5581 flag,
-        # set at ScoreProvinces.c:963-972.)
-        home = state.home_centers.get(outer_power, frozenset())
-        has_adj_enemy = False
-        for alive_prov in state.unit_info.keys():
-            if alive_prov in home:
-                continue
-            uowner_a = state.get_unit_power(alive_prov)
-            if uowner_a != -1 and uowner_a != outer_power:
-                has_adj_enemy = True
-                break
+        # Precompute once per outer_power: does outer_power own any SC
+        # where the unit on that SC is NOT outer_power's?  (C local_5581
+        # flag, ScoreProvinces.c:953-977.)
+        # C logic: iterate alive provinces; for each, look up outer_power
+        # in the province power-record (GameBoard_GetPowerRec).  If found
+        # (outer_power owns the SC) AND the unit there is not outer_power
+        # → set flag.  An empty province counts (unit_power defaults to
+        # 0x14 in C, which != any valid outer_power).
+        # Fixed 2026-04-28: was checking home_power != sc_owner; must
+        # check outer_power SC ownership instead.
+        local_5581_flag = False
+        for alive_prov in range(num_provinces):
+            if state.g_sc_ownership[outer_power, alive_prov] == 1:
+                uowner_a = (state.get_unit_power(alive_prov)
+                            if alive_prov in state.unit_info else -1)
+                if uowner_a != outer_power:
+                    local_5581_flag = True
+                    break
 
         near_end = float(state.g_near_end_game_factor)
+
+        # Debug: log flag and state for Germany (power 3)
+        _is_dbg = _dbg_log.isEnabledFor(logging.DEBUG) and outer_power == 3
+        if _is_dbg:
+            id2n = getattr(state, '_id_to_prov', {})
+            _dbg_log.debug(
+                "SCORE_DBG[GER] local_5581_flag=%s  near_end=%.1f  "
+                "sc_ownership_GER=%s",
+                local_5581_flag, near_end,
+                [id2n.get(p, str(p)) for p in range(num_provinces)
+                 if state.g_sc_ownership[3, p] == 1],
+            )
 
         # Broadened 2026-04-14 (pass 2) to all 256 provinces — matches C's
         # per-alive-province iteration (ScoreProvinces.c:982-991) so that
@@ -583,108 +623,121 @@ def score_provinces(state: InnerGameState,
         # provinces (IDs > ~81 on standard map) stay at g_attack_count = 0.
         prov_iter = valid_provs if valid_provs else range(num_provinces)
         for prov in prov_iter:
-            score = float(evaluate_province_score(state, prov, outer_power))
-
-            is_home_center = prov in home
             uowner_here = (state.get_unit_power(prov)
                            if prov in state.unit_info else -1)
 
-            # Adjustment 1 — home-center / non-home-center clamp.
-            # C 1006-1021: if home center AND score != 0 AND has_adj_enemy → 80.
-            # C 1014-1021: else if score > 15 AND has_adj_enemy           → 150.
-            if is_home_center:
-                if score != 0.0 and has_adj_enemy:
-                    score = 80.0
+            # Determine if EvaluateProvinceScore is called (C logic)
+            is_own_or_ally = False
+            if uowner_here == outer_power:
+                is_own_or_ally = True
+            elif uowner_here != -1:
+                trust_lo = float(state.g_ally_trust_score[outer_power, uowner_here])
+                trust_hi = int(state.g_ally_trust_score_hi[outer_power, uowner_here])
+                if trust_hi >= 0 and (trust_hi > 0 or trust_lo >= 2):
+                    is_own_or_ally = True
+
+            if is_own_or_ally:
+                score = float(evaluate_province_score(state, prov, outer_power))
+                
+                # Adjustment 1 — SC ownership / non-SC clamp (C 1006-1021).
+                # C: GameBoard_GetPowerRec checks if outer_power is in the
+                # province's SC-ownership set.
+                #   found (outer_power owns SC) → score > 15 & flag → 150
+                #   not found                   → score != 0 & flag → 80
+                # Fixed 2026-04-28: was using home_power == sc_owner; must
+                # use outer_power SC ownership.
+                outer_owns_this_sc = (state.g_sc_ownership[outer_power, prov] == 1)
+
+                if outer_owns_this_sc:
+                    if score > 15.0 and local_5581_flag:
+                        score = 150.0
+                else:
+                    if score != 0.0 and local_5581_flag:
+                        score = 80.0
+
+                # Adjustment 2 — ally territory /3 or zero (C 1022-1042).
+                # C gates this with: unit_power != outer_power AND
+                #   trust_hi >= 0 AND (trust_hi > 0 OR trust_lo > 4) AND
+                #   ally_designation_b[prov] == unit_power (with hi == 0).
+                # Inside that gate, C further checks a threat-level field:
+                #   if threat <= 0 → score = 0; else → score /= 3.
+                # Fixed 2026-04-28: was unconditional; now gated.
+                if uowner_here != -1 and uowner_here != outer_power:
+                    trust_lo_a2 = float(state.g_ally_trust_score[outer_power, uowner_here])
+                    trust_hi_a2 = int(state.g_ally_trust_score_hi[outer_power, uowner_here])
+                    desig_b = int(state.g_ally_designation_b[prov])
+                    desig_b_hi = int(state.g_ally_designation_b_hi[prov])
+                    if (trust_hi_a2 >= 0
+                            and (trust_hi_a2 > 0 or trust_lo_a2 > 4)
+                            and desig_b == uowner_here
+                            and desig_b_hi == 0):
+                        # Sub-condition: check threat level at [uowner, prov].
+                        thr = int(state.g_threat_level[uowner_here, prov])
+                        if thr <= 0:
+                            score = 0.0
+                        else:
+                            score /= 3.0
+
+                # Adjustment 3 — influence ratio boost.
+                if near_end < 3.0:
+                    cov = int(state.g_coverage_flag[outer_power, prov])
+                    tot = 0
+                    for p in range(num_powers):
+                        tot += int(state.g_coverage_flag[p, prov])
+                    if tot > 0 and (cov / tot) > 0.95:
+                        score += 10.0
             else:
-                if score > 15.0 and has_adj_enemy:
+                score = 2.0  # Base score for untrusted or unoccupied (C 1061)
+
+            # Adjustment 4 — opening target match (applies to unoccupied / untrusted).
+            if score == 0.0 or uowner_here == -1:
+                ot = getattr(state, 'g_opening_target', None)
+                if ot is not None and ot[outer_power] == prov:
                     score = 150.0
 
-            # Adjustment 2 — ally territory /3 or zero (C 1022-1042).
-            # Home center occupied by a trusted ally (trust > 4) with
-            # matching g_ally_designation_a booking: zero out if no threat,
-            # else divide by 3.  DAT_004d2e14 is the hi-word of the int64
-            # g_ally_designation_a pair (GlobalDataRefs.md:23 — cross-paired
-            # with DAT_004d0e10); in Python the int64 is stored whole, so
-            # equality on the signed value subsumes the C two-word check.
-            if (is_home_center and uowner_here != -1
-                    and uowner_here != outer_power):
-                trust_lo_a = float(state.g_ally_trust_score[outer_power, uowner_here])
-                trust_hi_a = int(state.g_ally_trust_score_hi[outer_power, uowner_here])
-                trusted_ally = (trust_hi_a >= 0
-                                and (trust_hi_a > 0 or trust_lo_a > 4))
-                if (trusted_ally
-                        and int(state.g_ally_designation_a[prov]) == uowner_here):
-                    threat = int(state.g_threat_level[outer_power, prov])
-                    if threat <= 0:
-                        score = 0.0
-                    else:
-                        score = score / 3.0
-
-            # Adjustment 3 — influence ratio boost (C 1043-1047).
-            # DAT_00b76a28 is indexed by (prov + power*0x40); maps to
-            # state.g_influence_ratio[outer_power, prov].
-            if (score == 0.0 and near_end < 3.0
-                    and hasattr(state, 'g_influence_ratio')
-                    and float(state.g_influence_ratio[outer_power, prov]) > 0.95):
-                score = 10.0
-
-            # Adjustment 4 — opening target match (C 1081-1084).
-            # Only applies when province has no unit; C reaches this branch
-            # via the unowned (uVar2 == 0x14) path.
-            if (score == 0.0 and uowner_here == -1
-                    and hasattr(state, 'g_opening_target')
-                    and int(state.g_opening_target[outer_power]) == prov):
-                score = 150.0
-
-            # Adjustment 7 — free-province neighbor-SC heuristic (C 1086-1148).
-            # Unoccupied province, no opening-target match: score driven by
-            # max 75/trust across other powers that have press-matrix
-            # presence at this province.  g_press_matrix (DAT_00b85768) is
-            # bool[pow, prov]; g_press_count (DAT_00b85710) is int[pow].
-            if (not is_home_center and uowner_here == -1
+            # Adjustment 7 — unoccupied province match / default (C 1071-1149).
+            # Fixed 2026-04-28: Removed `not is_home_center` gating which broke S1902 unoccupied SC logic.
+            if (uowner_here == -1
                     and hasattr(state, 'g_press_matrix')
-                    and hasattr(state, 'g_press_count')):
-                opening_match = (hasattr(state, 'g_opening_target')
-                                 and int(state.g_opening_target[outer_power]) == prov)
-                if not (opening_match and score == 150.0):
-                    # Check if any non-outer power has presence here.
-                    any_presence = any(
-                        p != outer_power and int(state.g_press_matrix[p, prov]) > 0
-                        for p in range(num_powers)
-                    )
-                    if not any_presence:
-                        score = 75.0  # 0x4b — default
-                    else:
-                        own_here = int(state.g_press_matrix[own_power, prov]) > 0
-                        best = 0.0
-                        capped = False
-                        for p in range(num_powers):
-                            if p == outer_power:
-                                continue
-                            if int(state.g_press_matrix[p, prov]) <= 0:
-                                continue
-                            tlo = float(state.g_ally_trust_score[outer_power, p])
-                            thi = int(state.g_ally_trust_score_hi[outer_power, p])
-                            uncertain_p = (thi < 1 and (thi < 0 or tlo < 2))
-                            if uncertain_p:
-                                capped = True
-                                break
-                            if own_here and int(state.g_press_count[p]) > 1:
-                                capped = True
-                                continue
-                            if tlo <= 0:
-                                capped = True
-                                continue
-                            ratio = 100.0 / tlo
-                            if ratio > best:
-                                best = 75.0 / tlo
-                        score = 75.0 if capped else best
+                    and hasattr(state, 'g_press_count')
+                    and score != 150.0):
+                # Check if any non-outer power has presence here.
+                any_presence = any(
+                    p != outer_power and int(state.g_press_matrix[p, prov]) > 0
+                    for p in range(num_powers)
+                )
+                if not any_presence:
+                    score = 75.0  # 0x4b — default
+                else:
+                    own_here = int(state.g_press_matrix[outer_power, prov]) > 0
+                    best = 0.0
+                    capped = False
+                    for p in range(num_powers):
+                        if p == outer_power:
+                            continue
+                        if int(state.g_press_matrix[p, prov]) <= 0:
+                            continue
+                        tlo = float(state.g_ally_trust_score[outer_power, p])
+                        thi = int(state.g_ally_trust_score_hi[outer_power, p])
+                        uncertain_p = (thi < 1 and (thi < 0 or tlo < 2))
+                        if uncertain_p:
+                            capped = True
+                            break
+                        if own_here and int(state.g_press_count[p]) > 1:
+                            capped = True
+                            continue
+                        if tlo <= 0:
+                            capped = True
+                            continue
+                        ratio = 100.0 / tlo
+                        if ratio > best:
+                            best = 75.0 / tlo
+                    score = 75.0 if capped else best
 
-            # Adjustment 5 — non-home-center unit owner score (C 1150-1161).
+            # Adjustment 5 — non-SC-owned unit owner score (C 1150-1161).
             # Occupied-by-other-power path: trust-uncertain → 10, ally → 1.
-            # Gated on `not is_home_center` — the home-center branch in C
-            # (Adjustments 1 & 2) owns the home-center occupied case.
-            if (not is_home_center and uowner_here != -1
+            is_owned_sc = (state.g_sc_ownership[outer_power, prov] == 1)
+            if (not is_owned_sc and uowner_here != -1
                     and uowner_here != outer_power):
                 trust_lo = float(state.g_ally_trust_score[outer_power, uowner_here])
                 trust_hi = int(state.g_ally_trust_score_hi[outer_power, uowner_here])
@@ -718,6 +771,29 @@ def score_provinces(state: InnerGameState,
                 if (near_end > 5.0 and trust_hi >= 0
                         and (trust_hi > 0 or trust_lo > 10)):
                     score = 0.0
+
+            # Adjustment 9 — SC ownership override (C 1209-1228).
+            # FINAL adjustment: if outer_power owns this SC, override:
+            #   own unit present → 90; other/empty → 150.
+            # C: GameBoard_GetPowerRec; if found (outer_power in power-
+            # record), check unit type at province.
+            if state.g_sc_ownership[outer_power, prov] == 1:
+                if uowner_here == outer_power:
+                    score = 90.0
+                else:
+                    score = 150.0
+
+            # Debug: log non-zero scores for Germany
+            if _is_dbg and score > 0:
+                _pn = id2n.get(prov, str(prov))
+                _dbg_log.debug(
+                    "SCORE_DBG[GER] prov=%-4s score=%6.1f  uowner=%d  "
+                    "is_own_ally=%s  owns_sc=%d  adj9_fired=%s",
+                    _pn, score, uowner_here,
+                    is_own_or_ally if 'is_own_or_ally' in dir() else '?',
+                    int(state.g_sc_ownership[outer_power, prov]),
+                    state.g_sc_ownership[outer_power, prov] == 1,
+                )
 
             state.g_attack_count[outer_power, prov] = score
             # max-accumulate — only track global max from own_power's

@@ -387,9 +387,9 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
             affinity = float(main_score[eval_power])  # puVar8[piStack_102e8 + 5]
             base_score = int(((affinity + 50) * reach_val) / num_powers)
 
-            # Get fleet-filtered adjacency list
-            raw_adj = state.adj_matrix.get(prov, [])
-            fleet_adj = [a for a in raw_adj if a not in state.land_provinces]
+            # Get fleet-filtered adjacency list (fleet_adj_matrix excludes
+            # land-only borders between coastal provinces, e.g. ANK→SMY).
+            fleet_adj = list(state.fleet_adj_matrix.get(prov, []))
 
             for adj_prov in fleet_adj:
                 adj_unit = state.unit_info.get(adj_prov)

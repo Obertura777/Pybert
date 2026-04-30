@@ -18,7 +18,6 @@ Cross-module deps: ``_common`` helpers (``_pow_idx``, ``_extract_powers``,
 """
 
 from ...state import InnerGameState
-from ..parsers import _extract_top_paren_groups
 from ._common import (
     _pow_idx,
     _extract_powers,
@@ -304,6 +303,8 @@ def _split_xdo_clauses(context_toks: list) -> "tuple[list, list]":
             (negative if is_not else positive).append(c)
 
     # AND( ... )( ... )( ... ) multi-clause shape
+    # Lazy import to break circular dependency: parsers → evaluators → parsers
+    from ..parsers import _extract_top_paren_groups
     if text.startswith('AND'):
         rest = text[3:].strip()
         # Split on top-level paren groups

@@ -32,6 +32,7 @@ from ...monte_carlo import (
     update_score_state,
     check_time_limit,
     _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
+    _ORDER_HLD, _ORDER_MTO,
 )
 from ...communications import (
     parse_message,
@@ -84,6 +85,31 @@ class _PressMixin:
     # Cross-mixin method (provided by _OrdersMixin)
     _validate_orders: Callable[..., None]
 
+    def _schedule_set_orders(self, orders: list[str]) -> None:
+        """Submit orders to the game, handling async NetworkGame properly.
+
+        NetworkGame.set_orders() returns a coroutine that must be awaited.
+        Since we're called from a synchronous notification callback, we
+        schedule the coroutine on the running event loop via create_task().
+        For local Game objects (tests), set_orders is synchronous (returns None).
+        """
+        if self.game is None:
+            return
+        try:
+            coro = self.game.set_orders(
+                power_name=self.power_name, orders=orders, wait=False)
+        except TypeError:
+            coro = self.game.set_orders(
+                power_name=self.power_name, orders=orders)
+        if coro is not None and asyncio.iscoroutine(coro):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(coro)
+            except RuntimeError:
+                logger.warning(
+                    "No running event loop — set_orders for %s not sent",
+                    self.power_name)
+
     def _send_dm(self, msg: object) -> None:
         """
         Send DAIDE direct-message using python-diplomacy NetworkGame API.
@@ -117,6 +143,9 @@ class _PressMixin:
         """
         logger.debug("SendDM: %r", msg)
         if self.game is None:
+            return
+        # Skip all outbound press in no-press mode.
+        if getattr(self.state, 'g_minimal_press_mode', 0) == 1:
             return
         try:
             from diplomacy import Message
@@ -288,6 +317,40 @@ class _PressMixin:
             best = None
             order_pairs = []
 
+        # ── Swap breaker: detect same-power reciprocal moves (A→B + B→A) ──
+        # In Diplomacy, two units from the same power cannot swap provinces;
+        # they bounce and both hold.  The MC trial loop assigns unit orders
+        # independently and never checks for intra-power swaps, so we break
+        # them here by converting the lower-province unit to HLD.
+        if order_pairs:
+            _mto_map = {}  # prov → dest_prov for MTO orders
+            for entry in order_pairs:
+                if len(entry) >= 3 and int(entry[1]) == _ORDER_MTO:
+                    _mto_map[int(entry[0])] = int(entry[2])
+            _swap_victims = set()
+            for prov_a, dest_a in _mto_map.items():
+                if dest_a in _mto_map and _mto_map[dest_a] == prov_a:
+                    # Swap detected — mark the lower-province unit as victim
+                    victim = min(prov_a, dest_a)
+                    _swap_victims.add(victim)
+            if _swap_victims:
+                new_pairs = []
+                for entry in order_pairs:
+                    prov = int(entry[0])
+                    if prov in _swap_victims:
+                        # Convert to HLD: (prov, ORDER_HLD, prov, 0, 0)
+                        new_pairs.append(
+                            (entry[0], _ORDER_HLD, entry[0], 0, 0)
+                        )
+                        logger.warning(
+                            "DIAG[%s] broke same-power swap: prov %d was "
+                            "MTO→%d, converted to HLD",
+                            self.power_name, prov, int(entry[2]),
+                        )
+                    else:
+                        new_pairs.append(entry)
+                order_pairs = new_pairs
+
         self.state.g_submitted_orders = []
         # Restore g_order_table from the candidate snapshot for our own provinces.
         # process_turn resets g_order_table per-trial and per-power, so by the
@@ -297,6 +360,9 @@ class _PressMixin:
         # evaluate_order_proposal in monte_carlo.py); rehydrate the relevant
         # rows before calling _build_order_seq_from_table.
         from ...monte_carlo import _F_SECONDARY as _MC_F_SECONDARY  # local import
+        _diag_dispatch_ok = 0
+        _diag_dispatch_fail = 0
+        _diag_seq_none = 0
         for entry in order_pairs:
             if len(entry) >= 5:
                 prov, order_type, dest_prov, dest_coast, secondary = entry[:5]
@@ -308,7 +374,27 @@ class _PressMixin:
                 prov = entry[0]
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
-                validate_and_dispatch_order(self.state, own_power_idx, seq)
+                rc = validate_and_dispatch_order(self.state, own_power_idx, seq)
+                if rc == 0:
+                    _diag_dispatch_ok += 1
+                else:
+                    _diag_dispatch_fail += 1
+                    logger.warning(
+                        "DIAG[%s] validate_and_dispatch REJECTED rc=%d seq=%s",
+                        self.power_name, rc, seq,
+                    )
+            else:
+                _diag_seq_none += 1
+                logger.warning(
+                    "DIAG[%s] _build_order_seq_from_table returned None for prov=%d",
+                    self.power_name, prov,
+                )
+        logger.info(
+            "DIAG[%s] dispatch results: ok=%d fail=%d seq_none=%d "
+            "order_pairs=%d",
+            self.power_name, _diag_dispatch_ok, _diag_dispatch_fail,
+            _diag_seq_none, len(order_pairs),
+        )
 
         formatted = list(getattr(self.state, 'g_submitted_orders', []))
 
@@ -337,11 +423,7 @@ class _PressMixin:
 
         if self.game is not None:
             self._validate_orders(formatted)
-            try:
-                self.game.set_orders(power_name=self.power_name, orders=formatted, wait=False)
-            except TypeError:
-                # Older diplomacy lib doesn't support wait kwarg
-                self.game.set_orders(power_name=self.power_name, orders=formatted)
+            self._schedule_set_orders(formatted)
 
         # ── 3b. RankCandidatesForPower — inner-loop candidate selection ─────
         # C: FUN_00424850(piVar10, '\0') called per-power in BuildAndSendSUB
@@ -459,9 +541,14 @@ class _PressMixin:
         if self.game is None:
             return
         try:
-            # NetworkGame (server): async vote request
+            # NetworkGame (server): async vote request — schedule coroutine
             if hasattr(self.game, 'vote') and callable(self.game.vote):
-                self.game.vote(vote='yes')
+                coro = self.game.vote(vote='yes')
+                if coro is not None and asyncio.iscoroutine(coro):
+                    try:
+                        asyncio.get_running_loop().create_task(coro)
+                    except RuntimeError:
+                        pass
             else:
                 # Local Game: set directly on the power object
                 power = self.game.powers.get(self.power_name)

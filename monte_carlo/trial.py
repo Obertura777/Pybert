@@ -21,9 +21,12 @@ three enumerators from ``..moves``, ``evaluate_order_proposal`` from
 """
 
 import copy
+import logging
 import random
 
 import numpy as np
+
+_dbg_log = logging.getLogger("pybert.scoring_dbg")
 
 from ..state import InnerGameState
 from ..moves import (
@@ -212,6 +215,40 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             return
         if unit_type in ('A', 'AMY') and dst in state.water_provinces:
             return
+
+        # ── Same-power self-bump / swap prevention ───────────────────────
+        # The C post-selection logic (ProcessTurn.c lines 2579-2694)
+        # rejects a move when a same-power unit at the destination is NOT
+        # leaving (HLD/SUP/CVY → self-bump) or IS leaving but back to src
+        # (reciprocal swap A→B + B→A).  Only allow when the unit at dst
+        # has MTO/CTO to a DIFFERENT province (it is vacating dst).
+        # Guard here so ALL call sites are protected; fall back to HLD.
+        dst_unit = state.unit_info.get(dst)
+        if dst_unit is not None:
+            src_unit = state.unit_info.get(src)
+            if src_unit is not None and dst_unit.get('power') == src_unit.get('power'):
+                dest_ot = int(state.g_order_table[dst, _F_ORDER_TYPE])
+                if dest_ot in (_ORDER_MTO, _ORDER_CTO):
+                    # Unit at dst is leaving — but is it a swap?
+                    dest_dst = int(state.g_order_table[dst, _F_DEST_PROV])
+                    if dest_dst == src:
+                        # Reciprocal swap: reject
+                        state.g_order_table[src, _F_ORDER_TYPE] = float(_ORDER_HLD)
+                        return
+                    # Leaving to a different province: allow the move
+                else:
+                    # Unit at dst is NOT leaving (HLD, SUP, CVY): self-bump
+                    state.g_order_table[src, _F_ORDER_TYPE] = float(_ORDER_HLD)
+                    return
+
+        # ── Coast resolution for multi-coast destinations ────────────────
+        # In C, each adjacency-list edge carries a coast token (piVar7[4]),
+        # so the BST candidate node already has the correct coast when
+        # BuildOrder_MTO is called.  The Python adj_matrix only stores
+        # province IDs, so callers pass coast=0.  Resolve it here for
+        # fleet moves to multi-coast provinces (BUL, SPA, STP).
+        if coast == 0 and unit_type in ('F', 'FLT'):
+            coast = state.resolve_fleet_coast(src, dst)
 
         # BuildOrder_CTO_Ring(gamestate, src, dst, coast)
         # OrderedSet_FindOrInsert(this+0x2450, &src): insert src into active-unit set.
@@ -743,6 +780,8 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         state.g_convoy_source_prov[:num_provinces]  = -1.0  # g_SupportAssignmentMap sentinel (0xffffffff)
         state.g_convoy_active_flag[:num_provinces]  = 0
         state.g_province_score_trial[:num_provinces] = 0
+        if hasattr(state, 'g_convoy_source_score'):
+            state.g_convoy_source_score[:num_provinces] = 0.0
         state.g_army_adj_count[:num_provinces]      = 0
         state.g_convoy_fleet_registered.clear()
 
@@ -998,8 +1037,9 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 not_early_game = (state.g_press_flag != 1) or (state.g_near_end_game_factor >= 2.0)
                 accepted = False
                 if not_early_game or relay1_hi < 0:
-                    # Main path: accept when trust meets threshold.
-                    if not (trust_hi < 1 and (trust_hi < 0 or trust_lo == 0)):
+                    # Main path: C line 2549 — low trust (no ally claim on
+                    # territory) → ACCEPT; high trust → REJECT.
+                    if trust_hi < 1 and (trust_hi < 0 or trust_lo == 0):
                         accepted = True
                 else:
                     # Early-game mutual-trust path.
@@ -1057,6 +1097,21 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             if (state.g_sc_ownership[power_index, prov] == 1 and
                     int(state.g_order_table[prov, _F_ORDER_TYPE]) == 0):
                 support_candidates[prov] = True
+        if _trial == 0 and power_index == 3 and _dbg_log.isEnabledFor(logging.DEBUG):
+            id2n = getattr(state, '_id_to_prov', {})
+            _sc_provs = [(id2n.get(p, str(p)), int(state.g_sc_ownership[3, p]))
+                         for p in range(num_provinces) if state.g_sc_ownership[3, p] == 1]
+            _ot_provs = [(id2n.get(p, str(p)), int(state.g_order_table[p, _F_ORDER_TYPE]))
+                         for p in range(num_provinces) if int(state.g_order_table[p, _F_ORDER_TYPE]) != 0]
+            _unit_provs = [(id2n.get(p, str(p)), u.get('power'), u.get('type'))
+                           for p, u in state.unit_info.items() if u.get('power') == 3]
+            _dbg_log.debug(
+                "MC_DBG[GER] Phase1f: sc_provs=%s  ordered_provs=%s  "
+                "own_units=%s  support_cands=%s  g_convoy_fleet_cands_before=%d",
+                _sc_provs, _ot_provs, _unit_provs,
+                [id2n.get(p, str(p)) for p in support_candidates],
+                len(state.g_convoy_fleet_candidates),
+            )
         _assign_hold_supports(support_candidates)
 
         # 1f.5  Emit SUP HLD orders for confirmed supports ─────────────────────
@@ -1238,6 +1293,19 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         #   - Target-flag filtering (lines 2235-2391)
         #   - Probabilistic final selection (lines 2392-2750)
         #     → BuildOrder_MTO / BuildConvoyOrders / BuildOrder_HLD
+        _mc_dbg = (_trial == 0 and power_index == 3
+                   and _dbg_log.isEnabledFor(logging.DEBUG))
+        if _mc_dbg:
+            id2n = getattr(state, '_id_to_prov', {})
+            _dbg_log.debug(
+                "MC_DBG[GER] trial=0  final_score_set nonzero: %s",
+                [(id2n.get(p, str(p)), float(state.final_score_set[3, p]))
+                 for p in range(82) if state.final_score_set[3, p] != 0],
+            )
+            _dbg_log.debug(
+                "MC_DBG[GER] Phase2 g_convoy_fleet_candidates=%s",
+                [(s, id2n.get(p, str(p))) for s, p in state.g_convoy_fleet_candidates],
+            )
         for _cand_score, cand_prov in list(state.g_convoy_fleet_candidates):
             unit = state.unit_info.get(cand_prov)
             if unit is None:
@@ -1246,14 +1314,18 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 continue
 
             # AdjacencyList_FilterByUnitType (C line 1517-1519)
-            raw_adj = state.adj_matrix.get(cand_prov, [])
+            # Fleets use fleet_adj_matrix which only contains fleet-reachable
+            # neighbours (built from uppercase abut_list entries).  This
+            # correctly excludes land-only borders between coastal provinces
+            # (e.g. ANK→SMY) that the old terrain-only filter missed.
             utype = unit['type']
             if utype in ('A', 'AMY'):
+                raw_adj = state.adj_matrix.get(cand_prov, [])
                 adj_list = [a for a in raw_adj if a not in state.water_provinces]
             elif utype in ('F', 'FLT'):
-                adj_list = [a for a in raw_adj if a not in state.land_provinces]
+                adj_list = list(state.fleet_adj_matrix.get(cand_prov, []))
             else:
-                adj_list = list(raw_adj)
+                adj_list = list(state.adj_matrix.get(cand_prov, []))
 
             if not adj_list:
                 continue
@@ -1269,18 +1341,52 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
             for adj_prov in adj_list:
                 if scored_mode:
-                    r2 = random.randint(0, 32767)
-                    score = (r2 // 0x17) % 100 + 500
+                    # C lines 1542-1558: three-level gate determines random
+                    # vs deterministic scoring.
+                    # Level 1 (C 1542-1544): g_enemy_presence[power, adj] > 0
+                    #   → random 500+
+                    # Level 2 (C 1548-1549): g_sc_ownership[power, adj] != 0
+                    #   → deterministic (fall through to LAB_00451bb0)
+                    # Level 3 (C 1553-1555): g_proximity_score[power, adj] > 0
+                    #   → random 500+; else → deterministic
+                    # Fixed 2026-04-28: was using wrong variables (g_own_reach_score
+                    # instead of g_enemy_presence/g_proximity_score) and had the
+                    # SC-ownership logic inverted — provinces with own units got
+                    # random 500+ instead of deterministic, inflating owned-SC scores
+                    # and causing units to move back to occupied SCs.
+                    enemy_pres = int(state.g_enemy_presence[power_index, adj_prov])
+                    sc = int(state.g_sc_ownership[power_index, adj_prov])
+                    prox = float(state.g_proximity_score[power_index, adj_prov])
+                    use_random = (enemy_pres > 0
+                                  or (sc == 0 and prox > 0))
+                    if use_random:
+                        r2 = random.randint(0, 32767)
+                        score = (r2 // 0x17) % 100 + 500
+                    else:
+                        # deterministic: enemy_pres <= 0 AND
+                        #   (sc != 0 OR prox <= 0)
+                        fs = float(state.final_score_set[power_index, adj_prov])
+                        if utype in ('A', 'AMY'):
+                            score = fs + int(state.g_province_score_trial[adj_prov])
+                        else:
+                            score = fs
                 else:
                     fs = float(state.final_score_set[power_index, adj_prov])
                     if utype in ('A', 'AMY'):
                         score = fs + int(state.g_province_score_trial[adj_prov])
                     else:
                         score = fs
+                    # (Own-SC penalty removed — scoring.py Pass 3c now
+                    # applies the C-matching Adjustment 9 cap to
+                    # final_score_set directly.)
                 cand_list.append((score, adj_prov))
 
             # Post-loop: source unit's own entry (C lines 1632-1653).
-            if not scored_mode and adj_list:
+            # Fixed 2026-04-28: was gated by `not scored_mode`, but C adds
+            # the hold entry UNCONDITIONALLY after the adjacency loop.
+            # Missing hold in scored_mode (30% of trials) forced units to
+            # move away from unoccupied SCs instead of staying to capture.
+            if adj_list:
                 fs_src = float(state.final_score_set[power_index, cand_prov])
                 if utype in ('A', 'AMY'):
                     src_score = fs_src + int(state.g_province_score_trial[adj_list[0]])
@@ -1294,12 +1400,32 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             # Sort descending by score (C BST pops highest first)
             cand_list.sort(key=lambda x: x[0], reverse=True)
 
+            if _mc_dbg:
+                _pn = id2n.get(cand_prov, str(cand_prov))
+                _dbg_log.debug(
+                    "MC_DBG[GER] unit=%s@%-4s scored_mode=%s cands=%s",
+                    utype, _pn, scored_mode,
+                    [(f"{s:.0f}", id2n.get(d, str(d))) for s, d in cand_list[:8]],
+                )
+
             # ── Post-processing Step 1: source-province dedup (1950-1977) ─
-            # If ProvinceBase[src] < 500 AND len(cand_list) > 1:
-            #   remove candidates whose dest == source province.
+            # C condition: (puVar10[1] != iStack_460) AND (cand_count > 1)
+            #              AND (g_ProvinceBase[src] < 500)
+            # puVar10[1] = GameBoard_GetPowerRec SC-owner for src province
+            # iStack_460 = DAT_00bb6e04 = current power index
+            # So dedup only fires when the SC at the source province is NOT
+            # owned by the current power — preserving the hold option for
+            # the bot's own SCs.
+            # Fixed 2026-04-28: was missing the SC-owner gate entirely, AND
+            # g_province_base_score was never populated (defaulted to 0),
+            # causing the hold option to be stripped from ALL candidates
+            # including the bot's own SCs.  This forced units to always move,
+            # creating back-and-forth oscillation between owned SCs.
+            sc_owner_here = int(state.g_sc_owner[cand_prov])
+            src_not_own_sc = (sc_owner_here != power_index)
             g_prov_base = getattr(state, 'g_province_base_score', None)
             src_base = int(g_prov_base[cand_prov]) if g_prov_base is not None and cand_prov < len(g_prov_base) else 0
-            if src_base < 500 and len(cand_list) > 1:
+            if src_not_own_sc and src_base < 500 and len(cand_list) > 1:
                 cand_list = [(s, d) for s, d in cand_list if d != cand_prov]
 
             # ── Post-processing Step 2: water-province score threshold (1978-86)
@@ -1356,7 +1482,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
                 if not dest_unit_present and trust_lo == 0 and trust_hi == 0:
                     # No trust and no unit → check ProvTargetFlag
-                    tflag = int(state.g_target_flag[power_index, dest]) if dest < 256 else 0
+                    tflag = int(state.g_prov_target_flag[power_index, dest]) if dest < 256 else 0
                     if tflag == 1:
                         # ProvTargetFlag == 1: remove if score < threshold
                         # AND ProvinceBaseScore == 0
@@ -1433,7 +1559,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             if score_threshold is not None and score_threshold > 0 and len(cand_list) > 1:
                 tf_filtered: list[tuple] = []
                 for cand_score, dest in cand_list:
-                    tflag = int(state.g_target_flag[power_index, dest]) if dest < 256 else 0
+                    tflag = int(state.g_prov_target_flag[power_index, dest]) if dest < 256 else 0
                     if tflag == 1 and cand_score < score_threshold:
                         pbs = int(g_prov_base[dest]) if g_prov_base is not None and dest < len(g_prov_base) else 0
                         pst = int(state.g_province_score_trial[dest]) if dest < 256 else 0
@@ -1442,6 +1568,32 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     tf_filtered.append((cand_score, dest))
                 if tf_filtered:
                     cand_list = tf_filtered
+
+            # ── Post-processing Step 6b: self-bump filter ────────────────
+            # Remove destinations where a same-power unit is present and
+            # NOT leaving (HLD/SUP/CVY → self-bounce) or leaving back to
+            # cand_prov (reciprocal swap).  Mirrors the C do…while retry
+            # loop (ProcessTurn.c line 2905) which calls RemoveOrderCandidate
+            # on rejected destinations so the next iteration picks the
+            # next-best candidate from the BST.
+            sb_filtered: list[tuple] = []
+            for cand_score_sb, dest_sb in cand_list:
+                if dest_sb == cand_prov:
+                    sb_filtered.append((cand_score_sb, dest_sb))
+                    continue
+                d_unit = state.unit_info.get(dest_sb)
+                if d_unit is not None and d_unit.get('power') == power_index:
+                    d_ot = int(state.g_order_table[dest_sb, _F_ORDER_TYPE])
+                    if d_ot in (_ORDER_MTO, _ORDER_CTO):
+                        # Unit leaving — check for swap
+                        if int(state.g_order_table[dest_sb, _F_DEST_PROV]) == cand_prov:
+                            continue  # swap: remove
+                        # Leaving elsewhere: keep
+                    else:
+                        continue  # not leaving: self-bump, remove
+                sb_filtered.append((cand_score_sb, dest_sb))
+            if sb_filtered:
+                cand_list = sb_filtered
 
             if not cand_list:
                 continue
@@ -1512,7 +1664,10 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             desig_b_hi_sel = int(state.g_ally_designation_b_hi[selected_dest]) if selected_dest < 256 else -1
             accepted_final = False
             if not_early or desig_b_hi_sel < 0:
-                if not (trust_hi_final < 1 and (trust_hi_final < 0 or trust_lo_final == 0)):
+                # C line 2549: low trust → goto LAB_004536bf (ACCEPT);
+                # high trust → fall through to LAB_004536da (REJECT).
+                # "Low trust" = no ally claims on this territory → safe.
+                if trust_hi_final < 1 and (trust_hi_final < 0 or trust_lo_final == 0):
                     accepted_final = True
             else:
                 # Early-game mutual trust path
@@ -1529,6 +1684,16 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     if int(state.g_convoy_active_flag[selected_dest]) > 0:
                         accepted_final = True
 
+            if _mc_dbg:
+                _pn = id2n.get(cand_prov, str(cand_prov))
+                _dn = id2n.get(selected_dest, str(selected_dest))
+                _dbg_log.debug(
+                    "MC_DBG[GER] unit@%-4s → %-4s  accepted=%s  "
+                    "trust_final=(%d,%d)",
+                    _pn, _dn, accepted_final,
+                    trust_lo_final, trust_hi_final,
+                )
+
             if not accepted_final:
                 continue
 
@@ -1536,6 +1701,10 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             cur_order = int(state.g_order_table[cand_prov, _F_ORDER_TYPE])
             if cur_order not in (0, _ORDER_HLD):
                 continue
+
+            # (Self-bump / swap prevention handled by Step 6b filter above;
+            #  _build_order_mto also has an internal guard for non-Phase-2
+            #  call sites.)
 
             # ── Final dispatch: BuildOrder_MTO or BuildOrder_HLD ──────────
             if selected_dest == cand_prov:
@@ -1555,6 +1724,31 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     # C line 2730: BuildOrder_MTO
                     _build_order_mto(cand_prov, selected_dest, 0)
 
+            # ── Post-MTO support assignment (C lines 1672-1940) ─────────
+            # After assigning MTO src→dest, scan remaining unordered
+            # own-power units.  If adjacent to dest, assign SUP_MTO so
+            # they don't independently pick the same destination.
+            if selected_dest != cand_prov:
+                for sup_prov, sup_unit in state.unit_info.items():
+                    if sup_unit.get('power') != power_index:
+                        continue
+                    if sup_prov == cand_prov:
+                        continue  # skip the unit we just assigned
+                    sup_ot = int(state.g_order_table[sup_prov, _F_ORDER_TYPE])
+                    if sup_ot not in (0, _ORDER_HLD):
+                        continue  # already has a real order
+                    # Check adjacency to destination
+                    sup_adjs = state.adj_matrix.get(sup_prov, [])
+                    if selected_dest not in sup_adjs:
+                        continue
+                    # Assign SUP_MTO: sup_prov supports cand_prov → dest
+                    # _F_SECONDARY = supported unit's province (cand_prov)
+                    # _F_DEST_PROV = where the supported unit is moving (dest)
+                    state.g_order_table[sup_prov, _F_ORDER_TYPE] = float(_ORDER_SUP_MTO)
+                    state.g_order_table[sup_prov, _F_SECONDARY] = float(cand_prov)
+                    state.g_order_table[sup_prov, _F_DEST_PROV] = float(selected_dest)
+                    state.g_order_table[sup_prov, _F_SOURCE_PROV] = float(cand_prov)
+
         # 1h. Target-bonus scoring ────────────────────────────────────────────
         # Pass 1: MTO/CTO toward target-flagged provinces (+150 or +75).
         # Pass 2: RTO / unit-presence check (lines 2909–2940 in decompile).
@@ -1567,14 +1761,14 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
             if order_type in (_ORDER_MTO, _ORDER_CTO):
                 dest = int(state.g_order_table[prov, _F_DEST_PROV])
-                tflag = int(state.g_target_flag[power_index, dest])
+                tflag = int(state.g_prov_target_flag[power_index, dest])
                 if tflag == 2:
                     state.g_early_game_bonus += 150 if press_active else 75
 
             elif order_type == _ORDER_SUP_MTO:
                 via = int(state.g_order_table[prov, _F_SECONDARY])
                 iVar20 = via + power_index * 0x100
-                tflag_via = int(state.g_target_flag[power_index, via])
+                tflag_via = int(state.g_prov_target_flag[power_index, via])
                 sc_hi = int(state.g_sc_ownership[power_index, via])
                 if (tflag_via == 2 and sc_hi == 0 and
                         state.g_history_counter == 0):
@@ -1735,13 +1929,13 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
         # Idle units: accumulate adjacency pressure
         if order_type == 0 or order_type == _ORDER_HLD:
             utype = unit.get('type', 'A')
-            raw_adj = state.adj_matrix.get(prov, [])
             if utype in ('A', 'AMY'):
-                adj_list = [a for a in raw_adj if a not in state.water_provinces]
+                adj_list = [a for a in state.adj_matrix.get(prov, [])
+                            if a not in state.water_provinces]
             elif utype in ('F', 'FLT'):
-                adj_list = [a for a in raw_adj if a not in state.land_provinces]
+                adj_list = list(state.fleet_adj_matrix.get(prov, []))
             else:
-                adj_list = list(raw_adj)
+                adj_list = list(state.adj_matrix.get(prov, []))
             for adj_prov in adj_list:
                 if adj_prov < num_provinces:
                     pressure_adj[adj_prov] += 1
@@ -1757,13 +1951,13 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
             continue
 
         utype = unit.get('type', 'A')
-        raw_adj = state.adj_matrix.get(prov, [])
         if utype in ('A', 'AMY'):
-            adj_list = [a for a in raw_adj if a not in state.water_provinces]
+            adj_list = [a for a in state.adj_matrix.get(prov, [])
+                        if a not in state.water_provinces]
         elif utype in ('F', 'FLT'):
-            adj_list = [a for a in raw_adj if a not in state.land_provinces]
+            adj_list = list(state.fleet_adj_matrix.get(prov, []))
         else:
-            adj_list = list(raw_adj)
+            adj_list = list(state.adj_matrix.get(prov, []))
 
         for adj_prov in adj_list:
             if adj_prov >= num_provinces:

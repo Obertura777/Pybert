@@ -11,3 +11,5 @@ wheels/
 *.md
 all_games/
 all_games_albert
+
+games/
