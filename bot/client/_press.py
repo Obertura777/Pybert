@@ -282,18 +282,47 @@ class _PressMixin:
                                          (line 395 inside inner loop, post-submission).
           5. SendAllyPressByPower loop  — for each power when g_history_counter > 0
                                          (lines 659–666).
-          6. g_proposal_history_map press — iterate received/sent proposals, check
-                                         province overlap and trust, send DM press
-                                         (lines 847–1271; STUB — awaits RECEIVE_PROPOSAL
-                                         / RESPOND / g_proposal_history_map port).
+          6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass — process
+                                         g_broadcast_list received entries
+                                         (lines 490–569); calls
+                                         EvaluateOrderProposalsAndSendGOF
+                                         (FUN_00457520) after each RESPOND.
+          6b. g_deal_list press — trust+overlap check, SendAlliancePress
+                                         (lines 847–1271; g_proposal_history_map
+                                         proxied by g_deal_list).
           7. CancelPriorPress           — withdraw stale prior-press token (line 693).
 
-        Callees still unported: ScoreOrderCandidates (FUN_004559c0),
-        RECEIVE_PROPOSAL, RESPOND, SendAlliancePress,
-        FUN_00419300, FUN_00466ed0, FUN_00466f80, FUN_00465df0,
-        FUN_00465930, FUN_00465d90, FUN_00465cf0, FUN_00410cf0,
-        FUN_00443ed0.
+        FUN_00411740 absorbed: synchronous "all g_broadcast_list entries dispatched?" predicate;
+          only called from AwaitPressAndSendGOF Sleep loop → both absorbed by async model.
+        FUN_00466480 absorbed: alias-safe RAII wrapper — copies param_2, calls FUN_00466330(this, result, copy).
+        FUN_00465aa0 absorbed: in-place parenthesize — wraps token seq as ( toks ) [0x5FFF];
+          used to build convoy-SUP MTO route: (support_pos) MTO convoy_seg [TERM].
+        ScoreOrderCandidates phases 1–5 handled by process_turn (monte_carlo/).
+        ScoreOrderCandidates phase 6 filter ported as apply_press_corroboration_penalty
+          (heuristics/scoring.py); called from _orders.py with has_real_press guard.
+          Proposal sets built by score_order_candidates_from_broadcast (communications/senders.py)
+          from ALL g_broadcast_list entries (sent + received); C trees local_3fc/local_204 → gen_xdo,
+          local_300 → sup_mto, local_108 (inverted) → sup_hld.
+        FUN_00419300 absorbed: MSVC STL RB-tree _Insert — Python dict/set.
+        FUN_00466ed0 absorbed: RAII wrapper (copy this→temp, call FUN_00466e10).
+        FUN_00466e10 absorbed: RAII wrapper (copy param_2→temp, call FUN_00466c40).
+        FUN_00466c40 absorbed: convoy token-seq join (left+[0x4000]+right+[0x4001]+[0x5FFF]);
+          0x4001=DAIDE ')', 0x5FFF=end-sentinel, 0x4000='(' (unconfirmed, adjacent slot).
+          Branch-2 delegates to FUN_00466330 (plain concat: left++right++[0x5FFF]).
+        FUN_00466330 absorbed: plain convoy token-seq concat (no parens); counter=sum of both.
+        FUN_00466f80 absorbed: alias-safe RAII wrapper — copies this, then calls FUN_00466c40(copy, param_1, param_2).
+        FUN_00465930 absorbed: convoy-seq counter accessor — return 0 if seq[3]==0xFFFFFFFF else seq[3].
+        FUN_00410cf0 absorbed: MSVC STL BST _Erase (postorder node dealloc) — Python GC handles this.
+        FUN_00443ed0 = AwaitPressAndSendGOF: ported as async one-shot in step 7b above;
+          Sleep loop superseded; 25s hold-back and g_cancel_press_sent (DAT_00baed47) wired.
+          g_gof_sent reset at turn start (_orders.py step 2); set in _send_gof (gof.py).
+        FUN_00465cf0 absorbed: convoy token-seq lexicographic less-than (BST key comparator) — Python list <.
+        FUN_00465d90 absorbed: convoy token-seq equality — False if lengths differ, else element-wise compare.
+        FUN_00465df0 absorbed: logical NOT of FUN_00465d90 (inequality check).
         FUN_00422a90 ported as validate_and_dispatch_order (dispatch.py).
+        RECEIVE_PROPOSAL, RESPOND ported in communications/inbound/respond.py.
+        SendAlliancePress ported in communications/senders.py.
+        FUN_00457520 (EvaluateOrderProposalsAndSendGOF) ported in bot/client/gof.py.
         """
         own_power_idx = getattr(self.state, 'albert_power_idx', 0)
         n_powers = int(getattr(self.state, 'n_powers', 7))
@@ -522,6 +551,29 @@ class _PressMixin:
 
         # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)
+
+        # ── 7b. Async-adapted AwaitPressAndSendGOF (FUN_00443ed0) ────────────
+        # C: after CancelPriorPress arms DAT_00baed47=1, AwaitPressAndSendGOF
+        # polls (Sleep loop) until elapsed > g_base_wait_time + 25 s, then
+        # sends a bare GOF.  In Python we do a single one-shot check instead
+        # of blocking: only fire if GOF has not already been sent this turn
+        # and the 25-second hold-back has elapsed since turn start.
+        if (getattr(self.state, 'g_cancel_press_sent', 0) == 1
+                and not getattr(self.state, 'g_gof_sent', False)):
+            _turn_start = float(getattr(self.state, 'g_turn_start_time', 0.0))
+            _base_wait  = float(getattr(self.state, 'g_base_wait_time',  0.0))
+            _elapsed    = time.time() - _turn_start
+            if _elapsed > _base_wait + 25.0 or check_time_limit(self.state):
+                logger.debug(
+                    "Fallback GOF: elapsed=%.1fs > hold-back=%.1fs — sending",
+                    _elapsed, _base_wait + 25.0,
+                )
+                _send_gof(self.state, self._send_dm)
+            else:
+                logger.debug(
+                    "Fallback GOF: %.1fs remaining in hold-back window — skipped",
+                    (_base_wait + 25.0) - _elapsed,
+                )
 
         # ── 8. Final dispatch — flush any THN/SND entries scheduled during
         # steps 5–7.  In the C binary these fire via the real-time scheduler;

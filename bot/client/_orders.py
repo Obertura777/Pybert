@@ -42,7 +42,6 @@ from ...communications import (
     parse_message,
     dispatch_scheduled_press,
     cancel_prior_press,
-    _send_ally_press_by_power,
 )
 from ...heuristics import (
     score_provinces,
@@ -54,7 +53,6 @@ from ...heuristics import (
     compute_win_removes,
     _WIN_BUILD_WEIGHTS,
     _WIN_REMOVE_WEIGHTS,
-    _SPR_FAL_WEIGHTS,
 )
 from ...dispatch import validate_and_dispatch_order
 
@@ -141,6 +139,8 @@ class _OrdersMixin:
 
         # Step 2 — reset per-turn scalar flags
         # Mirrors: DAT_0062cc64 / ba2858 / ba285c / baed46 / baed5e / baed47 = 0
+        self.state.g_gof_sent = False           # clear server-GOF-pending flag
+        self.state.g_cancel_press_sent = 0      # disarm fallback-GOF guard (DAT_00baed47)
         if not hasattr(self.state, 'g_pending_orders_A'):
             self.state.g_pending_orders_A = 0
         if not hasattr(self.state, 'g_pending_orders_B'):
@@ -268,15 +268,18 @@ class _OrdersMixin:
         # zeros and every MTO gets a zero convoy-chain score, making the MC
         # unable to distinguish good moves from bad ones.
         if movement_phase:
+            _mw = self.state.g_fal_move_weight if phase == 'FAL' else self.state.g_spr_move_weight
+            _bw = self.state.g_fal_build_weight if phase == 'FAL' else self.state.g_spr_build_weight
+            _rw = (self.state.g_fal_round_weights if phase == 'FAL'
+                   else self.state.g_spr_round_weights)
             try:
-                score_provinces(self.state, 0, 0, own_power_idx)
+                score_provinces(self.state, _mw, _bw, own_power_idx)
             except Exception:
                 logger.exception(
                     "score_provinces raised; continuing with default scores"
                 )
             try:
-                score_order_candidates_all_powers(
-                    self.state, _SPR_FAL_WEIGHTS, own_power_idx)
+                score_order_candidates_all_powers(self.state, _rw, own_power_idx)
             except Exception:
                 logger.exception(
                     "score_order_candidates_all_powers raised; continuing"
@@ -558,7 +561,8 @@ class _OrdersMixin:
                 #   ResetPerTrialState → ScoreProvinces →
                 #   populate candidates → ScoreOrderCandidates_OwnPower →
                 #   FUN_00442040 (builds) or FUN_0044bd40 (removes)
-                self.state.g_build_order_list.clear()   # ResetPerTrialState
+                self.state.g_build_order_list.clear()        # ResetPerTrialState
+                self.state.g_build_order_list_size = 0
                 self.state.g_waive_count = 0
 
                 # Save real SC ownership before score_provinces clobbers it.
@@ -567,7 +571,8 @@ class _OrdersMixin:
                 # populate_build_candidates' eligibility check.
                 saved_sc_ownership = self.state.g_sc_ownership.copy()
 
-                score_provinces(self.state, 0, 0, own_power_idx)
+                score_provinces(self.state, self.state.g_spr_move_weight,
+                                self.state.g_spr_build_weight, own_power_idx)
 
                 # Restore real SC ownership for build/remove candidate selection.
                 self.state.g_sc_ownership[:] = saved_sc_ownership

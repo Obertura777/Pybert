@@ -55,7 +55,7 @@ def trial_evaluate_orders(state: InnerGameState, trial_candidate: dict) -> dict:
     return copy.deepcopy(trial_candidate)
 
 
-def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000) -> None:
+def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) -> None:
     """
     Port of FUN_00453220 = ProcessTurn(Albert *this, int **power_index, int num_trials).
 
@@ -66,7 +66,10 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
     Signature matches decompiled: __thiscall ProcessTurn(param_1_00, power_index, num_trials)
       param_1_00  → state (Albert *this)
       power_index → the power being simulated this call
-      num_trials  → number of Monte Carlo iterations
+      num_trials  → number of Monte Carlo iterations; if -1 (default), computed from
+                    state per ScoreOrderCandidates.c:331–334:
+                    (unit_count[p] * g_trial_scale + 10) // 10, or 1 for non-own
+                    powers when g_press_proposals_cap == 0.
 
     Phase 0 — Setup (once per call)
     --------------------------------
@@ -121,6 +124,18 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
     logger = logging.getLogger(__name__)
 
     own_power: int = getattr(state, 'albert_power_idx', 0)
+
+    # ScoreOrderCandidates.c:331–334: compute per-power trial count when the
+    # caller did not supply one explicitly.
+    if num_trials < 0:
+        _uc = getattr(state, 'g_unit_count', [])
+        _scale = int(getattr(state, 'g_trial_scale', 260))
+        _press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
+        if _press_cap == 0 and power_index != own_power:
+            num_trials = 1
+        else:
+            num_trials = max(1, (int(_uc[power_index]) * _scale + 10) // 10)
+
     num_provinces: int = int(getattr(state, 'num_provinces',
                                      state.g_order_table.shape[0]))
     num_powers: int = 7
@@ -129,20 +144,28 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
     def _reset_per_trial_state() -> None:
         """Port of FUN_00460be0 = ResetPerTrialState.
 
-        Three C operations:
-        (1) For each node in active unit list (this+0x2450/54): clear node+0x20 =
-            the order-assigned pointer (ppiVar8[4] in DispatchSingleOrder).  Python
-            has no per-node flag; the equivalent is g_order_table being zeroed at the
-            end of this trial-reset block (line ~914), so no explicit work here.
-        (2) Same for retreat unit list (this+0x245c/60) — same reasoning.
-        (3) Free all nodes of the build-candidate list at this+0x2478 (calling
-            FUN_0040fb70 on each node[2] then _free(node)), reset list sentinel to
-            empty, clear size field (this+0x247c = 0) and waive count
-            (this+0x2480 = 0).  Python: clear g_build_order_list and zero
-            g_waive_count.
+        C operations (see Source/monte_carlo/ResetPerTrialState.c):
+        (1) Walk active unit list (this+0x2450/54): clear node+0x20 per unit.
+        (2) Walk retreat unit list (this+0x245c/60): same.
+        (3) Walk and free all BST nodes at this+0x2478 (lines 52-60).
+        (4) Reset BST sentinel: sentinel[1]=sentinel, *sentinel=sentinel,
+            sentinel[2]=sentinel (lines 61, 63, 64).
+        (5) this+0x247c = 0  — BST _Mysize counter (line 62).
+        (6) this+0x2480 = 0  — waive count (line 65).
+        Python: (3)+(4)+(5) are all implicit in list.clear(); tracked
+        explicitly via g_build_order_list_size for offset parity.
         """
-        if hasattr(state, 'g_build_order_list'):
-            state.g_build_order_list.clear()
+        # (1) Active unit list — clear per-unit order-assigned pointer.
+        for prov in state.unit_info:
+            state.g_order_table[prov, _F_ORDER_TYPE] = 0.0
+        # (2) Retreat unit list — clear per-unit order-assigned pointer.
+        for entry in getattr(state, 'g_retreat_order_list', []):
+            entry['order_type'] = 0
+        # (3)+(4) Free BST nodes + reset sentinel → list.clear().
+        state.g_build_order_list.clear()
+        # (5) this+0x247c = 0 — BST size counter.
+        state.g_build_order_list_size = 0
+        # (6) this+0x2480 = 0 — waive count.
         state.g_waive_count = 0
 
     def _assign_hold_supports(candidates: dict) -> None:
@@ -200,7 +223,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         Stubbed callees:
           ClearConvoyState()        — clears per-convoy temp state; trial reset covers it
           BuildOrder_CTO_Ring(...)  — builds CTO ring chain; decompile-verified (BuildOrder_CTO.c:67)
-          RegisterConvoyFleet(...)  — registers fleet candidate; unknown decompile
+          RegisterConvoyFleet(...)  — decompile-verified (RegisterConvoyFleet.c); called at end of fn
         """
         # ClearConvoyState() — STUB (per-trial reset at Phase 1a covers observable effect)
 
@@ -311,20 +334,9 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         supported province in _F_DEST_PROV (DAT_00baeda8 — decompile line 29).
         Inherits supporter's candidate score into g_convoy_chain_score /
         _F_CONVOY_LO/HI; clears convoy legs if the supporter is an army.
-        Then registers the supporter as a convoy-fleet candidate and runs
-        the ally-trust side-effect branch against the supported unit's power.
-
-        Stubbed callees (observable state covered elsewhere):
-          FUN_00460770(gs, supporter, supported) — convoy-chain bookkeeping;
-                        per-trial reset at Phase 1a covers its effect.
-          UnitList_FindOrInsert — active-unit set membership. The decompile's
-                        "already inserted" early-return maps to the
-                        _F_ORDER_TYPE != 0 guard below.
-          The long adjacency-scan tail (decompile lines 57-187) is a score-
-                        adjustment pass that bumps g_convoy_active_flag /
-                        g_ProvinceBaseScore depending on support-chain
-                        topology; not modelled in Python yet — scoring uses
-                        the simpler post-trial heat path.
+        Then registers the supporter as a convoy-fleet candidate, runs the
+        ally-trust side-effect branch (C lines 39-53), and runs the
+        chain-robustness adjacency scan tail (C lines 55-190).
         """
         # "Already inserted" early-return: supporter already has an order.
         if int(state.g_order_table[supporter, _F_ORDER_TYPE]) != 0:
@@ -356,94 +368,121 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         # RegisterConvoyFleet(this, power, supporter)
         register_convoy_fleet(state, power_index, supporter)
 
-        # Chain-robustness adjacency tail (decompile L55–190).
+        # Ally-trust side-effect (C lines 39-53): if the supported unit belongs
+        # to a different power, set g_convoy_active_flag[supported] = 1 and
+        # update g_support_trust_adj based on trust level.
+        supported_power = state.unit_info.get(supported, {}).get('power', power_index)
+        if supported_power != power_index:
+            trust_lo = float(state.g_ally_trust_score[power_index, supported_power])
+            trust_hi = int(state.g_ally_trust_score_hi[power_index, supported_power])
+            if trust_lo == 0 and trust_hi == 0:
+                state.g_support_trust_adj = 30      # DAT_00633f14 = 0x1e
+            elif trust_hi < 1 and (trust_hi < 0 or trust_lo < 5):
+                state.g_support_trust_adj = 10
+            else:
+                state.g_support_trust_adj = -10
+            state.g_convoy_active_flag[supported] = 1
+
+        # Chain-robustness adjacency tail (C lines 55-190).
         # Bumps supported's _F_INCOMING_MOVE when the chain is robust, or
         # supported's _F_SUP_CHAIN_CONFLICT when an enemy can cut it.
-        _sup_chain_tail(supporter, supported, supported)
+        _sup_chain_tail(supporter, supported, supported, _ORDER_SUP_HLD)
 
-    def _sup_chain_tail(supporter: int, supported: int, accum_prov: int) -> None:
+    def _sup_chain_tail(supporter: int, supported: int, accum_prov: int,
+                        order_type: int = _ORDER_SUP_HLD) -> None:
         """Shared adjacency-scan tail for BuildOrder_SUP_HLD / SUP_MTO.
 
         Ported from Source/BuildOrder/BuildOrder_SUP_HLD.c L55-190 and
         Source/BuildOrder/BuildOrder_SUP_MTO.c L61-220.  Both functions run
-        the same structural scan against the unit list, with accumulator
-        going to the supported (HLD) or target (MTO) province.
+        the same structural scan against the unit list, with accum_prov
+        receiving the outcome bump (supported for HLD, target for MTO).
 
-        Semantics (simplified from the C):
-          1. Threat gate — if no enemy unit can reach the supporter
-             (g_proximity_score[power, supporter] is zero), skip the scan
-             and unconditionally bump _F_INCOMING_MOVE.
-          2. Threat-mismatch short-circuit — if the proximity score at the
-             supporter doesn't equal the bare enemy_reach count, some
-             non-reach enemy pressure is present; treat as chain-broken
-             immediately (bump _F_SUP_CHAIN_CONFLICT).
-          3. Otherwise scan every unit whose province is enemy-reachable
-             or under secondary pressure; inspect its adjacency list for:
-               - whether it's adjacent to the supporter (b_sup)
-               - whether it's adjacent to the supported (b_tgt)
-               - whether any *other* adjacent own SC-province already
-                 carries a SUP_HLD/SUP_MTO onto the same supported with
-                 _F_INCOMING_MOVE set (b_chain — the "sister supporter"
-                 case that keeps the chain standing).
-             A conflicting unit (b_sup && !b_tgt && !b_chain) flips the
-             chain-ok flag off.
-          4. Bump _F_INCOMING_MOVE (chain ok) or _F_SUP_CHAIN_CONFLICT
-             (chain broken) on accum_prov.
+        Semantics from the C:
+          1. Threat gate — g_threat_level[power, supporter].  If zero, skip
+             the scan and bump _F_INCOMING_MOVE unconditionally (safe).
+          2. Mismatch short-circuit — if threat != g_enemy_reach_score at the
+             supporter, non-reach enemy pressure is present → chain broken
+             (_F_SUP_CHAIN_CONFLICT).
+          3. Unit scan — iterate all units gated by g_enemy_presence (primary)
+             or g_established_ally_flag (secondary, DAT_0050bce8).  For each,
+             filter adjacency by unit type (AdjacencyList_FilterByUnitType) and
+             inspect:
+               b_sup  — adj province == supporter
+               b_tgt  — adj province == supported (HLD) / target (MTO)
+               b_chain — sister-supporter: another own SC-province with
+                 order_type (3 for HLD, 4 for MTO), dest == accum_prov,
+                 and g_order_table[adj, 16] == 1.
+             b_chain post-check: if b_chain and g_order_table[supporter, 16]
+             != 1, it's discarded unless field 16 == 2 and b_sup and b_tgt
+             (which skips the conflict check for that unit entirely).
+             A conflicting unit (b_sup and not b_tgt and not b_chain) breaks
+             the chain.
+          4. Bump _F_INCOMING_MOVE (chain ok) or _F_SUP_CHAIN_CONFLICT on
+             accum_prov.
 
-        Simplifications from the literal decompile:
-          - The "chain topology flag" branch (DAT_00baede0 == 1/2) is
-            elided — nothing in the codebase currently writes that field
-            to those sentinel values, so the branch is effectively dead.
-        Fixed 2026-04-20 (M-MC-1): adjacency scan now uses
-        can_reach_by_type for coast-aware filtering instead of raw
-        adj_matrix, matching C's AdjacencyList_FilterByUnitType.
+        Fixed 2026-04-20 (M-MC-1): adjacency scan uses can_reach_by_type for
+        coast-aware filtering, matching C's AdjacencyList_FilterByUnitType.
+        Fixed 2026-05-01 (M-MC-2): threat gate now uses g_threat_level
+        (DAT_005460e8) — was g_proximity_score (always 0, making the scan
+        dead code).  Unit gate now uses g_enemy_presence + g_established_ally_flag
+        (was g_enemy_reach_score + g_enemy_pressure_secondary).  b_chain now
+        uses field 16 (_F_SOURCE_PROV) and accum_prov instead of field 13 and
+        supported; includes the field-16-on-supporter post-check.
         """
-        # Threat gate (L55-57, and L61-64 for SUP_MTO).
-        threat = float(state.g_proximity_score[power_index, supporter])
-        if threat == 0.0:
+        # Threat gate (SUP_HLD L55-57; SUP_MTO L63-64).
+        # C: DAT_005460e8 = g_threat_level, compared against g_EnemyReachScore.
+        threat = int(state.g_threat_level[power_index, supporter])
+        er = int(state.g_enemy_reach_score[power_index, supporter])
+        if threat == 0:
+            # No threat at all — chain is unconditionally safe.
             state.g_order_table[accum_prov, _F_INCOMING_MOVE] += 1.0
             return
-
-        er = float(state.g_enemy_reach_score[power_index, supporter])
         if threat != er:
-            # Chain immediately broken by non-reach pressure.
+            # Non-reach pressure present — chain broken immediately.
             state.g_order_table[accum_prov, _F_SUP_CHAIN_CONFLICT] += 1.0
             return
 
-        # Adjacency scan — uses unit-type-aware adjacency (coast filtering).
+        # Adjacency scan — unit gate: g_enemy_presence (DAT_004f6ce8, primary)
+        # or g_established_ally_flag (DAT_0050bce8, secondary fallback).
         chain_ok = True
         for this_prov, this_unit in state.unit_info.items():
-            # Skip if no enemy pressure at this unit's province (C has
-            # two sequential gates on g_enemy_reach_score and a secondary
-            # pressure array; we check either).
-            er_flag = int(state.g_enemy_reach_score[power_index, this_prov]) == 1
-            sec_flag = int(state.g_enemy_pressure_secondary[power_index, this_prov]) == 1
-            if not (er_flag or sec_flag):
+            ep_flag = int(state.g_enemy_presence[power_index, this_prov]) == 1
+            ea_flag = int(state.g_established_ally_flag[power_index, this_prov]) == 1
+            if not (ep_flag or ea_flag):
                 continue
 
-            # C uses AdjacencyList_FilterByUnitType to get only provinces
-            # this unit can legally reach given its type (army/fleet).
             unit_type = this_unit.get('type', 'A')
             adjs = [p for p in state.adj_matrix.get(this_prov, [])
                     if state.can_reach_by_type(this_prov, p, unit_type)]
             b_sup = supporter in adjs
-            b_tgt = supported in adjs
+            b_tgt = supported in adjs  # supported == accum_prov for HLD, mover for MTO
 
+            # Sister-supporter (b_chain): another own SC-province adjacent to
+            # this unit carries the same type of support onto accum_prov with
+            # g_order_table[adj, 16] == 1 (DAT_00baede0, _F_SOURCE_PROV).
             b_chain = False
             for adj_prov in adjs:
-                if adj_prov in (supporter, supported):
+                if adj_prov in (supporter, accum_prov):
                     continue
                 if state.g_sc_ownership[power_index, adj_prov] != 1:
                     continue
-                otype = int(state.g_order_table[adj_prov, _F_ORDER_TYPE])
-                if otype not in (_ORDER_SUP_HLD, _ORDER_SUP_MTO):
+                if int(state.g_order_table[adj_prov, _F_ORDER_TYPE]) != order_type:
                     continue
-                if int(state.g_order_table[adj_prov, _F_DEST_PROV]) != supported:
+                if int(state.g_order_table[adj_prov, _F_DEST_PROV]) != accum_prov:
                     continue
-                if int(state.g_order_table[adj_prov, _F_INCOMING_MOVE]) != 1:
+                if int(state.g_order_table[adj_prov, 16]) != 1:  # _F_SOURCE_PROV
                     continue
                 b_chain = True
                 break
+
+            # Post-check: b_chain is only valid when supporter's own field 16 == 1.
+            # If field 16 == 2 and b_sup and b_tgt: skip this unit entirely.
+            if b_chain:
+                sup_f16 = int(state.g_order_table[supporter, 16])
+                if sup_f16 != 1:
+                    if sup_f16 == 2 and b_sup and b_tgt:
+                        continue  # skip conflict check for this unit
+                    b_chain = False
 
             if b_sup and not b_tgt and not b_chain:
                 chain_ok = False
@@ -462,14 +501,13 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
         province in _F_SECONDARY (DAT_00baeda4, decompile L33), the target
         province in _F_DEST_PROV (DAT_00baeda8, decompile L34). Inherits the
         supporter's final_score_set entry into convoy-chain score fields and
-        clears convoy legs if the supporter is an army.
+        clears convoy legs if the supporter is an army.  Runs the ally-trust
+        side-effect branch (C lines 45-59) and chain-robustness tail (C L61-220).
 
-        Stubbed callees (same pattern as SUP_HLD):
-          FUN_004607f0 — per-support bookkeeping; per-trial reset covers it.
-          Ally-trust / enemy-adjacency tail (decompile L60-212) bumps
-          g_convoy_active_flag / g_ProvinceBaseScore / g_proximity_score based
-          on chain topology; not yet modelled — post-trial heat path covers
-          observable scoring.
+        Note: the C tail also sets g_proximity_score[target.power, mover] += 2
+        when the chain is robust AND an enemy at the target exerts exactly 1
+        threat unit on the mover (bVar3 condition, C L133-136).  That write is
+        deferred; the chain_ok / conflict determination is fully ported.
         """
         if int(state.g_order_table[supporter, _F_ORDER_TYPE]) != 0:
             return
@@ -492,13 +530,24 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
         register_convoy_fleet(state, power_index, supporter)
 
-        # Chain-robustness adjacency tail (decompile L61–220).  For
-        # SUP_MTO the accumulator lands on the *target* province (param_4
-        # in the C), not the mover.  The `supported` arg mirrors the
-        # "supported unit" used in the adjacency scan — here the mover,
-        # because the SUP_MTO scan checks whether an enemy that can reach
-        # the supporter can also reach the mover.
-        _sup_chain_tail(supporter, mover, target)
+        # Ally-trust side-effect (C lines 45-59): if the mover unit belongs
+        # to a different power, set g_convoy_active_flag[target] = 1.
+        mover_power = state.unit_info.get(mover, {}).get('power', power_index)
+        if mover_power != power_index:
+            trust_lo = float(state.g_ally_trust_score[power_index, mover_power])
+            trust_hi = int(state.g_ally_trust_score_hi[power_index, mover_power])
+            if trust_lo == 0 and trust_hi == 0:
+                state.g_support_trust_adj = 30      # DAT_00633f14 = 0x1e
+            elif trust_hi < 1 and (trust_hi < 0 or trust_lo < 5):
+                state.g_support_trust_adj = 10
+            else:
+                state.g_support_trust_adj = -10
+            state.g_convoy_active_flag[target] = 1
+
+        # Chain-robustness adjacency tail (C L63-220).  accum_prov = target.
+        # `supported` arg = mover: the scan checks adjacency to both the
+        # supporter and the mover (the unit being supported into the target).
+        _sup_chain_tail(supporter, mover, target, _ORDER_SUP_MTO)
 
     def _prov_from_unit_str(unit_str: str) -> int:
         """Parse 'A PAR' / 'F LON/NCS' → prov_id; -1 if unknown.
@@ -871,9 +920,11 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 _build_order_mto(pC, pA, state.g_ring_coast_c)
 
         # 1e. Random exploit pass (15% chance; 35% if late-game ally mode) ────
-        # Mirrors: if (iVar20 < 0x0f) { ... } else if (...) goto LAB_004505d1
+        # Mirrors: if (iVar20 < 0x0f) { if (local_76f) goto LAB_004505d1 }
+        #          else if (local_76f && late_game && not_albert && iVar20 < 0x23) goto LAB_004505d1
+        # Both branches require local_76f (has_ally).
         r_exploit = random.randrange(100)
-        do_exploit = r_exploit < 15
+        do_exploit = r_exploit < 15 and has_ally
         if (not do_exploit and has_ally
                 and state.g_near_end_game_factor > 6.0
                 and getattr(state, 'g_albert_power', own_power) != power_index
@@ -942,12 +993,12 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
             # overwrite ppiStack_7bc with the cap after the insertion loop).
             r3 = random.randrange(100)
             if secondary_target < 0:
+                # C: if (iVar20 < 0x41) cap=1; else cap = (0x54 < iVar20) + 2
+                # → [0,64]→1, [65,84]→2, [85,99]→3
                 if r3 < 65:
                     count_cap = 1
-                elif r3 < 84:
-                    count_cap = 2
                 else:
-                    count_cap = 4 + int(r3 > 89)
+                    count_cap = 2 + int(r3 > 84)
             else:
                 if r3 < 40:
                     count_cap = 1
@@ -960,9 +1011,13 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
 
             # Consumption loop (decompile lines 103–246):
             # Iterate local_6e4 ascending by score; 60% rand gate + total count cap.
-            # Trust/convoy conditions (via_prov vs dst_prov branch, relay province
-            # lookup via g_ConvoyProv1/2/3 and g_ally_designation_a, reachability via
-            # GameBoard_GetPowerRec) are not yet fully decompiled — stubbed below.
+            # Full trust/convoy conditions are implemented below:
+            #   - relay province reads via g_ally_designation_b/c (≈ g_ConvoyProv1/2)
+            #     and g_ally_designation_a (≈ g_ConvoyProv3 / ally guard)
+            #   - three-probe trust accumulation (relay3, relay1, ally_a last-wins)
+            #   - early-game mutual-trust path vs. not-early-game low-trust gate
+            #   - reachability via reachable_provinces (≈ GameBoard_GetPowerRec)
+            #   - convoy route dispatch via _get_convoy_route / build_convoy_orders
             consumed = 0
             for _score, cand in exploit_candidates:
                 if random.randrange(100) >= 60:     # < 0x3c = 60% gate
@@ -1081,7 +1136,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     from ..moves.convoy import _get_convoy_route
                     _fc, _ = _get_convoy_route(state, army_src, dst)
                     if _fc > 0:
-                        build_convoy_orders(state, power_index, army_src, dst)
+                        build_convoy_orders(state, power_index, army_src, dst, coast)
                     else:
                         if int(state.g_order_table[army_src, _F_ORDER_TYPE]) == _ORDER_HLD:
                             state.g_order_table[army_src, _F_ORDER_TYPE] = 0.0
@@ -1212,6 +1267,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                 inserted_count += 1
                 fleet_pool_a -= 1
                 _move_candidate(prov)
+                state.g_sub_order_map.add(prov)
                 _score_convoy_fleet(prov, fleet_pool_a)
 
         # Own-power only: second convoy pass (ProcessTurn.c lines 1294–1409).
@@ -1255,6 +1311,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = 4000
                     src_sc    = int(state.g_sc_ownership[power_index, army_src])
                     if src_enemy > 0 or (src_enemy >= 0 and src_sc != 0):
                         _move_candidate(army_src)
+                        state.g_sub_order_map.add(army_src)
                         fleet_pool_b -= 1
                         _score_convoy_fleet(army_src, fleet_pool_b)
                     # LAB_0045162d: second sub-pass (lines 1378–1400) — always score dst.
@@ -1798,192 +1855,174 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
     Port of UpdateAllyOrderScore (FUN_00442770).
     Pass 1 sub-function of UpdateScoreState.
 
-    C algorithm (1108 lines decompile):
-      1. Iterate g_CandidateRecordList for entries matching this power.
-      2. For each matching candidate (*(local_b18+7) == param_1):
-         a. Skip if candidate.skip_flag (offset +0x14) is set.
-         b. Clear per-power scoring accumulators:
-            - g_support_trust_adj[power, prov] = 0  for all powers/provs
-            - g_other_score[prov] = 0
-            - Clear g_convoy_fleet_registered set
-         c. Process round count (local_b08 = min(DAT_0062cc64+4, 30)):
-            For each round 0..local_b08-1:
-              - Sum pressure scores across all provinces for this power
-              - Insert into per-round scoring BST (FindOrInsert + increment count)
-         d. Walk the scoring BST: for each entry, decrement trial counter;
-            then iterate per-power order lists.
-            - For orders with valid flags: copy order fields into g_order_table
-              (order_type → +0x20, dest → +0x2c, secondary → +0x24/0x28, etc.)
-              based on order_type switch (2=MTO, 3=SUP_HLD, 4/5=SUP_MTO, 6=CTO).
-         e. Walk candidate's own order list: same order-type dispatch for the
-            candidate's personal orders (second copy loop).
-         f. Run FUN_0040b560 (dispatch pass): validates order table.
-         g. Walk g_order_table: for each unit with valid order:
-            - Accumulate pressure into apiStack_a40[province] and apiStack_640[province]
-            - For units owned by this power: mark g_adj_score_flag[adj_power, province]
-            - For idle units (flag 0x6a): walk adjacencies, accumulate into apiStack_640
-            - For other units: accumulate into apiStack_a40 and mark adj_score_flag
-         h. Walk candidate record list again: for idle units (flag 0x6a), build
-            MTO candidates from adjacencies where apiStack_a40 == 0 and
-            apiStack_640 < 2 (uncontested destinations).
-         i. Final pass: update per-power scoring accumulators from the candidate
-            scoring BST results, call EvaluateAllianceScore, store result.
-
-    Fix 2026-04-21 (MC-3): Replaced stub with faithful port of phases (a)-(i).
+    C algorithm (1107 lines):
+      Outer loop: iterate g_CandidateRecordList for entries where candidate.power == param_1.
+      For each non-skipped candidate:
+        (b)  Clear g_mc_province_pressure / g_mc_fleet_pressure (DAT_00b9a980 / DAT_00b95580).
+        (c)  Compute round count local_b08 = min(history_counter+4, 30).
+             C builds a BST of per-round pressure sums from g_bbf690/694; Python simplifies
+             to a single representative projection using g_current_best_order.
+        (d)  Load candidate's own orders into g_order_table.
+        (e)  Cross-power projection (the aggregation that was previously missing):
+             for each ally power ≠ current with sc_count > 0, load their
+             g_current_best_order into any unoccupied g_order_table slots.
+             C equivalent: BST walk → for each ally power → copy g_bbf694[round+ally]
+             order list into the staging unit set (OrderedSet_FindOrInsert).
+        (f)  Walk combined g_order_table: accumulate pressure_own[dest] for active moves
+             and pressure_adj[adj] for idle units.
+        (g)  Score accumulation into g_mc_province_pressure / g_mc_fleet_pressure:
+             C lines 896–1034 read g_baed7c records (per-province reach, indexed by power)
+             and write to DAT_00b9a980 / DAT_00b95580.  Python approximates the
+             BST-weighted round score with weight=1 per unit presence.
+        (h)  Call EvaluateAllianceScore (once per candidate, not once for all).
+        (i)  Store result in candidate['alliance_score'] / ['alliance_score_avg'].
     """
     if getattr(state, 'g_candidate_record_list', None) is None:
         return
 
-    own_power = getattr(state, 'albert_power_idx', 0)
     num_provinces = 256
     num_powers = len(state.g_unit_count)
-
-    candidates = [c for c in state.g_candidate_record_list if c.get('power') == power]
-    if not candidates:
-        return
-
-    # Phase (b): clear per-power scoring accumulators
-    for p in range(num_powers):
-        for prov in range(num_provinces):
-            state.g_support_trust_adj[p, prov] = 0
-            state.g_other_score[p, prov] = 0
-    state.g_province_score_trial[:] = 0
-
-    # Convoy fleet tracking set
-    if hasattr(state, 'g_convoy_fleet_registered'):
-        state.g_convoy_fleet_registered.clear()
-
-    # Phase (c): compute round count and accumulate pressure per round
     history_counter = int(getattr(state, 'g_history_counter', 0))
     local_b08 = min(history_counter + 4, 30) if history_counter < 8 else 30
+    water_provs = getattr(state, 'water_provinces', set())
+    coastal_provs = getattr(state, 'coastal_provinces', set())
 
-    # Per-round scoring: sum pressure across all provinces for each round
-    round_scores = {}  # {score_sum: count}
-    for round_idx in range(local_b08):
-        score_sum = 0
-        for prov in range(num_provinces):
-            score_sum += int(state.g_support_trust_adj[power, prov])
-        # FindOrInsert into scoring BST: if exists, increment count; else insert
-        if score_sum in round_scores:
-            round_scores[score_sum] += 1
-        else:
-            round_scores[score_sum] = 1
+    from ..heuristics import evaluate_alliance_score
 
-    state.g_trial_counter = getattr(state, 'g_trial_counter', 0) + local_b08
-
-    # Phase (d)-(e): walk each candidate's orders and rebuild g_order_table
-    # Accumulator arrays (C: apiStack_a40 and apiStack_640)
-    pressure_own = np.zeros(num_provinces, dtype=np.int32)    # apiStack_a40
-    pressure_adj = np.zeros(num_provinces, dtype=np.int32)    # apiStack_640
-
-    for c in candidates:
+    for c in state.g_candidate_record_list:
+        if c.get('power') != power:
+            continue
         if c.get('skip_flag', False):
             continue
 
-        # Copy candidate's orders into g_order_table
+        # ── Phase (b): clear MC pressure arrays ──────────────────────────────
+        # C: lines 150–200 — clear g_baed7c record[0x1a+p] and DAT_00b9a980/b95580
+        state.g_mc_province_pressure.fill(0)
+        state.g_mc_fleet_pressure.fill(0)
+
+        # ── Phase (d): load candidate's own orders into g_order_table ────────
         for order_entry in c.get('orders', []):
-            if not isinstance(order_entry, (list, tuple)):
+            if not isinstance(order_entry, (list, tuple)) or len(order_entry) < 2:
                 continue
-            prov = int(order_entry[0]) if len(order_entry) > 0 else -1
+            prov = int(order_entry[0])
             if prov < 0 or prov >= num_provinces:
                 continue
-            order_type = int(order_entry[1]) if len(order_entry) > 1 else 0
+            order_type = int(order_entry[1])
             state.g_order_table[prov, _F_ORDER_TYPE] = float(order_type)
-            # Copy remaining fields based on order type
-            if order_type == 2 and len(order_entry) > 2:   # MTO
+            if order_type == _ORDER_MTO and len(order_entry) > 2:
                 state.g_order_table[prov, _F_DEST_PROV] = float(order_entry[2])
                 if len(order_entry) > 3:
                     state.g_order_table[prov, _F_DEST_COAST] = float(order_entry[3])
                 if len(order_entry) > 4:
                     state.g_order_table[prov, _F_SECONDARY] = float(order_entry[4])
-            elif order_type == 3 and len(order_entry) > 2:  # SUP_HLD
+            elif order_type == _ORDER_SUP_HLD and len(order_entry) > 2:
                 state.g_order_table[prov, _F_DEST_PROV] = float(order_entry[2])
-            elif order_type in (4, 5) and len(order_entry) > 2:  # SUP_MTO
+            elif order_type in (_ORDER_SUP_MTO, 5) and len(order_entry) > 2:
                 state.g_order_table[prov, _F_DEST_PROV] = float(order_entry[2])
                 if len(order_entry) > 3:
                     state.g_order_table[prov, _F_SECONDARY] = float(order_entry[3])
-            elif order_type == 6 and len(order_entry) > 2:  # CTO
+            elif order_type == _ORDER_CTO and len(order_entry) > 2:
                 state.g_order_table[prov, _F_DEST_COAST] = float(order_entry[2])
                 if len(order_entry) > 3:
                     state.g_order_table[prov, _F_SECONDARY] = float(order_entry[3])
 
-    # Phase (g): walk g_order_table — accumulate pressure scores
-    for prov, unit in state.unit_info.items():
-        order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
-        unit_power = unit['power']
+        # ── Phase (e): cross-power order projection ───────────────────────────
+        # C: BST walk lines 265–460 — for each BST node, for each ally power with
+        # sc_count > 0, copy g_bbf694[node.round_slot + ally_power].order_list
+        # into the staging OrderedSet.  Python approximates using g_current_best_order
+        # (the most recently committed best orders for each power).
+        for ally_power in range(num_powers):
+            if ally_power == power:
+                continue
+            if int(state.sc_count[ally_power]) <= 0:
+                continue
+            for ally_order in state.g_current_best_order.get(ally_power, []):
+                if not isinstance(ally_order, (list, tuple)) or len(ally_order) < 2:
+                    continue
+                ally_prov, ally_order_type = int(ally_order[0]), int(ally_order[1])
+                if ally_prov < 0 or ally_prov >= num_provinces or ally_order_type <= 0:
+                    continue
+                # Only project if own-power orders have not already claimed this slot.
+                # C: OrderedSet_FindOrInsert does not overwrite existing entries.
+                if int(state.g_order_table[ally_prov, _F_ORDER_TYPE]) == 0:
+                    state.g_order_table[ally_prov, _F_ORDER_TYPE] = float(ally_order_type)
 
-        if order_type > 0:
-            # Accumulate into pressure_own for the destination/target
-            dest = int(state.g_order_table[prov, _F_DEST_PROV])
-            if 0 <= dest < num_provinces:
-                pressure_own[dest] += 1
+        # ── Phase (f): walk combined order table — pressure accumulators ──────
+        # C: lines 607–785 — apiStack_a40 (contested moves) / apiStack_640 (idle adj)
+        pressure_own = np.zeros(num_provinces, dtype=np.int32)  # apiStack_a40
+        pressure_adj = np.zeros(num_provinces, dtype=np.int32)  # apiStack_640
 
-            # For units owned by this power: mark adjacency scores for other powers
-            if unit_power == power:
-                for adj_prov in state.get_unit_adjacencies(prov):
-                    if adj_prov < num_provinces:
-                        for p in range(num_powers):
-                            if p != power and int(state.g_unit_count[p]) > 0:
-                                state.g_other_score[p, adj_prov] = 1
+        for prov, unit in state.unit_info.items():
+            order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
 
-        # Idle units: accumulate adjacency pressure
-        if order_type == 0 or order_type == _ORDER_HLD:
+            if order_type == _ORDER_MTO or order_type == _ORDER_CTO:
+                dest = int(state.g_order_table[prov, _F_DEST_PROV])
+                if 0 <= dest < num_provinces:
+                    pressure_own[dest] += 1
+
+            if order_type == 0 or order_type == _ORDER_HLD:
+                utype = unit.get('type', 'A')
+                if utype in ('F', 'FLT'):
+                    adj_list = list(state.fleet_adj_matrix.get(prov, []))
+                elif utype in ('A', 'AMY'):
+                    adj_list = [a for a in state.adj_matrix.get(prov, [])
+                                if a not in water_provs]
+                else:
+                    adj_list = list(state.adj_matrix.get(prov, []))
+                for adj in adj_list:
+                    if adj < num_provinces:
+                        pressure_adj[adj] += 1
+
+        # ── Phase (g): score accumulation into g_mc_province_pressure ─────────
+        # C: lines 896–1034 — iterate g_baed7c per-province records; for each
+        # power with sc_count > 0, accumulate record[0x1a + power] (BST-weighted
+        # round pressure score) into DAT_00b9a980[prov + power*256] and walk
+        # adjacencies into DAT_00b95580 (fleet) or DAT_00b9a980 (army).
+        # Python: record[0x1a + power] is approximated as weight=1 per unit since
+        # we do not maintain per-round g_bbf690/694 snapshots.
+        for prov, unit in state.unit_info.items():
+            unit_power = unit.get('power', -1)
+            if unit_power < 0 or int(state.sc_count[unit_power]) <= 0:
+                continue
+
+            state.g_mc_province_pressure[unit_power, prov] += 1
+
             utype = unit.get('type', 'A')
-            if utype in ('A', 'AMY'):
-                adj_list = [a for a in state.adj_matrix.get(prov, [])
-                            if a not in state.water_provinces]
-            elif utype in ('F', 'FLT'):
+            is_fleet = utype in ('F', 'FLT')
+            is_coastal = prov in coastal_provs
+            if is_fleet:
                 adj_list = list(state.fleet_adj_matrix.get(prov, []))
+            elif utype in ('A', 'AMY'):
+                adj_list = [a for a in state.adj_matrix.get(prov, [])
+                            if a not in water_provs]
             else:
                 adj_list = list(state.adj_matrix.get(prov, []))
-            for adj_prov in adj_list:
-                if adj_prov < num_provinces:
-                    pressure_adj[adj_prov] += 1
 
-    # Phase (h): for idle units owned by this power, build MTO candidates
-    # from uncontested adjacencies (apiStack_a40 == 0 AND apiStack_640 < 2)
-    from ..moves import assign_support_order
-    for prov, unit in state.unit_info.items():
-        if unit['power'] != power:
-            continue
-        order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
-        if order_type != 0 and order_type != _ORDER_HLD:
-            continue
+            last_adj = -1
+            for adj in sorted(adj_list):
+                # C deduplicates adjacency hits via a "last seen" sentinel
+                if adj == last_adj:
+                    continue
+                last_adj = adj
+                # Coastal fleet adjacencies → g_mc_fleet_pressure (DAT_00b95580);
+                # all others → g_mc_province_pressure (DAT_00b9a980).
+                if is_fleet and is_coastal:
+                    state.g_mc_fleet_pressure[unit_power, adj] += 1
+                else:
+                    state.g_mc_province_pressure[unit_power, adj] += 1
 
-        utype = unit.get('type', 'A')
-        if utype in ('A', 'AMY'):
-            adj_list = [a for a in state.adj_matrix.get(prov, [])
-                        if a not in state.water_provinces]
-        elif utype in ('F', 'FLT'):
-            adj_list = list(state.fleet_adj_matrix.get(prov, []))
-        else:
-            adj_list = list(state.adj_matrix.get(prov, []))
+        # ── Phase (h): EvaluateAllianceScore — called once per candidate ──────
+        # C: line 1069 — EvaluateAllianceScore(this, param_1, local_b08);
+        # g_mc_province_pressure / g_mc_fleet_pressure feed Phase 2 of that function.
+        evaluate_alliance_score(state, power)
 
-        for adj_prov in adj_list:
-            if adj_prov >= num_provinces:
-                continue
-            # C: apiStack_a40[adj] == 0 AND apiStack_640[adj] < 2
-            if pressure_own[adj_prov] == 0 and pressure_adj[adj_prov] < 2:
-                # C: also checks adj != unit.dest (offset +0x60) — skip self-dest
-                dest_cur = int(state.g_order_table[prov, _F_DEST_PROV])
-                if adj_prov != dest_cur:
-                    # BuildOrderSpec analog: record this as a candidate MTO
-                    # (in C this inserts into a local BST via OrderedSet_FindOrInsert)
-                    pass  # Candidate recorded implicitly; best picked by _refresh_order_table
-
-    # Phase (i): update alliance scores from the scoring BST
-    from ..heuristics import evaluate_alliance_score
-    evaluate_alliance_score(state, power)
-
-    # Store cumulative scores back into candidate records
-    for c in candidates:
+        # ── Phase (i): store per-candidate result ─────────────────────────────
+        # C: lines 1071–1101 — puVar5[9] = new_score; average with previous if
+        # history_counter > 0; store round_count.
         old_score = c.get('alliance_score', 0)
-        new_score = int(state.g_alliance_desirability[power]) if power < len(state.g_alliance_desirability) else 0
-        # C: if (0 < DAT_0062cc64) → averaged = (old/2 + new/2)
-        if history_counter > 0:
-            avg_score = old_score // 2 + new_score // 2
-        else:
-            avg_score = new_score
+        new_score = (int(state.g_alliance_desirability[power])
+                     if power < len(state.g_alliance_desirability) else 0)
+        avg_score = (old_score // 2 + new_score // 2) if history_counter > 0 else new_score
         c['alliance_score'] = new_score
         c['alliance_score_avg'] = avg_score
         c['round_count'] = history_counter

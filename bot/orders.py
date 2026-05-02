@@ -31,20 +31,29 @@ logger = logging.getLogger(__name__)
 
 
 def _init_position_for_orders(state: InnerGameState) -> None:
-    """InitPositionForOrders. Sets up per-turn position state required 
-    before Monte Carlo order evaluation. Writes g_sc_owner, resets 
-    g_ally_matrix, and zeros g_move_history_matrix."""
+    """InitPositionForOrders. Sets up per-turn position state required
+    before Monte Carlo order evaluation."""
     num_powers = 7
     num_provinces = 256
-    
+
     # Step 1 — Clear per-power order candidate lists
     state.g_candidate_record_list.clear()
-    
-    # Step 2 — Initialize g_sc_owner to "unknown" (-1 = unoccupied, -2 = contested)
+
+    # Step 2 — Initialize g_sc_owner to -1 (unoccupied) for all provinces.
+    # C: DAT_00ba2f70[prov] = 0xffffffff initialised at lines 148-155.
     state.g_sc_owner = getattr(state, 'g_sc_owner', np.full(num_provinces, -1, dtype=np.int32))
     state.g_sc_owner.fill(-1)
-    
-    # Step 4 — Populate g_sc_owner from unit list
+
+    # Step 3 — Build per-province adjacency sets (C lines 188–235,
+    # param_1+0x2a1c = g_adjacency_presence).  C uses a per-province STL
+    # sorted-set seeded from the province route-graph; Python's adj_matrix
+    # already holds the same data as plain lists.  We expose a set-view so
+    # the propagation step below and any downstream caller can do O(1) tests.
+    adj_sets: dict = {prov: set(adjs) for prov, adjs in state.adj_matrix.items()}
+
+    # Step 4 — Populate g_sc_owner[prov] = power for each unit province.
+    # C stores unit-type bytes (army subtype / 0x14 fleet); Python stores
+    # power IDs because all downstream consumers compare against power indices.
     for prov, unit in state.unit_info.items():
         power = unit.get('power', -1)
         if power < 0:
@@ -52,12 +61,49 @@ def _init_position_for_orders(state: InnerGameState) -> None:
         if state.g_sc_owner[prov] == -1:
             state.g_sc_owner[prov] = power
         elif state.g_sc_owner[prov] != power:
-            state.g_sc_owner[prov] = -2  # contested (-2)
-            
-    # Step 5 — Zero g_ally_matrix per power (to be rebuilt by FRIENDLY)
+            state.g_sc_owner[prov] = -2  # contested
+
+    # Step 4b — Propagate g_sc_owner to adjacent provinces (C lines 238–300).
+    # C: for each SC province occupied by a foreign unit, spreads unit-type to
+    # all adjacent provinces via g_adjacency_presence (first write wins;
+    # type-conflict → 0xfffffffe = -2).  Python: same propagation using power
+    # IDs, applied to all unit provinces (the C's SC-only + invasion-only
+    # condition is an internal optimisation gated on C's unit-type storage;
+    # propagating for all units produces correct power-ownership adjacency for
+    # Python consumers such as heuristics/influence.py and monte_carlo/trial.py).
+    for prov, unit in state.unit_info.items():
+        power = unit.get('power', -1)
+        if power < 0:
+            continue
+        for adj in adj_sets.get(prov, ()):
+            if adj >= num_provinces:
+                continue
+            cur = int(state.g_sc_owner[adj])
+            if cur == -1:
+                state.g_sc_owner[adj] = power
+            elif cur != power and cur != -2:
+                state.g_sc_owner[adj] = -2
+
+    # Step 5 — Per-power matrix reset (C lines 302–369).
+    # C outer loop: for each power p:
+    #   • DAT_004cf4c0[p] = DAT_004cf4c4[p] = 0  (g_peace_counter reset)
+    #   • DAT_0062a2f8[p*21+j] = 0 for j in 0..num_powers (g_stab_counter)
+    #   • g_AllyMatrix[p*21+j]  = 0 for j in 0..num_powers
+    #   • build DAT_00baed7c / DAT_00baed88 adjacency multisets (handled by
+    #     Python's _build_reach_matrices inside enumerate_hold_orders)
+    #
+    # g_peace_counter: C resets per eval cycle; Python treats it as a
+    # cross-turn counter in bot/strategy.py (incremented/cleared across SPR
+    # seasons).  Do NOT reset here to preserve the multi-turn accumulation.
+    #
+    # g_stab_counter: within-turn accumulator (FRIENDLY.c increments it during
+    # the same eval cycle that InitPositionForOrders starts).  Reset each cycle.
+    state.g_stab_counter[:, :num_powers] = 0
+
+    # Step 5b — Zero g_ally_matrix (covers C's g_AllyMatrix zeroing).
     state.g_ally_matrix.fill(0)
-    
-    # Step 6 — Convoy reach and history
+
+    # Step 6 — Zero g_move_history_matrix (C lines 371–393, g_MoveHistoryMatrix).
     if not hasattr(state, 'g_move_history_matrix'):
         state.g_move_history_matrix = np.zeros((num_powers, num_provinces, num_provinces), dtype=np.int32)
     else:
@@ -85,6 +131,102 @@ def _init_position_for_orders(state: InnerGameState) -> None:
         victory_threshold = int(getattr(state, 'win_threshold', 18))
     state.g_victory_threshold = victory_threshold
     state.win_threshold      = victory_threshold
+
+
+def _init_scoring_state(state: InnerGameState) -> None:
+    """
+    Port of InitScoringState (Source/heuristics/InitScoringState.c).
+    Called at the top of GenerateOrders, before ScoreProvinces.
+
+    Steps:
+      1. Copy curr_sc_cnt (state.sc_count) → state.g_target_sc_cnt.
+      2. Build a per-power province urgency table from g_build_candidate_list:
+           urgency[power, prov] += 10000 for each unit of power adjacent to prov.
+         (C: 10000.0 / adjacency_weight; Python: weight = 1 for direct adjacency.)
+      3. For each (outer, inner) power pair and each province occupied by an army
+         of inner_power: if urgency[outer] > urgency[inner] AND outer×inner trust
+         is (0, 0) — i.e. neither ally nor declared enemy — outer is projected to
+         capture the province.  Adjust g_target_sc_cnt accordingly.
+      4. Zero the 14 per-power×province arrays that GenerateOrders.c clears in
+         the block immediately after InitScoringState (lines 102–130).
+
+    The internal ratio tables (DAT_00624810 / DAT_006239e8) computed in the C
+    version are not persisted: no downstream code reads them outside this function.
+
+    Output: state.g_target_sc_cnt — [7] int32 projected SC count per power.
+    """
+    num_powers = 7
+
+    # ── Step 1: curr_sc_cnt → g_target_sc_cnt ─────────────────────────────
+    state.g_target_sc_cnt[:] = state.sc_count
+
+    # ── Step 2: Province build urgency (local — DAT_00624ef8) ──────────────
+    # Iterate g_build_candidate_list (DAT_00bc1e1c), the set of SC-target
+    # provinces populated by the prior turn's candidate pipeline.  For each
+    # target that is army-accessible (not water), accumulate 10000 urgency
+    # for every power whose unit stands adjacent to it.
+    build_urgency = np.zeros((num_powers, 256), dtype=np.float64)
+    water_provs = getattr(state, 'water_provinces', set())
+    occupied    = set(state.unit_info.keys())
+
+    for tprov in state.g_build_candidate_list:
+        if tprov in water_provs:
+            continue
+        for adj in state.adj_matrix.get(tprov, []):
+            if adj not in occupied:
+                continue
+            pw = state.unit_info[adj].get('power', -1)
+            if 0 <= pw < num_powers:
+                build_urgency[pw, tprov] += 10_000.0
+
+    # ── Step 3: Urgency comparison → g_target_sc_cnt adjustment ────────────
+    # C: for each (outer, inner) pair, walk provinces where inner has an army.
+    # If outer urgency > inner urgency AND g_AllyTrustScore[outer, inner] == (0, 0):
+    #   outer projected to gain the SC → target_sc_cnt[outer] += 1
+    #                                    target_sc_cnt[inner] -= 1
+    ally_trust    = getattr(state, 'g_ally_trust_score',    None)
+    ally_trust_hi = getattr(state, 'g_ally_trust_score_hi', None)
+    valid_provs   = getattr(state, 'valid_provinces', None) or range(256)
+
+    for outer in range(num_powers):
+        for inner in range(num_powers):
+            if inner == outer:
+                continue
+            for prov in valid_provs:
+                unit = state.unit_info.get(prov)
+                if unit is None:
+                    continue
+                if unit.get('power') != inner:
+                    continue
+                # C gate: province ushort high-byte == 'A' (army present)
+                if unit.get('type', 'A') not in ('A', 'AMY'):
+                    continue
+                sc_outer = build_urgency[outer, prov]
+                sc_inner = build_urgency[inner, prov]
+                if sc_inner <= 0 or sc_outer <= sc_inner:
+                    continue
+                tlo = float(ally_trust[outer, inner]) if ally_trust is not None else 0.0
+                thi = int(ally_trust_hi[outer, inner]) if ally_trust_hi is not None else 0
+                if tlo == 0 and thi == 0:
+                    state.g_target_sc_cnt[outer] += 1
+                    state.g_target_sc_cnt[inner] -= 1
+
+    # ── Step 4: Zero 14 per-power×province arrays (GenerateOrders.c:102–130) ─
+    # Seven int64/float64 C arrays, each stored as a lo+hi int32 pair; Python
+    # keeps dual views (float64 and int64) for several of these addresses.
+    # Entries in parentheses are the hi-word partner of the preceding lo-word.
+    state.g_candidate_scores.fill(0.0)       # g_CandidateScores         (DAT_0059a0ec hi)
+    state.g_heat_movement_b.fill(0.0)        # DAT_005af0e8 lo            (DAT_005af0ec hi)
+    state.g_convoy_support.fill(0.0)         # DAT_005cf0e8 lo, float64 view
+    state.g_support_candidate_mark.fill(0)   # DAT_005cf0ec hi, int64 view
+    state.g_convoy_reach.fill(0.0)           # DAT_005c48e8 lo, float64 view
+    state.g_direct_reach_flag.fill(0)        # DAT_005c48ec hi, int64 view
+    state.g_support_reach.fill(0.0)          # DAT_005ba0e8 lo, float64 view
+    state.g_extended_reach_flag.fill(0)      # DAT_005ba0ec hi, int64 view
+    state.g_prov_target_flag.fill(0)         # g_ProvTargetFlag
+    state.g_target_flag2.fill(0)             # DAT_005ee8ec hi partner
+    state.g_target_flag.fill(0)              # g_TargetFlag
+    state.g_attack_count2.fill(0)            # DAT_005e40ec hi partner
 
 
 def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | None':

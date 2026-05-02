@@ -14,8 +14,8 @@ Inner-state writes (C offsets relative to inner_state pointer):
   +0x2448 — "HLO received" flag set to 1
 
 After setting state, C calls vtable slot +0xd4 (subclass OnHLO hook).
-In Python the diplomacy.Game layer handles variant/reconnect natively;
-the OnHLO hook is a no-op stub.
+In Python, if the variant list contains LVL, process_hst is called to
+initialize g_history_counter and the per-power allowed-press maps.
 """
 
 import logging as _logging
@@ -109,13 +109,9 @@ def hlo_dispatch(state: InnerGameState, message: str) -> None:
 
     # ── OnHLO vtable hook (+0xd4) ─────────────────────────────────────────
     # C: (**(code**)(*(int*)this + 0xd4))()
-    # In Python the diplomacy.Game layer handles variant init and reconnection
-    # natively. If process_hst needs to run on the variant list, it would be
-    # triggered here. For now this is a no-op stub.
-    # TODO: if variant list contains LVL, trigger process_hst-like init.
-    if variant_tokens:
-        # Synthesize an HST-like message from variant tokens so that
-        # process_hst can set g_history_counter and allowed-press maps.
+    # The variant list may carry LVL (press level) and MTL (move time limit).
+    # Pass it to process_hst so g_history_counter and allowed-press maps are
+    # initialized from HLO the same way they would be from a real HST message.
+    if "LVL" in variant_tokens:
         from .history import process_hst
-        hst_msg = ' '.join(variant_tokens)
-        process_hst(state, hst_msg)
+        process_hst(state, " ".join(variant_tokens))

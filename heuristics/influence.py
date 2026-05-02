@@ -30,7 +30,8 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
 
     Resolved (see ApplyInfluenceScores.md for formulas):
       Q-AIS-1  g_PerPowerMoveBonus = g_attack_history (DAT_005a48e8)
-      Q-AIS-2  Gate array = DAT_004DA2F0 (g_history_gate), pure 2D, NOT g_move_history_matrix
+      Q-AIS-2  Gate array address = DAT_004DA2F0 — later superseded by Q-AIS-NEW-1
+               (DAT_004DA2F0 is the tail of g_heat_score, not a separate gate array)
       Q-AIS-4  g_MoveScore = round(pow(heat_B,8)*pow(heat_A,9)/1e22); deterministic
       Q-AIS-5  g_SupportScore = round((heat_B*heat_A)^4/1e8); FloatToInt64 = converter
       Q-AIS-8  Contact matrix stride = 0x3f confirmed
@@ -38,9 +39,18 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
     Resolved:
       Q-AIS-NEW-1  Gate is g_unit_adjacency_count (DAT_004e1af0), NOT DAT_004DA2F0
                     (which was end of g_heat_score). Written by Pass 4 above.
+      Q-AIS-NEW-2a g_attack_history += FloatToInt64(heat_a) per province when
+                    best_move > 0; ST0 = heat_a = g_heat_movement_b[power_a][prov].
 
-    Still open:
-      Q-AIS-NEW-2  sort_key FloatToInt64 arg unknown → using g_SupportScore[prov]
+    Resolved:
+      Q-AIS-NEW-2b sort_key = FloatToInt64(g_SupportScore[prov]
+                    * g_InfluenceMatrix_B[power_a*21+power_b] / best_support).
+                    Assembly (LAB_0043726c): FILD g_SupportScore[ESI*8], FMUL
+                    g_InfluenceMatrix_B[local_84], FDIV local_68, CALL FloatToInt64.
+                    local_68 set pre-loop via FILD best_support + FSTP (int→double).
+                    g_influence_matrix_b populated in generate_orders Phase 3 as a
+                    copy of g_influence_matrix_raw (same gate/heat as Phase 1h,
+                    GenerateOrders.c:352-383).
     """
     NUM_POWERS = 7
     NUM_PROVINCES = 256
@@ -74,7 +84,7 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                     nxt[prov] = sum(scores[q] for q in adj) // 5
             for prov_id, info in state.unit_info.items():
                 if info['power'] == power:
-                    nxt[prov_id] = max(nxt[prov_id], 5000)
+                    nxt[prov_id] = 5000
             scores = nxt
 
         # ── Pass 2: Accumulate g_heat_score ───────────────────────────────────
@@ -149,11 +159,13 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
     #    the end of g_heat_score. The actual gate is g_unit_adjacency_count, which
     #    is written by Pass 4 above. See GlobalDataRefs.md for confirmation.)
     #
-    # g_attack_history[power_a][prov] += FloatToInt64(...) when best_move > 0
-    #   (exact FloatToInt64 arg TBD — Q-AIS-NEW-2; using heat_a as placeholder)
+    # g_attack_history[power_a][prov] += FloatToInt64(heat_a) when best_move > 0
+    #   (Q-AIS-NEW-2a resolved: ST0 = heat_a = g_heat_movement_b[power_a][prov])
     #
-    # sort_key = FloatToInt64(ST0) — exact ST0 source TBD (Q-AIS-NEW-2)
-    #   placeholder: g_SupportScore[prov]
+    # sort_key = FloatToInt64(g_SupportScore[prov] * g_InfluenceMatrix_B[pa*21+pb]
+    #              / best_support)  — Q-AIS-NEW-2b resolved from assembly.
+    # g_influence_matrix_b[power_a, power_b] = g_influence_matrix_raw snapshot
+    # (GenerateOrders.c:352-383, same gate as Phase 1h).
     DENOM_MOVE    = 1e22   # pow(100,6) * pow(100,5)
     DENOM_SUPPORT = 1e8    # pow(100,2) ** 2
     EXP_MOVE_B    = 8.0    # DAT_004b0a50
@@ -201,9 +213,11 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
 
             # Build g_order_list press-proposal slate (own power only)
             if best_support > 0 and power_a == own_power:
+                inf_b = float(state.g_influence_matrix_b[power_a, power_b])
                 for prov in range(NUM_PROVINCES):
-                    # sort_key = FloatToInt64(support_scores[prov])
-                    sort_key = _float_to_int64(float(support_scores[prov]))
+                    sort_key = _float_to_int64(
+                        float(support_scores[prov]) * inf_b / float(best_support)
+                    )
                     if sort_key == 0:
                         continue
                     if prov not in state.unit_info:
@@ -249,8 +263,11 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
     global_prov_max = float(np.max(state.g_global_province_score)) or 1.0
     state.g_global_province_score *= 100.0 / global_prov_max
 
-    # Contact matrices: stride 0x3f confirmed (Q-AIS-8 resolved)
-    # Python (7,7) ndarray is equivalent to C [pow*0x3f+other] for 7 powers.
+    # Contact matrices: C layout is a single flat BSS region, stride 63
+    # (= 3×21 slots/row): g_contact_count at base−21 int32s, g_contact_weighted
+    # at base, g_contact_owner_count at base+21 int32s.  Each 21-slot block
+    # holds 7 values (other_power 0..6) + 14 padding.  Python (7,7) arrays
+    # capture this correctly; reads must use the three separate arrays.
     state.g_contact_count.fill(0)
     state.g_contact_weighted.fill(0)
     state.g_contact_owner_count.fill(0)
@@ -268,6 +285,93 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                 state.g_contact_owner_count[pw, owner_r] += int(
                     state.g_unit_adjacency_count[owner_r, adj]
                 )
+
+
+def compute_alliance_score(state: InnerGameState) -> None:
+    """
+    Port of g_AllianceScore computation (GenerateOrders.c lines 567-618).
+
+    Called after compute_influence_matrix (which populates g_influence_matrix_raw).
+    For each ordered power pair (row, col) where row != col:
+
+      col_sum = Σ_k g_influence_matrix_raw[k][row]   (column sum of column `row`)
+      raw_rc  = g_influence_matrix_raw[row][col]
+      raw_cr  = g_influence_matrix_raw[col][row]
+
+      sc_count[row|col] == 0  →  0.0
+      raw_rc > raw_cr         →  (raw_rc/(raw_cr+1)) * raw_cr / col_sum * -3.0
+      else                    →  (raw_cr/(raw_rc+1)) * raw_cr / col_sum * +3.0
+    """
+    NUM_POWERS = 7
+    state.g_alliance_score.fill(0.0)
+
+    col_sums = np.sum(state.g_influence_matrix_raw, axis=0)  # shape (7,)
+    for row in range(NUM_POWERS):
+        col_sum = float(col_sums[row])
+        for col in range(NUM_POWERS):
+            if row == col:
+                continue
+            if state.sc_count[row] == 0 or state.sc_count[col] == 0:
+                continue
+            raw_rc = float(state.g_influence_matrix_raw[row, col])
+            raw_cr = float(state.g_influence_matrix_raw[col, row])
+            if col_sum == 0.0:
+                continue
+            if raw_rc > raw_cr:
+                state.g_alliance_score[row, col] = (
+                    (raw_rc / (raw_cr + 1.0)) * raw_cr / col_sum * -3.0
+                )
+            else:
+                state.g_alliance_score[row, col] = (
+                    (raw_cr / (raw_rc + 1.0)) * raw_cr / col_sum * 3.0
+                )
+
+
+def set_opening_targets(state: InnerGameState) -> None:
+    """
+    Port of g_OpeningTarget computation (GenerateOrders.c lines 620-652).
+
+    Active only when g_deceit_level == 1 and g_season == 'SPR'.
+    For each power, finds the province that maximises
+        2.0 * _safe_pow(g_heat_movement_b[power, prov], 2.5) / g_global_province_score[prov]
+    among provinces occupied by a non-army unit.
+
+    Verified from listing at 00447359-0044737c:
+      FILD [EDX*8 + DAT_005af0e8]  → base = g_heat_movement_b[power*256+prov] (int64)
+      FLD  [DAT_004b1330]          → exponent = 0x4004000000000000 = 2.5
+      FADD ST0,ST0                 → factor = 2.0
+      FILD [ESI*8 + g_GlobalProvinceScore] → denominator
+    """
+    NUM_POWERS = 7
+    NUM_PROVINCES = 256
+
+    state.g_opening_target.fill(-1)
+
+    if state.g_deceit_level != 1 or state.g_season != 'SPR':
+        return
+
+    for power in range(NUM_POWERS):
+        best_int = 0
+        best_prov = -1
+
+        for prov in range(NUM_PROVINCES):
+            if prov not in state.unit_info:
+                continue
+            if state.unit_info[prov]['type'] == 'A':
+                # C filter: unit_type != 'A' OR secondary_byte == 0x14
+                # 0x14 (army-coast secondary) not tracked in Python — skip armies
+                continue
+            g_prov = float(state.g_global_province_score[prov])
+            if g_prov == 0.0:
+                continue
+            ratio = float(state.g_heat_movement_b[power, prov])
+            score = 2.0 * _safe_pow(ratio, 2.5) / g_prov
+            score_int = _float_to_int64(score)
+            if score_int > best_int:
+                best_int = score_int
+                best_prov = prov
+
+        state.g_opening_target[power] = best_prov
 
 
 def update_relation_history(state) -> None:
@@ -322,11 +426,12 @@ def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
         dtype=np.int64,
     )
 
-    # Phase 3 — noise injection: cell += _safe_pow(cell / (col_sum+1), 0.3) * 500
+    # Phase 3 — noise injection: cell += _safe_pow(cell / (row_sum+1), 0.3) * 500
+    # Divisor is DAT_004f6af0[iVar12] where iVar12 is the outer (row) loop — not col.
     for row in range(num_powers):
+        row_sum = float(power_sum[row])
         for col in range(num_powers):
-            col_sum = float(power_sum[col])
-            base = float(state.g_influence_matrix[row, col]) / (col_sum + 1.0)
+            base = float(state.g_influence_matrix[row, col]) / (row_sum + 1.0)
             state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
 
     # Phase 4 — row-normalise to 100

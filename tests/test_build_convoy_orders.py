@@ -82,8 +82,7 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     }
 
     # Seed scores so we can verify they propagate.
-    state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
-    state.g_candidate_scores[POWER_ENG, army_dst] = 42.0  # army inherits this
+    state.g_candidate_bfs[POWER_ENG, 0, army_dst] = 42.0  # army inherits this
 
     for fp in fleet_provs:
         state.g_max_province_score[fp] = 10.0 + fp  # distinct per fleet
@@ -261,7 +260,6 @@ class TestConvoyEdgeCases:
         """build_convoy_orders with no g_convoy_route entry should be a no-op."""
         state = InnerGameState()
         state.g_convoy_route = {}
-        state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
         # Should not raise or modify order table.
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_ORDER_TYPE] == 0  # untouched
@@ -272,6 +270,5 @@ class TestConvoyEdgeCases:
         state.g_convoy_route = {
             LON: {STP: {'fleet_count': 0, 'fleets': []}}
         }
-        state.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_ORDER_TYPE] == 0

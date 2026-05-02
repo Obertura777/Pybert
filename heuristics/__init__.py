@@ -9,6 +9,7 @@ from .board import cal_board
 from .influence import (
     apply_influence_scores, update_relation_history,
     compute_influence_matrix, normalize_influence_matrix,
+    compute_alliance_score, set_opening_targets,
 )
 from .scoring import (
     score_order_candidates_all_powers,
@@ -24,13 +25,15 @@ from .win import (
     compute_win_removes,
     _WIN_BUILD_WEIGHTS,
     _WIN_REMOVE_WEIGHTS,
+    _SPR_ROUND_WEIGHTS,
+    _FAL_ROUND_WEIGHTS,
     _SPR_FAL_WEIGHTS,
     _WIN_DAIDE_POWER_NAMES,
 )
 from .strategy import (
     compute_draw_vote,
-    detect_stabs_and_hostility,
     post_process_orders,
     generate_self_proposals,
     compute_press,
 )
+from .snapshot import snapshot_province_state

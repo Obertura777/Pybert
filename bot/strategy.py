@@ -26,8 +26,9 @@ import random
 import numpy as np
 
 from ..state import InnerGameState
-from ..communications import friendly
-from ..heuristics import cal_board, compute_influence_matrix
+from ..communications import friendly, _TOK_PCE
+from ..communications.scheduling import _send_ally_press_by_power
+from ..heuristics import cal_board, compute_influence_matrix, compute_alliance_score
 
 logger = logging.getLogger(__name__)
 
@@ -717,13 +718,19 @@ def _hostility(state: InnerGameState) -> None:
         # C: runs every SPR/FAL with press_on (not gated by g_history_counter==0).
         if press_on:
             # Zero per-power press counters.
-            # C (HOSTILITY.c:177-188): zeroes six arrays every press-on SPR/FAL turn,
-            # including the DiplomacyState int64 snapshot used by evaluators and the
-            # DMZ/ALY-VSS scheduling gates.
+            # C (HOSTILITY.c:177-188): zeroes six items every press-on SPR/FAL turn:
+            # two int32 pairs (004d55c8/cc stride 0x2a; 004d6248/4c stride 2) plus
+            # the DiplomacyState int64 snapshot used by evaluators and scheduling gates.
             state.g_ally_press_count.fill(0)
             state.g_ally_press_hi.fill(0)
+            state.g_ally_press_hi_ext.fill(0)  # DAT_004d624c[p*2] hi-word companion
             state.g_diplomacy_state_a.fill(0)  # DAT_004d5480[p*2]
             state.g_diplomacy_state_b.fill(0)  # DAT_004d5484[p*2]
+
+            # C (HOSTILITY.c:190-213): log "This is the first turn" and insert
+            # message type 0x1f into the alliance BST via BuildAllianceMsg.
+            from ..communications import build_alliance_msg
+            build_alliance_msg(state, 0x1f)
 
             # Trust init from g_influence_matrix_b for ALL power pairs (not just own).
             # ≤ 17.0 → nearby (trust 5); > 17.0 → distant (trust 3).
@@ -787,7 +794,6 @@ def _hostility(state: InnerGameState) -> None:
             # into DiplomacyStateA[p] (lo) / DiplomacyStateB[p] (hi); if the snapshot
             # represents low trust (hi < 1 AND (hi < 0 OR lo < 5)) the live trust row is
             # cleared so the rest of HOSTILITY sees zero trust for weak allies.
-            # Press dispatch (SendAllyPressByPower) still deferred: caller owns send_fn.
             if int(getattr(state, 'g_history_counter', 0)) > 0:
                 for p in range(num_powers):
                     lo = int(state.g_ally_trust_score[own_power, p])
@@ -798,6 +804,7 @@ def _hostility(state: InnerGameState) -> None:
                     if hi < 1 and (hi < 0 or lo < 5):
                         state.g_ally_trust_score[own_power, p]    = 0
                         state.g_ally_trust_score_hi[own_power, p] = 0
+                    _send_ally_press_by_power(state, p)  # HOSTILITY.c:319
 
             # ── Near-end-game overrides (inside press_on + SPR/FAL block) ─────
             if state.g_near_end_game_factor > 5.0:
@@ -811,28 +818,32 @@ def _hostility(state: InnerGameState) -> None:
         if state.g_stabbed_flag == 1:
             inf_b = state.g_influence_matrix_b
 
-            # Betrayal-counter loop.
-            # C: piVar18 iterates g_relation_score[own_power, p] (row own, advancing by col).
-            #    piVar8 iterates g_ally_trust_score[own_power, p] (same row).
+            # Peace-counter loop (DAT_004cf4c0/c4 int64, HOSTILITY.c:340–363).
+            # C: piVar18 = g_relation_score[own_power, *]; piVar8 = trust[own_power, *].
             for p in range(num_powers):
                 if p == own_power or int(state.g_enemy_flag[p]) != 0:
                     continue
                 trust_op_lo = int(state.g_ally_trust_score[own_power, p])
                 trust_op_hi = int(state.g_ally_trust_score_hi[own_power, p])
-                # C: both g_enemy_flag[p] words must be 0 (already filtered above).
+                # Increment when no enemy flag (already filtered) and trust == 0.
                 if trust_op_lo == 0 and trust_op_hi == 0:
-                    state.g_betrayal_counter[p] += 1
+                    state.g_peace_counter[p] += 1
 
-                proximity = float(inf_b[own_power, p])
+                # Reset when (trust > 0 AND relation > 14) OR relation < 0.
+                # C lines 349-352: trust_hi >= 0 AND (trust_hi > 0 OR trust_lo != 0) = trust > 0.
+                trust_pos = trust_op_hi >= 0 and (trust_op_hi > 0 or trust_op_lo != 0)
                 relation  = int(state.g_relation_score[own_power, p])
-                if proximity > 14 or relation < 0:
-                    state.g_betrayal_counter[p] = 0
+                if (trust_pos and relation > 14) or relation < 0:
+                    state.g_peace_counter[p] = 0
 
-                if int(state.g_betrayal_counter[p]) >= 10 and phase == 'SPR':
-                    state.g_betrayal_counter[p] = 0
+                # Clear when counter_lo >= 10 and season == SPR (C lines 354-358).
+                if int(state.g_peace_counter[p]) >= 10 and phase == 'SPR':
+                    state.g_peace_counter[p] = 0
 
-            # SendAllyPressByPower for all powers when history > 0 (inside enemy block).
-            # C: lines 618-622; deferred to caller (send_fn not available here).
+            # SendAllyPressByPower for all powers when history > 0 (HOSTILITY.c:365-369).
+            if int(getattr(state, 'g_history_counter', 0)) > 0:
+                for p in range(num_powers):
+                    _send_ally_press_by_power(state, p)
 
             # "Changed our minds" loop.
             # C: piVar8 iterates g_ally_trust_score[p, own_power] (column own_power);
@@ -858,9 +869,12 @@ def _hostility(state: InnerGameState) -> None:
 
             # Peace overture loop.
             # C: g_history_counter==0 path goes directly to LAB_0042f95f; history>0 path
-            #    checks PCE in press history first (stubbed: always proceed).
+            #    checks PCE in press history (TRY stance tokens) first.
             for p in range(num_powers):
                 if p == own_power or int(state.g_enemy_flag[p]) != 0:
+                    continue
+                # C: history>0 → skip unless power p declared PCE stance via TRY.
+                if state.g_history_counter > 0 and _TOK_PCE not in state.g_press_history.get(p, set()):
                     continue
                 sc = int(state.sc_count[p])
                 if sc <= 0:
@@ -882,9 +896,9 @@ def _hostility(state: InnerGameState) -> None:
                     continue
                 if int(state.g_relation_score[p, own_power]) < 0:
                     continue
-                # Random 15% gate OR betrayal counter < 2 (lo-word).
-                betrayal_lo = int(state.g_betrayal_counter[p]) & 0xFFFFFFFF
-                rand_pass   = (random.randrange(100) < 15) or (betrayal_lo < 2)
+                # Random 15% gate OR peace counter lo-word < 2 (C line 448).
+                peace_lo  = int(state.g_peace_counter[p]) & 0xFFFFFFFF
+                rand_pass = (random.randrange(100) < 15) or (peace_lo < 2)
                 if not rand_pass:
                     continue
                 # History or deceit gate: history==0 OR DeceitLevel > 1.
@@ -918,3 +932,4 @@ def _post_friendly_update(state: InnerGameState) -> None:
     research.md §4241."""
     own_power = getattr(state, 'albert_power_idx', 0)
     compute_influence_matrix(state, own_power)
+    compute_alliance_score(state)

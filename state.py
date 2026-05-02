@@ -207,6 +207,12 @@ class InnerGameState:
         
         # Buffers for Heat Diffusion
         self.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)
+        # 10-round BFS candidate sets: g_candidate_bfs[power, round, province]
+        # Maps to C: Albert + power*0x78 + 0x361c + round*0xc (ordered sets).
+        # Round 0 seeded by score_provinces with attack_count * seed_weight;
+        # rounds 1-9 are BFS propagations (prev[self] + Σprev[adj]) / 5.
+        # WIN phases overwrite round 0 for own_power with 1.0/0.0 membership.
+        self.g_candidate_bfs = np.zeros((7, 10, 256), dtype=np.float64)
         # DAT_004ec2f0/f4[pow*0x800+prov*8] — movement heat scores (primary copy)
         self.g_heat_movement = np.zeros((7, 256), dtype=np.float64)
         # DAT_005af0e8/ec[pow*0x800+prov*8] — second copy of movement heat scores
@@ -229,10 +235,9 @@ class InnerGameState:
         # DAT_00ba2f70[province] — per-province SC owner index; -1 = unoccupied
         # Alias of g_sc_owner (written by SnapshotProvinceState / ParseNOW)
         self.g_sc_owner = np.full(256, -1, dtype=np.int32)
-        # DAT_004DA2F0[pow*0x100+prov] — 2D history-gate array; int64[pow*0x100+prov]
-        # Non-zero means activity recorded for (power, province); gate in Pass 5
-        # of ApplyInfluenceScores. Writer TBD (see Q-AIS-NEW-3 in OpenQuestions.md).
-        self.g_history_gate = np.zeros((7, 256), dtype=np.int64)
+        # DAT_004DA2F0 was misidentified as a separate "history gate" array.
+        # Q-AIS-NEW-1 (resolved): it is the tail of g_heat_score; the real Pass 5
+        # gate is g_unit_adjacency_count (DAT_004e1af0). No separate array needed.
         
         # 3. Adjacency lists and internal maps
         self.g_province_access_flag = np.zeros((7, 256), dtype=np.int32)
@@ -378,10 +383,13 @@ class InnerGameState:
         # Populated by the order-candidate pipeline before EnumerateConvoyReach runs.
         self.g_build_candidate_list: set = set()
 
-        # this+0x2478 — build-candidate list for WIN phase; populated by WIN handler,
-        # cleared by ResetPerTrialState at the start of each MC trial.
-        # Each entry is a DAIDE order string (e.g. '( ENG FLT LON ) BLD').
+        # this+0x2478 — BST sentinel node pointer (build-candidate BST for WIN phase).
+        # Python represents the whole BST as a list of DAIDE order strings.
+        # Populated by WIN handler (ComputeWinterBuilds); cleared by ResetPerTrialState.
         self.g_build_order_list: list = []
+        # this+0x247c — BST _Mysize counter; explicit in C (ResetPerTrialState line 62).
+        # Python equivalent: always equals len(g_build_order_list); reset to 0 in sync.
+        self.g_build_order_list_size: int = 0
         # this+0x2480 — waive count for WIN phase; cleared by ResetPerTrialState.
         self.g_waive_count: int = 0
 
@@ -472,6 +480,12 @@ class InnerGameState:
         # DAT_00bbf60c — global list of candidate proposal records.
         # Each entry: {'power', 'orders', 'score', 'heat_scores', 'deviation', 'pressure_cost'}.
         self.g_candidate_record_list: list = []
+
+        # DAT_00b9a980 / DAT_00b95580 — MC-computed per-power, per-province pressure arrays.
+        # Populated by UpdateAllyOrderScore per candidate; read by EvaluateAllianceScore
+        # Phase 2 to drive threat scoring.  Cleared and rebuilt for each candidate.
+        self.g_mc_province_pressure = np.zeros((7, 256), dtype=np.int32)
+        self.g_mc_fleet_pressure = np.zeros((7, 256), dtype=np.int32)
 
         # DAT_00bb6cf8[pow*0xc] — per-power general candidate order sequences.
         # Maps power_idx -> [order_seq, ...] where each order_seq is a dict with
@@ -676,8 +690,15 @@ class InnerGameState:
         self.sc_count = np.zeros(7, dtype=np.int32)
         # target_sc_count[power] — int[7]; win threshold per power (all 18 in std Dip)
         self.target_sc_count = np.full(7, 18, dtype=np.int32)
+        # C: target_sc_cnt[power] — projected SC count after optimal moves.
+        # InitScoringState copies from sc_count, then adjusts per urgency comparison.
+        # Consumed by GenerateOrders to seed per-province move weights:
+        #   target > curr  → seed = (target - curr + 2) * 500
+        #   target <= curr → seed = 1000
+        self.g_target_sc_cnt = np.zeros(7, dtype=np.int32)
 
-        # DAT_004cf4c0[power*2] — g_enemy_slot priority queue (top-3 enemies, -1=empty)
+        # top-3 enemy priority queue (-1=empty)
+        # DAT_004c6bc4 / _004c6bc8 / _004c6bcc — three consecutive int32s, sentinel 0xffffffff
         self.g_enemy_slot: Any = np.full(3, -1, dtype=np.int32)
 
         # ── PostProcessOrders (move-history matrix) ──────────────────────────
@@ -745,6 +766,29 @@ class InnerGameState:
         # DAT_0062e4b4 — alternative score accumulator
         self.g_score_alt: int = 0
 
+        # ScoreProvinces weights — Albert ctor @ 0x00425e03–0x00425e3d.
+        # Passed as uint64 (lo/hi dword pair); hi halves are always 0.
+        # Albert+0x4d18 = SPR move_weight  → 0x2bc = 700
+        # Albert+0x4d20 = SPR build_weight → 0x12c = 300
+        # Albert+0x4d28 = FAL move_weight  → 0x258 = 600
+        # Albert+0x4d30 = FAL build_weight → 0x190 = 400
+        self.g_spr_move_weight: int = 700
+        self.g_spr_build_weight: int = 300
+        self.g_fal_move_weight: int = 600
+        self.g_fal_build_weight: int = 400
+
+        # ScoreOrderCandidates_AllPowers round weights — Albert ctor @ 0x00425e03/0x00425ead.
+        # 10 × uint64 per phase; passed as the second arg (weight array pointer).
+        # Albert+0x4d38: SPR weights  Albert+0x4d98: FAL weights
+        # Rounds 0/1 are swapped between phases; rounds 2–9 identical.
+        # All values confirmed from ctor dump 0x425dc2–0x425e91:
+        #   EBX=5 @ 0x425dc2, EAX=0x3e8 @ 0x425ded, EBP=0xa @ 0x425df2, ECX=3 @ 0x425e91.
+        #   [0]=0x1f4(imm) [1]=EAX [2]=0x1e(imm) [3]=EBP [4]=0x6(imm)
+        #   [5]=EBX=5      [6–8 follow as immediates] [9]=EAX=1000
+        # dominance_weight (war-mode bonus) = fal[0] - spr[0] = 500.
+        self.g_spr_round_weights: list = [500, 1000, 30, 10, 6, 5, 4, 3, 2, 1000]
+        self.g_fal_round_weights: list = [1000,  500, 30, 10, 6, 5, 4, 3, 2, 1000]
+
         # ── CheckTimeLimit globals ───────────────────────────────────────────
         # g_network_state+0x20 — MTL timeout flag; set by timer thread when MTL fires
         self.mtl_expired: int = 0
@@ -754,8 +798,8 @@ class InnerGameState:
         self.g_broadcast_list: list = []
         # DAT_00baed60 — g_broadcast_list size watermark after RegisterReceivedPress
         self.g_broadcast_list_watermark: int = 0
-        # DAT_00bb6df4 — XDO proposal dedup set (compound order-seq keys;
-        # approximated here as per-province set; C uses FUN_00410980/FUN_00419300)
+        # DAT_00bb6df4 — XDO proposal dedup set; compound (province, order_type, target_dest)
+        # keys mirroring C's FUN_00410980 (lookup) / FUN_00419300 (insert) key-sequence dedup.
         self.g_xdo_proposal_list: set = set()
         # DAT_00bb65f8[power*0xc] — per-sender XDO proposal ordered set.
         # Populated by FUN_00419300 in _handle_xdo; sorted list[tuple] per power.
@@ -908,12 +952,18 @@ class InnerGameState:
         # ── HOSTILITY globals (FUN_~0x42F200) ────────────────────────────────
         # DAT_00b9fdd8[power] — best mutual enemy per power (-1 = none)
         self.g_mutual_enemy_table = np.full(7, -1, dtype=np.int32)
-        # DAT_004cf4c0[power] — betrayal counter; increments when formerly hostile goes neutral
-        self.g_betrayal_counter  = np.zeros(7, dtype=np.int64)
+        # DAT_004cf4c0[power*2] / DAT_004cf4c4[power*2] — per-power int64 peace counter.
+        # Incremented (HOSTILITY Block 5) each turn that trust[own,p]==0 and
+        # g_enemy_flag[p]==0; reset when trust>0 AND relation>14, or relation<0;
+        # cleared when lo >= 10 and season == SPR.  Used in peace-overture gate
+        # (HOSTILITY lines 447-448: counter_lo < 2 bypasses the 15% rand check).
+        self.g_peace_counter  = np.zeros(7, dtype=np.int64)
         # DAT_004d55c8[power] — ally press dispatch counter (reset on first press turn)
         self.g_ally_press_count   = np.zeros(7, dtype=np.int32)
-        # DAT_004d6248[power] — ally press hi-word counter
+        # DAT_004d6248[power*2] — ally press hi-word counter (lo-word of int64 pair)
         self.g_ally_press_hi      = np.zeros(7, dtype=np.int32)
+        # DAT_004d624c[power*2] — hi-word companion to g_ally_press_hi
+        self.g_ally_press_hi_ext  = np.zeros(7, dtype=np.int32)
         # DAT_004d5480[power*2] / DAT_004d5484[power*2] — per-power int64 snapshot of
         # Albert's trust toward that power (lo-word / hi-word respectively).  Written
         # by HOSTILITY Block 4 every SPR/FAL press-on turn: zeroed first, then when
@@ -944,6 +994,26 @@ class InnerGameState:
         # by RESPOND deceit path for the sender power.  Gated in the g_pos_analysis_list
         # walk: when response is YES, only register deviation entry if flag is set.
         self.g_power_active_turn = np.zeros(7, dtype=np.int32)
+
+        # ── SnapshotProvinceState arrays ─────────────────────────────────────
+        # DAT_004d0e10/14 — SPR/FAL snapshot of g_ally_designation_b (lo only)
+        self.g_spr_desig_b = np.full(256, -1, dtype=np.int64)
+        # DAT_004d1610/14 — SPR/FAL snapshot of g_ally_designation_a
+        self.g_spr_desig_a = np.full(256, -1, dtype=np.int64)
+        # DAT_004d1e10/14 — SPR/FAL snapshot of g_ally_designation_c
+        self.g_spr_desig_c = np.full(256, -1, dtype=np.int64)
+
+        # DAT_005d98e8/ec — SPR/FAL snapshot of g_target_flag (shape (7, 256)).
+        # Read by _deviate_move (bot.strategy) as g_AttackMap; falls back to
+        # g_target_flag when not populated by SnapshotProvinceState.
+        self.g_AttackMap = np.zeros((7, 256), dtype=np.int64)
+
+        # DAT_004cf610/14 — SUM/AUT snapshot of g_ally_designation_b
+        self.g_sum_desig_b = np.full(256, -1, dtype=np.int64)
+        # DAT_004cfe10/14 — SUM/AUT snapshot of g_ally_designation_a
+        self.g_sum_desig_a = np.full(256, -1, dtype=np.int64)
+        # DAT_004d0610/14 — SUM/AUT snapshot of g_ally_designation_c
+        self.g_sum_desig_c = np.full(256, -1, dtype=np.int64)
 
     def synchronize_from_game(self, game):
         """
@@ -1426,10 +1496,10 @@ class InnerGameState:
         return max_scs
 
     def candidate_set_contains(self, power: int, province: int) -> bool:
-        return self.g_candidate_scores[power, province] > 0
+        return self.g_candidate_bfs[power, 0, province] > 0
 
     def get_candidate_score(self, power: int, province: int, iteration: int) -> float:
-        return self.g_candidate_scores[power, province] # simplified fallback
+        return float(self.g_candidate_bfs[power, iteration, province])
 
     def get_enemy_reach(self, power_id: int, province: int) -> int:
         return int(self.g_enemy_reach_score[power_id, province])

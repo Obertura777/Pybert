@@ -55,11 +55,14 @@ def build_support_opportunities(state: InnerGameState):
 
     num_powers = 7
 
-    # For Gate 3 we need a per-power "top-scored target" check. final_score_set
-    # (Albert.final_score_set[pow, prov]) is the per-power score we compare against
-    # the global g_max_province_score[prov]. Fall back to permissive when either
-    # table isn't populated.
+    # Gate 3: OrderedSet node value == g_MaxProvinceScore[q + power*0x100] (int64 equality).
+    # C stores per-power per-province max in g_MaxProvinceScore (stride 0x100 per power);
+    # Python equivalent is g_max_prov_score_per_power[power, q].  The 1-D
+    # g_max_province_score[q] is a cross-power max and is the wrong comparand.
+    # AMY provinces are always zeroed in the C ordered set (<=, not <), so their
+    # node value is 0 while g_MaxProvinceScore is nonzero — Gate 3 always fails for AMY.
     has_final = hasattr(state, 'final_score_set')
+    has_prov_max = hasattr(state, 'g_max_prov_score_per_power')
 
     for power in range(num_powers):
         # Walk units owned by this power (C: unit_list where unit[0x18] == power)
@@ -75,10 +78,10 @@ def build_support_opportunities(state: InnerGameState):
                 # Gate 2: q is in this power's SC-ownership region
                 if int(state.g_sc_ownership[power, q]) != 1:
                     continue
-                # Gate 3: q is the top-scored target (OrderedSet key matches)
-                if has_final:
+                # Gate 3: ordered-set node value == g_MaxProvinceScore[q + power*0x100]
+                if has_final and has_prov_max:
                     fs = float(state.final_score_set[power, q])
-                    mx = float(state.g_max_province_score[q])
+                    mx = float(state.g_max_prov_score_per_power[power, q])
                     if fs != mx:
                         continue
 

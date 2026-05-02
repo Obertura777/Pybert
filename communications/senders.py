@@ -574,7 +574,7 @@ def friendly(state: InnerGameState) -> None:
                     if row == own_power:
                         for k in range(num_powers):
                             if k != col:
-                                state.g_betrayal_counter[k] = 0
+                                state.g_peace_counter[k] = 0
                 _log.debug("FRIENDLY: stab (%d,%d) → rel=%d sym=%d",
                            row, col,
                            int(state.g_relation_score[row, col]),
@@ -669,31 +669,32 @@ def _friendly_peace_signal_check(state: InnerGameState, col: int,
                                   trust_lo: int, trust_hi: int,
                                   neutral: int, peace_sig: int,
                                   relation: int, _log) -> None:
-    """LAB_0042df19 sub-routine: clear betrayal counter AND send peace
-    press when own power receives a peace signal.
+    """LAB_0042df19 sub-routine: clear betrayal counter and record peace
+    event in the alliance BST when own power receives a peace signal.
 
-    C (FRIENDLY.c lines 160-178) builds a press entry with token 0x19
-    (PCE press type) and inserts it into g_broadcast_list via
-    FUN_0041c450 (SendAlliancePress).  The Python version was missing
-    the press-sending half.  Fixed 2026-04-20 (audit finding M12).
+    C (FRIENDLY.c lines 160-178):
+      1. Clears DAT_004cf4c0[col*2] and DAT_004cf4c4[col*2] (g_peace_counter).
+      2. Builds uStack_4c = 0x19 (PCE token), calls FUN_00410b40 to wrap it
+         into a key, then FUN_0041c450(&DAT_00bbf638, ..., key) to insert
+         into g_alliance_msg_tree (DAT_00bbf638).
+      FUN_0041c450 operates on DAT_00bbf638 (g_alliance_msg_tree, small-node
+      BST with 0x15 nil-sentinel), NOT on DAT_00bb65ec (g_broadcast_list,
+      large-node BST with 0xe9 nil-sentinel).  The earlier identification as
+      SendAlliancePress was incorrect.
+    The actual PRP(PCE) press is sent downstream via SendAllyPressByPower →
+    ExecuteThennAction → _renegotiate_pce when PCE is in press history.
     """
+    from .alliance import build_alliance_msg as _build_alliance_msg
+
     if (trust_lo == 0 and trust_hi == 0 and neutral == 0 and
             peace_sig == 1 and relation >= 0):
-        state.g_betrayal_counter[col] = 0
+        state.g_peace_counter[col] = 0
         _log.debug("FRIENDLY: getting peace signal from power %d", col)
 
-        # ── Press-sending (C: FRIENDLY.c lines 166-178) ──────────────
-        # C builds token = col | 0x4100, sets uStack_4c = 0x19 (PCE
-        # press type), then calls FUN_00410b40 → FUN_0041c450 to insert
-        # into g_broadcast_list.  Mirror this as a send_alliance_press
-        # call with type='PCE' so BuildAndSendSUB picks it up.
-        peace_entry = {
-            'type': 'PCE',
-            'from_power_tok': col | 0x4100,
-            'sublist3': [0x19],  # C: uStack_4c = 0x19
-        }
-        send_alliance_press(state, key=len(state.g_broadcast_list),
-                            entry_data=peace_entry)
+        # Record the PCE-type peace event in g_alliance_msg_tree.
+        # C: uStack_4c = 0x19 (PCE press token); FUN_0041c450 inserts
+        # the derived key into DAT_00bbf638 (g_alliance_msg_tree).
+        _build_alliance_msg(state, col)
 
 
 # ── CancelPriorPress ──────────────────────────────────────────────────────────
@@ -776,9 +777,6 @@ def _check_server_reachable(state: InnerGameState, mode: int = -1) -> bool:
     the C game, unmatched proposals (False) trigger immediate fallback; matched
     proposals (True) cause the caller to wait up to base_wait+25 s first.
 
-    In the current Python model power_count is always 0, so this always returns
-    False → the time-window check is skipped and the fallback GOF fires as soon
-    as the other guards (game active, processing idle) allow it.
     """
     return _fun_004117d0(state, mode)
 

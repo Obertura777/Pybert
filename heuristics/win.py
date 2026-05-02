@@ -25,13 +25,14 @@ from ..state import InnerGameState
 #   BUILD  vector at Albert+0x4e58 stride 8: [100, 90, 70, 40, 20, 10, 5, 3, 2]
 _WIN_REMOVE_WEIGHTS: list = [50, 70, 100, 70, 10, 5, 3, 2, 1]
 _WIN_BUILD_WEIGHTS:  list = [100, 90, 70, 40, 20, 10, 5, 3, 2]
-# SPR/FAL movement-phase weights.  C stores these at Albert+0x4d38 (SPR/SUM)
-# and Albert+0x4d98 (FAL/AUT) as 10 int64 values.  The Python
-# get_candidate_score always returns the same value regardless of iteration
-# index (simplified fallback), so the individual weights don't matter as
-# much as their relative scale.  Values below are inferred from the WIN
-# weight patterns and the C binary's tournament-calibrated defaults.
-_SPR_FAL_WEIGHTS: list = [100, 80, 60, 40, 20, 10, 5, 3, 2, 1]
+# SPR/FAL round weights — Albert ctor @ 0x00425e03 / 0x00425ead.
+# 10 × uint64 at stride 8; rounds 0–9 correspond to BFS depths 0–9.
+# SPR and FAL differ only in rounds 0 and 1 (swapped).
+# All 10 values confirmed from ctor dump 0x425dc2–0x425e8b:
+#   EBX=5 @ 0x425dc2, EAX=1000 @ 0x425ded, EBP=10 @ 0x425df2, ECX=3 @ 0x425e91.
+_SPR_ROUND_WEIGHTS: list = [500, 1000, 30, 10, 6, 5, 4, 3, 2, 1000]
+_FAL_ROUND_WEIGHTS: list = [1000,  500, 30, 10, 6, 5, 4, 3, 2, 1000]
+_SPR_FAL_WEIGHTS = _SPR_ROUND_WEIGHTS  # backward-compat alias
 
 # DAIDE short power names (index matches power_idx 0-6: AUS…TUR).
 _WIN_DAIDE_POWER_NAMES: list = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
@@ -50,17 +51,27 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
       • own_power currently owns it                   (g_sc_ownership[own,prov]==1)
       • no unit currently stands there                (prov not in unit_info)
 
-    Baseline score 1.0 marks membership; score_order_candidates_own_power
-    will overwrite with the weighted dot-product in Pass 1.
+    Preserves the g_attack_count-based BFS values from score_provinces for
+    eligible provinces so that score_order_candidates_own_power sees the same
+    round-0 differentiation that the C BST ordering uses.  Non-eligible
+    provinces are zeroed across all rounds so candidate_set_contains and the
+    scoring pass skip them.  A floor of 1.0 at round 0 ensures candidate
+    membership is visible when g_attack_count is 0.
 
     C: candidate set lives at Albert+own_power*0x78+0x361c; count stored at
     Albert+0x4e50; limit (delta) at Albert+0x4e54.
     """
-    state.g_candidate_scores[own_power].fill(0.0)
     home_provs = state.home_centers.get(own_power, frozenset())
-    for prov in home_provs:
-        if state.g_sc_ownership[own_power, prov] == 1 and prov not in state.unit_info:
-            state.g_candidate_scores[own_power, prov] = 1.0
+    for prov in range(256):
+        is_eligible = (
+            prov in home_provs
+            and state.g_sc_ownership[own_power, prov] == 1
+            and prov not in state.unit_info
+        )
+        if not is_eligible:
+            state.g_candidate_bfs[own_power, :, prov] = 0.0
+        elif state.g_candidate_bfs[own_power, 0, prov] == 0.0:
+            state.g_candidate_bfs[own_power, 0, prov] = 1.0
 
 
 def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
@@ -69,13 +80,22 @@ def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
     Mirrors FUN_0040ab10 for the REMOVE branch (unit_count > sc_count).
     Every province that holds an own unit is a candidate.
 
+    Preserves g_attack_count-based BFS values from score_provinces for
+    eligible provinces; zeros all rounds for non-eligible provinces.
+    Floor of 1.0 at round 0 when g_attack_count is 0.
+
     C: candidate set lives at Albert+own_power*0x78+0x361c; count at
     Albert+0x4df8; limit (delta) at Albert+0x4dfc.
     """
-    state.g_candidate_scores[own_power].fill(0.0)
-    for prov, unit_data in state.unit_info.items():
-        if unit_data.get('power') == own_power:
-            state.g_candidate_scores[own_power, prov] = 1.0
+    for prov in range(256):
+        is_eligible = (
+            prov in state.unit_info
+            and state.unit_info[prov].get('power') == own_power
+        )
+        if not is_eligible:
+            state.g_candidate_bfs[own_power, :, prov] = 0.0
+        elif state.g_candidate_bfs[own_power, 0, prov] == 0.0:
+            state.g_candidate_bfs[own_power, 0, prov] = 1.0
 
 
 def compute_win_builds(state: InnerGameState, delta: int) -> None:
@@ -84,8 +104,8 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
     Called from send_GOF when unit_count < sc_count (BUILD phase).
 
     Algorithm:
-      1. Collect all provinces where g_candidate_scores[own_power, prov] > 0.
-      2. Sort by score descending (highest strategic value first).
+      1. Collect all provinces in the candidate set (candidate_set_contains).
+      2. Sort by g_candidate_scores descending (highest strategic value first).
       3. Take up to `delta` provinces; any shortfall becomes waives.
       4. For each selected province determine unit type:
            FLT — if province is coastal (any adjacent province is a water province).
@@ -113,9 +133,10 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
 
     candidates: list = []
     for prov in range(256):
+        if not state.candidate_set_contains(own_power, prov):
+            continue
         score = float(state.g_candidate_scores[own_power, prov])
-        if score > 0.0:
-            candidates.append((score, prov))
+        candidates.append((score, prov))
 
     candidates.sort(reverse=True)
     selected = candidates[:delta]
@@ -127,24 +148,19 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
         prov_name = id_to_prov.get(prov, str(prov))
 
         # For fleet builds at multi-coast provinces (BUL, SPA, STP), append
-        # the coast suffix.  Pick the coast whose adjacency set has the
-        # highest total g_global_province_score — this mirrors C's
-        # UnitList_FindOrInsert which sets the coast from the province's
-        # adjacency structure.
+        # the coast suffix.  C's UnitList_FindOrInsert keys by base province ID
+        # only and default-constructs the node on first hit, so the coast is
+        # determined by whichever coast entry appears first in the adjacency
+        # BST — not by score.  Mirror that by taking the first matching key.
         if unit_type == 'FLT':
-            best_coast_suffix = ''
-            best_coast_score = -1.0
-            for (pid, coast_key), adj_list in state.fleet_coast_adj.items():
-                if pid == prov:
-                    total = sum(float(state.g_global_province_score[a])
-                                for a in adj_list if 0 <= a < 256)
-                    if total > best_coast_score:
-                        best_coast_score = total
-                        best_coast_suffix = coast_key  # e.g. '/NC'
-            if best_coast_suffix:
-                prov_name = prov_name + best_coast_suffix
+            coast_suffix = next(
+                (ck for (pid, ck) in state.fleet_coast_adj if pid == prov), ''
+            )
+            if coast_suffix:
+                prov_name = prov_name + coast_suffix
 
         state.g_build_order_list.append(f'( {power_name} {unit_type} {prov_name} ) BLD')
+        state.g_build_order_list_size += 1
 
     state.g_waive_count = max(0, delta - len(selected))
 
@@ -155,8 +171,8 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     Called from send_GOF when unit_count > sc_count (REMOVE phase).
 
     Algorithm:
-      1. Collect all own-unit provinces where g_candidate_scores[own_power, prov] > 0.
-      2. Sort by score ascending (lowest strategic value first — remove those first).
+      1. Collect all provinces in the candidate set (candidate_set_contains).
+      2. Sort by g_candidate_scores ascending (lowest strategic value first — remove those first).
          Confirmed by decompile of FUN_0044bd40: BuildOrderSpec uses score+0x7d
          and the first element popped (lowest) is the one removed.
       3. Take up to `delta` provinces.
@@ -173,12 +189,11 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     id_to_prov = state._id_to_prov
 
     candidates: list = []
-    for prov, unit_data in state.unit_info.items():
-        if unit_data.get('power') != own_power:
+    for prov in range(256):
+        if not state.candidate_set_contains(own_power, prov):
             continue
         score = float(state.g_candidate_scores[own_power, prov])
-        if score > 0.0:
-            candidates.append((score, prov))
+        candidates.append((score, prov))
 
     candidates.sort()          # ascending: lowest score removed first
     selected = candidates[:delta]
@@ -188,3 +203,4 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
         unit_type = 'FLT' if raw_type == 'F' else 'AMY'
         prov_name = id_to_prov.get(prov, str(prov))
         state.g_build_order_list.append(f'( {power_name} {unit_type} {prov_name} ) REM')
+        state.g_build_order_list_size += 1

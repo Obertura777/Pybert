@@ -155,16 +155,18 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
 
     Python compressions:
       - Sub-trees A/B are represented by each g_broadcast_list entry's
-        ``order_candidates`` (matching _cal_value's walk). The code-9 /
-        code-10 dual-orientation is not separately modelled here — a
-        single-orientation match is sufficient for novelty detection.
+        ``order_candidates`` (matching _cal_value's walk). A single-
+        orientation novelty match is sufficient for the catalog walk (step 3).
       - ``FUN_00431310`` (score-and-register) is partially in Python already
         (see ``register_received_press``); the DELAY_REVIEW caller only
         reads the score return, so we invoke ``legitimacy_gate`` directly
         against the candidate set as the cheap-scoring stand-in.
-      - ORR-permutation max-score inner loop is approximated as a single
-        score call; ORR proposals don't exercise the per-record match
-        loop (C: ``if bVar21 continue``) so the novelty result coincides.
+      - Code-9/code-10 dual-orientation: ``legitimacy_gate`` is called twice
+        (normal flag assignment and inverted); the max score is taken. Mirrors
+        FUN_00431310's two ``SendAlliancePress`` passes.
+      - ORR-permutation max-score loop: for ORR proposals each extracted XDO
+        alternative is scored independently (both orientations); the max
+        across all alternatives drives the delay verdict.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -217,24 +219,40 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
         return 0
 
     # ── 3. Cheap scorer on novel proposal ─────────────────────────────────
-    # Build a candidate set from the clause lists and score via
-    # legitimacy_gate. C: FUN_00431310 returns the min score over the set;
-    # score==0 triggers delay.
+    # C: FUN_00431310 runs two internal passes (code-9 / code-10) that swap
+    # flag_bit assignments, then returns the max score.  For ORR proposals
+    # DELAY_REVIEW calls FUN_00431310 once per ORR child and takes the max
+    # across alternatives.  Python mirrors both loops via legitimacy_gate.
     own_power_idx = getattr(state, 'own_power_index', None)
     if own_power_idx is None:
         own_power_idx = getattr(state, 'albert_power_idx', 0)
+    own_idx = int(own_power_idx)
 
-    cand_list = []
-    for clause in positive:
-        cand_list.append({'order_seq': {'tokens': clause.split(),
-                                        'type_flag': 0},
-                          'flag_bit': 1})
-    for clause in negative:
-        cand_list.append({'order_seq': {'tokens': clause.split(),
-                                        'type_flag': 1},
-                          'flag_bit': 0})
+    def _score_orientation(pos_clauses, neg_clauses, pos_bit, neg_bit):
+        cands = []
+        for c in pos_clauses:
+            cands.append({'order_seq': {'tokens': c.split(), 'type_flag': 0},
+                          'flag_bit': pos_bit})
+        for c in neg_clauses:
+            cands.append({'order_seq': {'tokens': c.split(), 'type_flag': 1},
+                          'flag_bit': neg_bit})
+        return legitimacy_gate(state, own_idx, cands)
+
     try:
-        score = legitimacy_gate(state, int(own_power_idx), cand_list)
+        if is_orr:
+            # Each ORR alternative is a candidate; score each independently
+            # in both orientations and take max across all alternatives.
+            scores = []
+            for clause in positive:
+                s9  = _score_orientation([clause], [], 1, 0)
+                s10 = _score_orientation([clause], [], 0, 1)
+                scores.append(max(s9, s10))
+            score = max(scores) if scores else 0
+        else:
+            # Non-ORR: run both orientations over the full clause set.
+            s9  = _score_orientation(positive, negative, 1, 0)  # code-9
+            s10 = _score_orientation(positive, negative, 0, 1)  # code-10
+            score = max(s9, s10)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("delay_review: cheap scorer raised %s; defaulting to 0", exc)
         return 0
@@ -290,7 +308,9 @@ def register_received_press(
     C flow:
       1. Build local power-set map from from-power + to-powers.
       2. Build SUB token prefix; copy content, from-power, to-powers into locals.
-      3. FUN_00426140 — alliance-partner gate (stub: always proceed).
+      3. FUN_00426140 — alliance-partner gate → legitimacy_gate().
+            Returns min per-order score; used by CAL_VALUE for demotion.
+            register_received_press always enqueues (gate effect is via CAL_VALUE).
       4. local_134 = __time64(NULL) — capture current wall-clock time.
       5. Two-pass split of param_11 by type_flag:
            Pass 1: type_flag==0 → local_1e4; call BuildHostilityRecord + SendAlliancePress.
@@ -312,7 +332,7 @@ def register_received_press(
 
     Callees (C):
       FUN_00422960   AllianceRecord constructor      → absorbed
-      FUN_00426140   alliance-partner gate           → stub: always proceed
+      FUN_00426140   alliance-partner gate           → legitimacy_gate() (implemented)
       BuildHostilityRecord                           → absorbed into entry dict
       SendAlliancePress                              → send_alliance_press()
       DestroyAllianceRecord                          → absorbed
@@ -330,13 +350,10 @@ def register_received_press(
     # type_flag==0 = external/received candidates (both passes send these)
     external_cands = [c for c in order_candidates if c.get('type_flag', 0) == 0]
 
-    # C line 103: local_1fc = FUN_00426140(local_1e8) — legitimacy gate over
-    # the candidate-order set. Returns min per-order score; negative means the
-    # proposal contains an order that fails legality or trust-clamp rescoring.
-    # In C the return flows into decision logic further down; here we log it
-    # and proceed (matching the observation that register_received_press
-    # unconditionally enqueues in C too — the gate's effect is primarily
-    # through CAL_VALUE, not here).
+    # C line 103: local_1fc = FUN_00426140(local_1e8) — per-order min score
+    # over the candidate set. Ported as legitimacy_gate(): flag_bit gate,
+    # own-power re-score, clamp window [-89999, -80000] → 100000.
+    # C also unconditionally enqueues after; gate effect is via CAL_VALUE.
     # Canonical Python name is albert_power_idx; g_albert_power is the
     # C-faithful mirror (DAT_00624124) kept in sync by bot client.
     own_power_idx = getattr(

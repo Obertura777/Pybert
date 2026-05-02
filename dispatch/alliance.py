@@ -71,24 +71,35 @@ def check_order_alliance(
               dest_power == p AND counter-record matches → return _ERR_DUP_OTHER
           After loop: if dest_power != own_power, verify g_ally_counter_list
             consistency for dest_power → return _ERR_COUNTER_REC on mismatch.
-        Ordering_power != own_power paths use FUN_00401050 (stubbed pass-through).
+        Ordering_power != own_power: find dest_prov in counter_list[ordering_power]
+        via FUN_00401050 (iterator != end sentinel); on hit return
+        _ERR_PROMISE_SAME (dest == ordering_power) or _ERR_PROMISE_DIFF
+        (dest != own_power_idx).
 
       Lines 129/263/275/285 — Early returns on non-zero trust:
         local_48 != 0 → _ERR_ALLY_TRUST_B   (outermost check)
         local_44 != 0 → _ERR_ALLY_TRUST_A
         local_40 != 0 → _ERR_ALLY_TRUST_C
 
-    Unchecked callees:
-      FUN_00401050  (0x00401050) — boolean check on power-record iterator;
-                    called from the ordering_power != own_power branches (lines 229,
-                    244); those branches are unreachable for Albert; stubbed True.
-      FUN_00465930  (0x00465930) — builds the color-set from the order token list
-                    (stack0x0000000c); color-set used by GameBoard_GetPowerRec to
-                    verify the designated ally is present in the order's tokens;
-                    in the Python rewrite the trust lookup is unconditional when the
-                    slot is active, which is the dominant path anyway.
-      GameBoard_GetPowerRec — STL map find; validates that a node belongs to the
-                    local temporary map; replaced by direct array lookup in Python.
+    Ported callees:
+      FUN_00401050  (0x00401050) — two-field STL-iterator comparator.
+                    C body:
+                      if (this[0] == 0 || this[0] != param_1[0]) FUN_0047a948();
+                      return CONCAT31(this[1] >> 8, this[1] != param_1[1]);
+                    Truthy when found_node != end-sentinel (item was found).
+                    Heap pointers are always ≥ 256 so the upper-byte term is always
+                    non-zero; the meaningful bit is this[1] != param_1[1].
+                    Modelled as: entry is not None (counter-list lookup hit).
+      GameBoard_GetPowerRec — STL map find; replaced by list search in Python.
+
+    Skipped callee:
+      FUN_00465930  (0x00465930) — TokenSeq_Count on the order token list passed
+                    as stack0x0000000c (5th C parameter, absent from this Python
+                    signature).  The color-set check it enables (verifying the
+                    designated ally appears in the order's token list before reading
+                    the trust score) is omitted; trust is read unconditionally when
+                    the slot is active.  Closing this gap requires adding an
+                    order_tokens parameter here and at every validator call site.
     """
     # ── Slot C  (DAT_004d3610/14 = g_ally_designation_c) ─────────────────────
     # C lines 72–90: read puVar13/iVar14, check trust for slot C.
@@ -208,14 +219,28 @@ def check_order_alliance(
                 return _ERR_COUNTER_REC
 
     else:
-        # ordering_power != own_power_idx branches (C lines 224–252).
-        # These use FUN_00401050 on g_ally_counter_list for ordering_power or
-        # in_stack_0000001c.  Albert never reaches this path (it only orders for
-        # itself), so stub both checks as pass-through (return success).
-        # FUN_00401050 is unchecked; flag if somehow reached.
-        logger.debug(
-            "check_order_alliance: non-own ordering_power=%d (stub pass-through)",
-            ordering_power,
+        # C lines 224–252: ordering_power != own_power_idx.
+        # Find dest_prov in g_ally_counter_list[ordering_power].
+        # FUN_00401050(found_iter, end_sentinel) is truthy when found_iter != end,
+        # i.e. the lookup hit an entry.  Modelled as: entry is not None.
+        # C line 229: hit AND dest_power == ordering_power → PROMISE_SAME.
+        # C line 244: hit AND dest_power != own_power_idx   → PROMISE_DIFF.
+        entries = state.g_ally_counter_list.get(ordering_power, [])
+        entry = next(
+            (e for e in entries if e.get('dest_prov') == dest_prov), None
         )
+        if entry is not None:                          # FUN_00401050 truthy
+            if dest_power == ordering_power:           # C line 229
+                logger.debug(
+                    "check_order_alliance: promise-same conflict "
+                    "prov=%d ordering=%d", dest_prov, ordering_power,
+                )
+                return _ERR_PROMISE_SAME
+            if dest_power != own_power_idx:            # C line 244
+                logger.debug(
+                    "check_order_alliance: promise-diff conflict "
+                    "prov=%d dest_power=%d", dest_prov, dest_power,
+                )
+                return _ERR_PROMISE_DIFF
 
     return 0

@@ -43,7 +43,9 @@ def receive_proposal(
       3. Adds sender_power to g_alliance_msg_tree (DAT_00bbf638) — the Python
          equivalent of BuildAllianceMsg's sorted-BST insert.
       4. Calls _prepare_ally_press_entry(state, sender_power) [FUN_00418db0
-         stub — marks the sender's press-entry as pending for RESPOND].
+         — removes any existing THN(<sender_power>) entries from
+         g_master_order_list so that the new entry added by
+         _send_ally_press_by_power is not duplicated].
 
     C parameters (recovered as in_stack offsets by Ghidra, pushed by caller):
       +0x14  sender_power     — byte index of the sending power
@@ -81,7 +83,7 @@ def receive_proposal(
       SEND_LOG      — debug/log sink (→ logging.info)
       BuildAllianceMsg — BST insert of sender into DAT_00bbf638
                          (→ g_alliance_msg_tree.add; already in unchecked)
-      FUN_00418db0  — PrepareAllyPressEntry (→ _prepare_ally_press_entry stub)
+      FUN_00418db0  — PrepareAllyPressEntry (→ _prepare_ally_press_entry)
     """
     import logging as _log_module
     _log = _log_module.getLogger(__name__)

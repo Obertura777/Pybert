@@ -26,6 +26,7 @@ below therefore use a deferred "from .senders import …" to break the cycle.
 import time as _time
 
 from ..state import InnerGameState
+from ..dispatch.validator import validate_and_dispatch_order
 from .tokens import _TOK_ALY, _TOK_DMZ, _TOK_PCE, _TOK_VSS, _TOK_XDO
 
 
@@ -194,21 +195,20 @@ def _fun_004117d0(state: InnerGameState, param_1: int) -> bool:
       +0xf  (0x3c)  power-record field (second GameBoard_GetPowerRec target)
       [0x10]  (0x40)  expected order-type field
 
-    Python model: g_pos_analysis_list entries always have power_count==0 (inner
-    sub-lists are never populated after receive_proposal inserts them), so the
-    inner loops never execute and this function always returns False.
+    Python model: sub_entries is populated by receive_proposal via
+    _parse_xdo_candidates (fixed 2026-04-20).  The guard now checks
+    sub_entries directly rather than the vestigial power_count field.
     """
     for entry in getattr(state, 'g_pos_analysis_list', []):
         # C: if (*(char*)(puVar1+8) != '\0') → node already processed → skip
         if entry.get('processed', False):
             continue
 
-        # power_count==0 → inner sub-list is empty → no matches possible
-        if entry.get('power_count', 0) == 0:
+        sub_entries = entry.get('sub_entries', [])
+        if not sub_entries:
             continue
 
-        # ── Sub-list is non-empty (not reached in current Python model) ──────
-        sub_entries   = entry.get('sub_entries', [])
+        # ── Sub-list is non-empty ─────────────────────────────────────────────
         expected_type = entry.get('order_type', -1)
         board_orders  = getattr(state, 'g_board_orders', {})
 
@@ -243,8 +243,6 @@ def _press_gate_check(state: InnerGameState, power: int) -> bool:
     board order for *power* matching the entry's expected order type → caller
     skips press dispatch for this power.  False means no match → proceed.
 
-    In the current Python model power_count is always 0 so this always returns
-    False (never skip).
     """
     return _fun_004117d0(state, power)
 
@@ -542,8 +540,7 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     Unchecked callees: FUN_00410980, FUN_00419300,
                        FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
                        FUN_0040f470, FUN_00465f60, PROPOSE macro.
-    FUN_00422a90 ported as validate_and_dispatch_order (dispatch.py);
-    used here only as a validity gate (dispatch side-effect suppressed).
+    FUN_00422a90 ported as validate_and_dispatch_order (commit=False).
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -635,11 +632,9 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
             score_own    = scores.get(own,   0) - baseline.get(own,   0)
             score_sender = scores.get(power, 0) - baseline.get(power, 0)
 
-        # FUN_00422a90(this, order_seq) == 0: press-send gate.
-        # Ported as validate_and_dispatch_order (dispatch.py).  In this
-        # XDO-press context we only need the validity check; the dispatch
-        # side-effect is not wanted, so the gate is approximated as always
-        # passing (returning 0) to preserve the prior behaviour.
+        # FUN_00422a90(this, order_seq) == 0: press-send gate (validity only).
+        if isinstance(order_seq, dict) and validate_and_dispatch_order(state, own, order_seq, commit=False) != 0:
+            continue
         # Accumulate whenever this beats the running best combined score.
         total: int = score_own + score_sender
         if score_own > 0 and score_sender > -800 and total > best_score:
@@ -714,16 +709,16 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
     if _press_gate_check(state, power):
         return
 
-    # 2. PCE list consistency check (only when history > 9).
-    #    iVar5 = DAT_00bb6e14[power * 3] saved before lookup; puVar2[1] compared after.
-    #    In Python the lookup is synchronous so counts never diverge — _renegotiate_pce
-    #    will never fire, but the call sequence is preserved for fidelity.
+    # 2. PCE renegotiation check (only when history > 9).
+    #    C: iVar5 = DAT_00bb6e14[power*3]  = _Myhead (sentinel ptr) of press map.
+    #       puVar2 = FUN_004108a0(...)      → (container, found_node).
+    #       if (puVar2[1] != iVar5)         → found_node != _Myhead = PCE was found.
+    #    The earlier Python port read iVar5 as _Mysize and the condition as
+    #    "count changed", which never fires.  Correct interpretation: if PCE
+    #    token exists in press history, attempt renegotiation.
     if state.g_history_counter > 9:
-        saved_count = _press_list_count(state, power)           # DAT_00bb6e14[power * 3]
-        pce_result  = _find_press_token(state, power, _TOK_PCE)  # FUN_004108a0(..., &PCE)
-        # puVar2[1] (count field of result) vs iVar5 (saved count)
-        pce_count_after = len(pce_result) if isinstance(pce_result, list) else saved_count
-        if pce_count_after != saved_count:
+        pce_result = _find_press_token(state, power, _TOK_PCE)  # FUN_004108a0(..., &PCE)
+        if _press_token_found(pce_result, state, power):        # found_node != _Myhead
             if _renegotiate_pce(state, power):                  # FUN_00438b30
                 return
 

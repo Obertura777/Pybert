@@ -157,9 +157,15 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
           FreeList(local_1c)
       FreeList(local_2c)
     """
+    if getattr(state, 'g_gof_sent', False):
+        logger.debug("_send_gof: skipped — GOF already sent this turn")
+        return
     gof_seq = _build_gof_seq(state)          # FUN_00464460
     if len(gof_seq) > 1:                     # TokenSeq_Count(local_2c) > 1
         send_dm('GOF')                       # SendDM — plain GOF signal
+        state.g_gof_sent = True
+        # Disarm the fallback-GOF guard (DAT_00baed47 = 0 in AwaitPressAndSendGOF)
+        state.g_cancel_press_sent = 0
 
 
 # ── EvaluateOrderProposalsAndSendGOF ─────────────────────────────────────────

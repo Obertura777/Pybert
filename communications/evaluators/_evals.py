@@ -524,15 +524,33 @@ def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     """
     Port of FUN_0041ea20 — SLO (solo-win) proposal evaluator.
 
-    C: YES if own power is in the proposed SLO power list.
-    (The `local_4c == 1` guard in C tracks single-proposer; approximated
-    here by accepting whenever own power appears.)
+    C logic (from _eval_slo.c):
+      local_4c is the element-count field of the StdSet built from
+      SLO targets (local_54/local_50/local_4c form a 12-byte structure).
+      StdMap_FindOrInsert increments local_4c for each unique insertion.
+      bVar2 = own power found in the SLO target list.
+      Returns YES iff local_4c == 1 (exactly one unique nominated power)
+                 AND bVar2 (that power is our own).
+
+    `rest` is tokens[1:] after SLO is stripped; rest[0] is the (power) sublist.
     """
+    if len(rest) != 1:
+        return 0x4814   # REJ — not a well-formed SLO proposal
+
     own = state.albert_power_idx
-    for tok in rest:
-        if _pow_idx(tok) == own:
-            return 0x481C   # YES — someone is offering Albert the win
-    return 0x4814            # REJ
+    pwr_section = rest[0]
+    iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
+    targets: set = set()
+    for tok in iterable:
+        p = _pow_idx(tok)
+        if p is not None:
+            targets.add(p)
+
+    # local_4c == 1: exactly one unique power nominated for solo
+    # bVar2: that power is our own
+    if len(targets) == 1 and own in targets:
+        return 0x481C   # YES
+    return 0x4814        # REJ
 
 
 def _eval_drw(state: "InnerGameState", rest: list, from_power: int = 0) -> int:

@@ -52,7 +52,7 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
              a DiplomacyState entry, the peace deal is not yet complete.
            - If ALL powers accepted: log, BuildAllianceMsg(0x65), restore
              g_ally_trust_score[own,*] from g_diplomacy_state_a/B snapshot.
-      4. If changed: call ComputeOrderDipFlags (FUN_004113d0) — not yet ported.
+      4. If changed: call ComputeOrderDipFlags (FUN_004113d0) — ported in flags.py.
 
     Returns True if the trust matrix was updated (signals GOF recalculation).
     """
@@ -199,7 +199,7 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
 
       If changed:
         log "Recalculating: Because we have applied an ALY: (%s)"
-        BuildAllianceMsg(0x66) — stub
+        BuildAllianceMsg(0x66)
 
       Returns True (\\x01) if anything was changed.
 
@@ -365,7 +365,7 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
       If cStack_b1 == '\x01':
         FUN_0046b050(...)  (serialize DMZ token list to string — absorbed as log)
         SEND_LOG("Recalculating: Because we have applied a DMZ: (%s)")
-        BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)  (stub)
+        BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
 
       Returns cStack_b1  (True if any change, False otherwise)
 
@@ -523,7 +523,7 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
     # C lines 198–220:
     #   FUN_0046b050(...)  → serialize province list (absorbed as debug log)
     #   SEND_LOG("Recalculating: Because we have applied a DMZ: (%s)")
-    #   BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)  (stub)
+    #   BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
     if changed:
         prov_str = ' '.join(str(p) for p in dmz_provs)
         _log.debug(
@@ -587,7 +587,7 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
                 FUN_004193f0(DAT_00bb68f8 + entry.power*0xc, buf,
                               (dest_prov, dest_prov))
       7. Log "Recalculating: Because we have applied a XDO: (%s)" +
-         BuildAllianceMsg(0x66) stub.
+         BuildAllianceMsg(0x66).
       8. Clear local_74 sentinel via SerializeOrders (absorbed as no-op).
          Clear in_stack_00000018 = g_xdo_candidate_list via SerializeOrders
          + _free (absorbed as list clear).
@@ -601,8 +601,7 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
 
     Unchecked callees: ScoreSupportOpp (DAT_00bb67f8/00bb69f8 paths),
                        FUN_004193f0 (DAT_00bb68f8 path),
-                       FUN_00419300 (XDO proposal registration),
-                       BuildAllianceMsg (stub).
+                       FUN_00419300 (XDO proposal registration).
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.

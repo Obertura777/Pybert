@@ -231,12 +231,14 @@ def _move_analysis(state: InnerGameState) -> None:
                         "Seems (%d) and (%d) have applied little pressure to each other", a, b)
 
     # --- Pre-compaction: restore original hostility if trust inflated --------
-    # If no power currently has trust<2 but originally some did, restore the first such ally.
-    # (C: cStack_bd79 / LAB_00435fe6 guard; prevents false trust upgrades.)
+    # C: cStack_bd7a (outer) set at snapshot time when any orig trust<3 (lines 89-90);
+    #    cStack_bd79 (inner) set post-update when any current trust<2 (line 645).
+    #    Restore only when cStack_bd7a is set AND no current trust<2 (goto LAB_00435fe6).
+    had_low_orig_trust = any(orig_own_trust[p] < 3 for p in range(num_powers))
     has_low_trust_now = any(
         trust[own_power, p] < 2 for p in range(num_powers) if p != own_power
     )
-    if not has_low_trust_now:
+    if had_low_orig_trust and not has_low_trust_now:
         for p in range(num_powers):
             if p != own_power and orig_own_trust[p] < 2:
                 trust[own_power, p] = orig_own_trust[p]
@@ -250,7 +252,7 @@ def _move_analysis(state: InnerGameState) -> None:
             setattr(state, attr, -1)
 
     # Compact: shift valid slots to front (left-pack)
-    slots = [getattr(state, f'g_BestAllySlot{i}', -1) for i in range(3)]
+    slots = [getattr(state, f'g_best_ally_slot{i}', -1) for i in range(3)]
     valid = [s for s in slots if s >= 0]
     while len(valid) < 3:
         valid.append(-1)

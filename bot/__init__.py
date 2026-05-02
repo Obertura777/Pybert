@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 from ._shared import _DAIDE_COAST_TO_STR, _DAIDE_POWER_NAMES, _POWER_NAMES
 from .orders import (
     _init_position_for_orders,
+    _init_scoring_state,
     _build_movement_order_token,
     _build_retreat_order_token,
     _COAST_STR_TO_DAIDE,

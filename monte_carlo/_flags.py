@@ -37,7 +37,8 @@ _F_TARGET_PROV   = 15   # target province for order scoring (§ScoreOrderSet)
 _F_SOURCE_PROV   = 16   # source province; SUP = supported unit's province
 _F_SUP_COUNT     = 17   # count of units supporting this order
 _F_SUP_TARGET    = 18   # AssignSupportOrder: assigned target-role province (DAT_00baede8)
-_F_ORDER_ASGN    = 20   # 1 = support order committed (DAT_00baedf0)
+_F_ORDER_ASGN    = 20   # dual-use: "support order committed" (1) or convoy chain depth (DAT_00baedf0)
+_CONVOY_DEPTH_COMPLETE = 5  # _F_ORDER_ASGN value meaning convoy chain is resolved
 _F_CUM_SCORE     = 27   # cumulative trial score
 
 # Order type constants (g_order_table[prov, _F_ORDER_TYPE])

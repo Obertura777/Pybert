@@ -61,7 +61,7 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
         Walk & free linked list at DAT_00bb702c[b*3]:
           same pattern.
 
-    Post loop (lines 129-167): if changed → log + BuildAllianceMsg(0x66) stub.
+    Post loop (lines 129-167): if changed → log + BuildAllianceMsg(0x66).
     Returns cStack_59.
 
     Python mapping of C globals:
@@ -75,9 +75,7 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
 
     The C linked-list walk-and-free is absorbed as list.clear().
     """
-    # Cross-slice call: helpers still in package __init__.py.  Deferred import
-    # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg
+    from ..alliance import build_alliance_msg
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -229,7 +227,7 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
     Post-loop (lines 135-163):
       if changed:
         FUN_0046b050 → log "Recalculating: Because we removed a DMZ: %s"
-        BuildAllianceMsg(0x66) — stub
+        BuildAllianceMsg(0x66)
 
     Python mapping:
       uStack_74            → state.albert_power_idx
@@ -255,11 +253,9 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
       FUN_00402b70           → absorbed as `province in g_desig_list_a/B[p]`
       FUN_0047a948 (AssertFail) → absorbed as silent skip
       FUN_0046b050 ✓ (absorbed as debug log)
-      BuildAllianceMsg   → stub (unchecked)
+      BuildAllianceMsg   ✓ (ported in alliance.py)
     """
-    # Cross-slice call: helpers still in package __init__.py.  Deferred import
-    # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg
+    from ..alliance import build_alliance_msg
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -400,7 +396,7 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
     -----------------------------------
     - FUN_0046b050 → serialize press token list to string (absorbed as debug log arg).
     - SEND_LOG("Recalculating: Because we have applied a NOT XDO: (%s)")
-    - BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)  — stub (unchecked).
+    - BuildAllianceMsg(&DAT_00bbf638, ..., 0x66).
     - FreeList(local_1c)
     - FreeList(&stack4)
     - SerializeOrders + _free(in_stack_00000018) → clear g_xdo_candidate_list.
@@ -411,13 +407,11 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
         Keyed by power index; each value is a list of extracted XDO content lists
         representing orders that the peer is retracting.
 
-    Unchecked callees (retained as stubs/absorbed):
+    Absorbed callees:
       FUN_00419300           — absorbed as list append
-      BuildAllianceMsg       — unchecked stub
+      BuildAllianceMsg       ✓ (ported in alliance.py)
     """
-    # Cross-slice call: helpers still in package __init__.py.  Deferred import
-    # at call time avoids a circular import during package initialisation.
-    from . import build_alliance_msg, _ordered_token_seq_insert
+    from ..alliance import build_alliance_msg, _ordered_token_seq_insert
 
     import logging as _logging
     _log = _logging.getLogger(__name__)

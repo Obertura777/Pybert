@@ -1,13 +1,14 @@
-"""Draw-vote, stab/hostility detection, move-history post-processing,
-self-proposal generation, and press-pressure computation.
+"""Draw-vote, move-history post-processing, self-proposal generation,
+and press-pressure computation.
 
 Split from heuristics.py during the 2026-04 refactor.
 
-- ``compute_draw_vote``          — Nash-stability check for the DRW vote
-- ``detect_stabs_and_hostility`` — update AllyMatrix/TrustScore from board outcomes
-- ``post_process_orders``        — decay + update move-history matrix
-- ``generate_self_proposals``    — seed g_general_orders when no press arrives
-- ``compute_press``              — per-power adjacency pressure matrix
+- ``compute_draw_vote``    — Nash-stability check for the DRW vote
+- ``post_process_orders``  — decay + update move-history matrix
+- ``generate_self_proposals`` — seed g_general_orders when no press arrives
+- ``compute_press``        — per-power adjacency pressure matrix
+
+Stab/deviate detection lives in bot.strategy (_stabbed, _deviate_move).
 
 Module-level deps: ``numpy``, ``..state.InnerGameState``.
 """
@@ -233,49 +234,6 @@ def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
                 break
 
     return vote
-
-def detect_stabs_and_hostility(state: InnerGameState, power_idx: int):
-    """
-    Evaluates phase changes mapping DEVIATE_MOVE and STABBED states
-    functionally altering Trust and Alliance networks dynamically.
-    """
-    for prov in range(256):
-        owner_id = -1
-        occupier_id = state.get_unit_power(prov)
-        
-        # Scan ownership arrays
-        for p in range(7):
-            if state.g_sc_ownership[p, prov] == 1:
-                owner_id = p
-                break
-                
-        # Condition A: We own the SC, but someone else occupies it
-        if owner_id == power_idx and occupier_id != -1 and occupier_id != power_idx:
-            # If the occupier was formally bound in our trust matrix...
-            if state.g_ally_matrix[power_idx, occupier_id] == 1:
-                # STABBED scenario mapping
-                state.g_ally_matrix[power_idx, occupier_id] = 0
-                state.g_ally_trust_score[power_idx, occupier_id] = 0.0
-                state.g_deceit_level += 1
-                
-                # Escalate positional threat score heavily
-                state.g_threat_level[occupier_id, prov] = int(state.g_threat_level[occupier_id, prov]) + 10
-                
-        # Condition B: We attacked an ally's SC
-        elif owner_id != -1 and owner_id != power_idx and occupier_id == power_idx:
-            # We breached bounds
-            if state.g_ally_matrix[power_idx, owner_id] == 1:
-                # DEVIATE_MOVE mapping
-                state.g_ally_matrix[power_idx, owner_id] = 0
-                # Our trust crashes as retaliation is mapped
-                state.g_ally_trust_score[power_idx, owner_id] = max(0, state.g_ally_trust_score[power_idx, owner_id] / 2.0)
-
-
-    # NOTE 2026-04-14: C CAL_BOARD does not call UpdateRelationHistory.
-    # That call was spurious — removed. UpdateRelationHistory is invoked
-    # from FRIENDLY (communications.friendly Phase 2) and HOSTILITY
-    # (bot._hostility Block 6, pending wire-in).
-
 
 # ── PostProcessOrders ─────────────────────────────────────────────────────────
 

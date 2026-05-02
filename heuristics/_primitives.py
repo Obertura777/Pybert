@@ -48,6 +48,8 @@ def evaluate_province_score(state: InnerGameState, province_id: int, power_id: i
             
             if (total_reach + 1) <= own_reach:
                 score = ((pct - 50) * 150) // 100 + 50
+                if own_reach > total_reach + 1:
+                    score = ((score - 50) * 150) // 100 + 50
             else:
                 score = 50
         else:
@@ -291,30 +293,41 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
     prov_move_count = np.zeros(num_provinces, dtype=np.float64)
 
     # --- Phase 1: Unit-list walk ---
-    # For each unit, accumulate province visit scores and per-power heat contributions
+    # C: puVar3[0x1a + p] = unit struct's per-power reach array.
+    # For each unit at prov, sum reach scores into:
+    #   aiStack_10008[prov]   = prov_move_count[prov]   (total across all powers)
+    #   local_fc08[p, prov]   = province_visit[p, prov] (per-power)
+    # g_own_reach_score[p, prov] is the Python equivalent of unit[0x1a + p].
     for prov, unit_data in state.unit_info.items():
         power = unit_data.get('power', -1)
         if power < 0 or power >= num_powers:
             continue
 
-        # Add unit's province heat to prov_move_count
-        heat = float(state.g_heat_movement[power, prov]) if hasattr(state, 'g_heat_movement') else 0.0
-        prov_move_count[prov] += heat
-
-        # For each other power, add reachability contribution to province_visit
-        for other_power in range(num_powers):
-            province_visit[other_power, prov] += heat
+        for p in range(num_powers):
+            reach_p = int(state.g_own_reach_score[p, prov])
+            prov_move_count[prov] += reach_p      # aiStack_10008[prov]
+            province_visit[p, prov] += reach_p    # local_fc08[p, prov]
 
     # --- Phase 2: Province threat scoring ---
-    # For each province, compute threat from g_own_reach_score and g_enemy_reach_score
+    # C: EvaluateAllianceScore.c lines 229–262.
+    # Reads DAT_00b9a980[inner*256+prov] + DAT_00b95580[inner*256+prov] (MC pressure
+    # accumulated by UpdateAllyOrderScore per candidate) not the static reach arrays.
+    # Python: use g_mc_province_pressure + g_mc_fleet_pressure when present and non-zero;
+    # fall back to g_own_reach_score + g_enemy_reach_score before first MC run.
+    have_mc = (hasattr(state, 'g_mc_province_pressure') and
+               state.g_mc_province_pressure.any())
     for prov in range(num_provinces):
         for outer_power in range(num_powers):
             combined_threat = 0.0
             for inner_power in range(num_powers):
                 if inner_power != outer_power:
-                    own_reach = float(state.g_own_reach_score[inner_power, prov])
-                    enemy_reach = float(state.g_enemy_reach_score[inner_power, prov])
-                    combined_threat += max(own_reach, enemy_reach)
+                    if have_mc:
+                        inner_threat = (float(state.g_mc_province_pressure[inner_power, prov]) +
+                                        float(state.g_mc_fleet_pressure[inner_power, prov]))
+                    else:
+                        inner_threat = (float(state.g_own_reach_score[inner_power, prov]) +
+                                        float(state.g_enemy_reach_score[inner_power, prov]))
+                    combined_threat += inner_threat
 
             # Apply near-end-game factor logic
             if near_end_factor <= 5.0:
@@ -383,8 +396,10 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
             if reach_val <= 0:
                 continue
 
-            # Compute base_score: ((affinity + 50) * reach) / num_powers
-            affinity = float(main_score[eval_power])  # puVar8[piStack_102e8 + 5]
+            # Compute base_score: ((unit[eval_power+5] + 50) * reach) / num_powers
+            # unit[power+5] = g_unit_province_reach[power, prov] (set by EnumerateHoldOrders)
+            affinity = float(state.g_unit_province_reach[eval_power, prov]) \
+                if hasattr(state, 'g_unit_province_reach') else 0.0
             base_score = int(((affinity + 50) * reach_val) / num_powers)
 
             # Get fleet-filtered adjacency list (fleet_adj_matrix excludes
@@ -447,8 +462,22 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
         elif ((trust_hi >= 0 and (trust_hi > 0 or trust_score != 0) and relation_score > 19) or
               (trust_hi >= 0 and (trust_hi > 0 or trust_score > 2) and deceit_level > 1)):
             # Ally scoring: reward above 2000 baseline
-            # C has special handling for piStack_1027c (leading power) and DAT_004c6bc4
-            score_adj = (main_score[power] - 2000.0) * ally_weight
+            # C 1079-1095: boost weight when own_power==albert (piStack_1027c),
+            # ally_weight<51 (default non-endgame), power==best_ally (DAT_004c6bc4),
+            # and press flag (DAT_00baed68) is off.
+            best_ally = int(getattr(state, 'g_best_ally_slot0', -1))
+            albert_power = int(getattr(state, 'albert_power_idx', -1))
+            press_flag = int(getattr(state, 'g_press_flag', 0))
+            if (own_power == albert_power and ally_weight < 51
+                    and power == best_ally and press_flag == 0 and best_ally >= 0):
+                # +20 if best_ally has strictly more SCs, else +30
+                if int(state.sc_count[own_power]) + 1 < int(state.sc_count[best_ally]):
+                    effective_weight = ally_weight + 20
+                else:
+                    effective_weight = ally_weight + 30
+            else:
+                effective_weight = ally_weight
+            score_adj = (main_score[power] - 2000.0) * effective_weight
         else:
             score_adj = 0.0
 

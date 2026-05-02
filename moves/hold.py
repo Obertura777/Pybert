@@ -389,9 +389,9 @@ def _build_hold_order_seqs(state: InnerGameState, power_idx: int) -> None:
         state.g_unit_province_reach[power, :] = 0
         state.g_max_non_ally_reach[power, :] = 0
 
-        # 2a. ResetPerTrialState — clear build list and waive count
-        if hasattr(state, 'g_build_order_list'):
-            state.g_build_order_list.clear()
+        # 2a. ResetPerTrialState — clear build list, size counter, and waive count
+        state.g_build_order_list.clear()
+        state.g_build_order_list_size = 0
         state.g_waive_count = 0
 
         # 2b. Build SUB prefix token

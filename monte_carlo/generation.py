@@ -8,11 +8,10 @@ trial loop consumes.  Calls into ``..moves`` enumerators and defers an
 ``apply_influence_scores`` call into ``..heuristics`` (kept deferred to
 avoid the heuristics→monte_carlo import cycle).
 
-Module-level deps: ``numpy``, ``random``, ``..state.InnerGameState``, and
+Module-level deps: ``numpy``, ``..state.InnerGameState``, and
 the four enumerators from ``..moves``.
 """
 
-import random
 
 import numpy as np
 
@@ -54,20 +53,28 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     # Record own power so that downstream MC functions can resolve Albert's index.
     state.albert_power_idx = own_power
 
+    # ── InitScoringState ─────────────────────────────────────────────────────
+    # C: InitScoringState is called first thing in GenerateOrders (line 100).
+    # Lazy import avoids the bot.orders→monte_carlo→generation circular dep.
+    from ..bot.orders import _init_scoring_state
+    _init_scoring_state(state)
+
     # ── Phase 0 — Init ───────────────────────────────────────────────────────
-    state.g_candidate_scores.fill(0)
+    # Note: g_candidate_scores, g_target_flag, and several reach arrays are
+    # already zeroed by _init_scoring_state above (GenerateOrders.c:102-130).
     state.g_heat_movement.fill(0)
-    state.g_target_flag.fill(0)
     state.g_influence_matrix.fill(0)
     state.g_influence_matrix_raw.fill(0)
+    state.g_influence_matrix_b.fill(0)
     state.g_alliance_score.fill(0)
     state.g_global_province_score.fill(0)
     state.g_needs_rescore.fill(-1)   # 0xffffffff sentinel
 
     # ── Phase 1 — Per-power heat diffusion + candidate scoring ───────────────
     for p in range(NUM_POWERS):
-        curr_sc  = int(np.sum(state.g_sc_ownership[p]))
-        target_sc = 18  # standard Diplomacy win threshold
+        curr_sc  = int(state.sc_count[p])
+        # C: target_sc_cnt[p] from InitScoringState (was hardcoded to 18)
+        target_sc = int(state.g_target_sc_cnt[p])
 
         # 1a — Province urgency scoring → heat_build seed (aiStack_6018 equivalent)
         # research.md §5440–5451: g_StickyModeActive → 5000; SC-need formula otherwise.
@@ -114,18 +121,26 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
             state.g_global_province_score[prov] += heat_build[prov] + heat_move[prov]
 
         # 1f — Build ordered set, populate g_candidate_scores (top-N by heat_move)
-        # OrderedSet_FindOrInsert_64bit: sorted ascending; copy into g_candidate_scores.
-        #
-        # The C ordered set collects ALL provinces with positive heat_move from
-        # the BFS — these are the reachable candidate destinations, not just
-        # the provinces where own units sit.  The previous Python code
-        # filtered `get_unit_power(prov) == p` which only gave own-unit
-        # positions (3 for Austria at game start), starving the entire
-        # scoring pipeline of destination candidates.
-        # Fixed 2026-04-20 (root cause of 0% match rate in comparison tests).
-        for prov in valid_provs:
-            if heat_move[prov] > 0:
-                state.g_candidate_scores[p, prov] = heat_move[prov]
+        # C (GenerateOrders.c:400–468): provinces sorted descending by heat_move
+        # are inserted into an ordered set; the iterator takes at most win_threshold
+        # entries, skipping any province where own army sits (puVar12 == local_60b4).
+        # Albert+0x3ff8 = the limit field (= win_threshold, set at Albert+0x3ffc by
+        # InitPositionForOrders).  Own-fleet and empty provinces are included
+        # (C encodes fleets/empty as power=0x14, which never equals a real power).
+        top_n = int(getattr(state, 'win_threshold', 18))
+        _scored = sorted(
+            ((heat_move[prov], prov) for prov in valid_provs if heat_move[prov] > 0),
+            reverse=True,
+        )
+        _count = 0
+        for _score, prov in _scored:
+            if _count >= top_n:
+                break
+            u = state.unit_info.get(prov)
+            if u is not None and u.get('power') == p and u.get('type', '') in ('A', 'AMY'):
+                continue
+            state.g_candidate_scores[p, prov] = _score
+            _count += 1
 
         # 1g — Copy heat_move → g_heat_movement[p]
         state.g_heat_movement[p] = heat_move
@@ -151,6 +166,9 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     # ── Phase 3–4 — Snapshot Raw, inject noise ────────────────────────────────
     # Phase 3: copy g_influence_matrix → g_influence_matrix_raw
     state.g_influence_matrix_raw = state.g_influence_matrix.copy()
+    # g_InfluenceMatrix_B (GenerateOrders.c:352-383) uses the same per-power gate
+    # and heat arrays as Phase 1h; it equals the pre-normalization raw matrix.
+    state.g_influence_matrix_b[:] = state.g_influence_matrix_raw
 
     # Phase 4: per-cell noise via _safe_pow (FUN_0047b370).
     # Formula: B[i][j] += pow(B[i][j] / (sum[j] + 1), 0.3) * 500.0
@@ -192,30 +210,6 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
                 else:
                     state.g_alliance_score[row, col] =  3.0 * (B / (A + 1.0)) * (B / denom)
 
-    # ── Phase 7 — Compute g_opening_target ────────────────────────────────────
-    # research.md §5594–5607: only when g_deceit_level==1 AND season==SPR.
-    # Lowest-g_global_province_score non-own-unit province wins (inverse weighting).
-    state.g_opening_target.fill(-1)
-    if state.g_deceit_level == 1 and state.g_season == 'SPR':
-        for p in range(NUM_POWERS):
-            best_score = float('-inf')
-            for prov in range(NUM_PROVINCES):
-                unit_info = state.unit_info.get(prov)
-                if unit_info is None:
-                    continue
-                unit_power = unit_info['power']
-                # C (GenerateOrders.c L189-191): non-Army units have power
-                # overridden to 0x14, so own fleets always pass this gate.
-                if unit_info.get('type', '') != 'A':
-                    unit_power = 0x14  # always != any real power 0–6
-                if unit_power != p:
-                    gps = float(state.g_global_province_score[prov])
-                    if gps > 0.0:
-                        sc = random.uniform(0.0, 1.0) * 2.0 / gps
-                        if sc > best_score:
-                            best_score = sc
-                            state.g_opening_target[p] = prov
-
     # ── ApplyInfluenceScores ────────────────────────────────────────────────
     # C binary: GenerateOrders.c L619 calls ApplyInfluenceScores after the
     # per-power heat/influence loop.  This populates g_unit_adjacency_count
@@ -223,8 +217,9 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     # (Pass 5), which downstream feeds g_general_orders via the press
     # translator pipeline.  Without this call g_order_list stays empty and
     # the MC trial loop (ProcessTurn Phase 1c) has no orders to dispatch.
-    from ..heuristics import apply_influence_scores
+    from ..heuristics import apply_influence_scores, set_opening_targets
     apply_influence_scores(state, own_power)
+    set_opening_targets(state)
 
     # ── Order enumeration pipeline ───────────────────────────────────────────
     # Mirrors the post-loop calls in the binary (EnumerateHoldOrders,

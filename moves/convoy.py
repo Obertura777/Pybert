@@ -207,29 +207,27 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
 
 def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int) -> None:
     """
-    Port of RegisterConvoyFleet.
+    Port of RegisterConvoyFleet (Source/moves/RegisterConvoyFleet.c).
 
-    For fleet province `fleet_prov`, iterates all fleet-adjacent provinces.
-    For each adjacent province `adj` where g_army_adj_count[adj] > 0 AND
-    g_province_access_flag[power_idx, adj] > 0, marks g_province_score_trial[adj] = 1.
+    Guard: C uses offset +4 of the province record; Python uses
+    g_convoy_fleet_registered (reset each trial alongside g_army_adj_count /
+    g_province_score_trial).
 
-    The C++ guard (offset +4 in province record) prevents double-processing the
-    same province within a trial; in Python we use g_convoy_fleet_registered (a set
-    reset per trial alongside g_army_adj_count / g_province_score_trial).
-
-    AdjacencyList_FilterByUnitType(..., FLT) would return only fleet-navigable
-    neighbours; the Python adj_matrix merges all adjacency types, so we use it
-    as-is.  This is acceptable here because register_convoy_fleet is marking
-    army-adjacent provinces for convoy scoring, not generating fleet move orders.
-    Unit-type terrain filtering for actual moves is enforced in _build_order_mto
-    (monte_carlo.py) and _is_legal_mto (dispatch.py).
+    For each FLT-adjacent province adj:
+      if g_army_adj_count[adj] > 0:
+        C: access >= 0 AND (access > 0 OR g_ProvTargetFlag != 0)
+           → simplifies to: access > 0 OR g_prov_target_flag != 0
+        mark g_province_score_trial[adj] = 1
     """
     if fleet_prov in state.g_convoy_fleet_registered:
         return
     state.g_convoy_fleet_registered.add(fleet_prov)
-    for adj in state.get_unit_adjacencies(fleet_prov):
-        if state.g_army_adj_count[adj] > 0 and state.g_province_access_flag[power_idx, adj] > 0:
-            state.g_province_score_trial[adj] = 1
+    for adj in state.fleet_adj_matrix.get(fleet_prov, []):
+        if state.g_army_adj_count[adj] > 0:
+            access = int(state.g_province_access_flag[power_idx, adj])
+            target = int(state.g_prov_target_flag[power_idx, adj])
+            if access > 0 or target != 0:
+                state.g_province_score_trial[adj] = 1
 
 
 def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
@@ -357,7 +355,7 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
     return result
 
 
-def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int) -> None:
+def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int, coast: int = 0) -> None:
     """
     Port of FUN_0044b760 = BuildConvoyOrders.
 
@@ -415,6 +413,6 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
         state.g_order_table[fleet_i, _F_ORDER_ASGN] = 1
         
         register_convoy_fleet(state, power_idx, fleet_i)
-        assign_support_order(state, power_idx, src_prov, dst_prov, 0, flag=1)
+        assign_support_order(state, power_idx, src_prov, dst_prov, coast, flag=1)
 
 
