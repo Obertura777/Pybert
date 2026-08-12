@@ -19,7 +19,12 @@ _F_CONVOY_LEG1        =  9   # CTO convoy leg 1 (DAT_00baee0c)
 _F_CONVOY_LEG2        = 10   # CTO convoy leg 2 (DAT_00baee10)
 _F_INCOMING_MOVE      = 13   # 1 = province has incoming MTO/CTO (DAT_00baedd4 = g_ProvinceBaseScore)
 _F_SUP_CHAIN_CONFLICT = 14   # support-chain conflict accumulator (DAT_00baedd8)
-_F_SOURCE_PROV        = 16   # source province; SUP = supported unit's province
+_F_THREAT_TOTAL        = 16   # summed enemy reach on this province (DAT_00baede0)
+                              # Written once in all of C — ProcessTurn.c:1487 —
+                              # and only ever read as `== 1` / `== 2`.  Never a
+                              # province id: it was called _F_SOURCE_PROV until
+                              # 2026-08-12, and three call sites wrote province
+                              # ids into it, corrupting those tests.
 _F_ORDER_ASGN         = 20   # 1 = support order committed
 
 # ── order-type codes ─────────────────────────────────────────────────────────

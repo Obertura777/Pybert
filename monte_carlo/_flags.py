@@ -34,7 +34,9 @@ _F_SUP_SRC_LO    = 14   # support source province low word (§ScoreOrderSet)
                         # EvaluateOrderScore (L584, L711).  Alias below.
 _F_SUP_CHAIN_CONFLICT = _F_SUP_SRC_LO   # DAT_00baedd8
 _F_TARGET_PROV   = 15   # target province for order scoring (§ScoreOrderSet)
-_F_SOURCE_PROV   = 16   # source province; SUP = supported unit's province
+_F_THREAT_TOTAL   = 16   # summed enemy reach on this province (DAT_00baede0);
+                         # written only at ProcessTurn.c:1487, read only as
+                         # `== 1` / `== 2`.  Never a province id.
 _F_SUP_COUNT     = 17   # count of units supporting this order
 _F_SUP_TARGET    = 18   # AssignSupportOrder: assigned target-role province (DAT_00baede8)
 _F_ORDER_ASGN    = 20   # dual-use: "support order committed" (1) or convoy chain depth (DAT_00baedf0)

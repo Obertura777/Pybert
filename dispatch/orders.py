@@ -43,7 +43,7 @@ from ..moves._constants import (  # noqa: E402
     _F_DEST_PROV,
     _F_CONVOY_LEG0,
     _F_INCOMING_MOVE,
-    _F_SOURCE_PROV,
+    _F_THREAT_TOTAL,
     _F_ORDER_ASGN,
     _ORDER_MTO,
     _ORDER_SUP_HLD,
@@ -201,14 +201,15 @@ def dispatch_single_order(state: InnerGameState, power_index: int,
         # C (lines 140-194): Clear convoy state, parse dest, write order
         # table with type=6, convoy legs, g_ProvinceBaseScore=1.
 
-        # Clear convoy state (C lines 141-144)
-        if hasattr(state, 'g_convoy_legs'):
-            state.g_convoy_legs = [-1, -1, -1]
-        state.g_convoy_source_prov.fill(-1)
-        if isinstance(state.g_convoy_dst_to_src, dict):
-            state.g_convoy_dst_to_src.clear()
-        else:
-            state.g_convoy_dst_to_src.fill(-1)
+        # C:144 calls ClearConvoyState(), which is a no-op — Source/utils/clear.c
+        # is `void ClearConvoyState(void) { return; }`; it is the
+        # eh_vector_ctor/dtor_iterator callback, which is why it appears at
+        # nearly every basic-block boundary in the decompile.  This used to wipe
+        # g_convoy_source_prov and g_convoy_dst_to_src.  g_convoy_dst_to_src IS
+        # C's DAT_00bb65a0, built by ConvoyList_Insert (BuildOrder_MTO.c:23,
+        # BuildConvoyOrders.c:28, DispatchSingleOrder.c:179) and read at
+        # ProcessTurn.c:2493/2697 to decide SUP_MTO, so clearing it here
+        # discarded every earlier move registration.
 
         dest_raw  = order_seq.get('target_dest', '')
         coast_raw = order_seq.get('coast', '')
@@ -235,7 +236,7 @@ def dispatch_single_order(state: InnerGameState, power_index: int,
             # C line 189: g_ProvinceBaseScore[dest * 0x1e] = 1
             # Already handled above at line 218 (_F_INCOMING_MOVE = 1.0).
             # Fixed 2026-04-23 (audit finding DSP-1): removed spurious
-            # g_max_province_score copy into _F_SOURCE_PROV — no C equivalent.
+            # g_max_province_score copy into _F_THREAT_TOTAL — no C equivalent.
 
     elif token_head == 'CVY':
         # ── BuildOrder_CVY ────────────────────────────────────────────

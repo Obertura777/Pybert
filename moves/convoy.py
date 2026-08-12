@@ -32,7 +32,7 @@ from ._constants import (
     _F_CONVOY_LEG1,
     _F_CONVOY_LEG2,
     _F_SECONDARY,
-    _F_SOURCE_PROV,
+    _F_THREAT_TOTAL,
     _ORDER_MTO,
     _ORDER_CVY,
     _ORDER_CTO,
@@ -442,7 +442,6 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
         # C: (&DAT_00baeda4)[fleet * 0x1e] = param_2 — column 1 holds the
         # convoyed army's province; the CVY serializer reads _F_SECONDARY.
         state.g_order_table[fleet_i, _F_SECONDARY] = src_prov
-        state.g_order_table[fleet_i, _F_SOURCE_PROV] = src_prov
         state.g_order_table[fleet_i, _F_DEST_PROV] = dst_prov
         state.g_order_table[fleet_i, _F_ORDER_ASGN] = 1
         # C: (&g_ProvinceBaseScore)[fleet * 0x1e] = 1 — each convoying fleet

@@ -26,7 +26,7 @@ from ._flags import (
     _F_CONVOY_LO, _F_CONVOY_HI,
     _F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_DEPTH,
     _F_INCOMING_MOVE,
-    _F_SOURCE_PROV, _F_TARGET_PROV, _F_ORDER_ASGN,
+    _F_THREAT_TOTAL, _F_TARGET_PROV, _F_ORDER_ASGN,
     _F_SUP_TARGET,
     _CONVOY_DEPTH_COMPLETE,
     _ORDER_HLD, _ORDER_MTO, _ORDER_SUP_HLD, _ORDER_SUP_MTO,
@@ -107,7 +107,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
                                             and ui.get('coast', '') != '')
                             move_prob = 0.05 if is_bicoastal else 0.15
                 else:
-                    src_prov_f = int(ot[prov, _F_SOURCE_PROV])
+                    src_prov_f = int(ot[prov, _F_THREAT_TOTAL])
                     prov_wt    = float(state.g_province_weight[power_idx, prov])
                     if src_prov_f == 1:
                         move_prob = min(prov_wt, 1.0)
@@ -120,7 +120,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
             continue
 
         target_prov = int(ot[prov, _F_TARGET_PROV])
-        src_prov    = int(ot[prov, _F_SOURCE_PROV])
+        src_prov    = int(ot[prov, _F_THREAT_TOTAL])
         has_move    = src_prov != target_prov
 
         own_sc      = int(state.g_sc_ownership[power_idx, prov])
@@ -138,7 +138,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
             # Row 1: own SC province — weight by province desirability
             # C line 125: field[0x10]==1 → prov_weight; else field[0xf]*0.5
             if src_prov != target_prov:
-                if int(ot[prov, _F_SOURCE_PROV]) == 1:
+                if int(ot[prov, _F_THREAT_TOTAL]) == 1:
                     move_prob = min(prov_weight, 1.0)
                 else:
                     move_prob = min(float(ot[prov, _F_TARGET_PROV]) * 0.5, 1.0)

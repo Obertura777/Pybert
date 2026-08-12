@@ -37,7 +37,6 @@ _F_ORDER_ASGN    = _constants._F_ORDER_ASGN
 _F_CONVOY_LEG0   = _constants._F_CONVOY_LEG0
 _F_CONVOY_LEG1   = _constants._F_CONVOY_LEG1
 _F_CONVOY_LEG2   = _constants._F_CONVOY_LEG2
-_F_SOURCE_PROV   = _constants._F_SOURCE_PROV
 _F_SECONDARY     = _constants._F_SECONDARY
 _ORDER_CVY       = _constants._ORDER_CVY
 _ORDER_CTO       = _constants._ORDER_CTO
@@ -146,13 +145,12 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[NTH, _F_ORDER_TYPE] == _ORDER_CVY
 
-    def test_fleet_source_prov(self, state):
-        build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_order_table[NTH, _F_SOURCE_PROV] == LON
-
     def test_fleet_secondary_is_convoyed_army(self, state):
         # C: (&DAT_00baeda4)[fleet * 0x1e] = param_2 — column 1 carries the
         # convoyed army's province, and the CVY serializer reads it.
+        # A second test asserting a duplicate write into col 16 was removed on
+        # 2026-08-12: col 16 is the summed-enemy-reach counter in C and never
+        # holds a province id.
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[NTH, _F_SECONDARY] == LON
 
@@ -210,7 +208,7 @@ class TestTwoFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         for fleet_prov in [NTH, NWG]:
             assert state.g_order_table[fleet_prov, _F_ORDER_TYPE] == _ORDER_CVY
-            assert state.g_order_table[fleet_prov, _F_SOURCE_PROV] == LON
+            assert state.g_order_table[fleet_prov, _F_SECONDARY] == LON
             assert state.g_order_table[fleet_prov, _F_DEST_PROV] == STP
             assert state.g_order_table[fleet_prov, _F_ORDER_ASGN] == 1
 

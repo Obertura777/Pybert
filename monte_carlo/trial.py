@@ -42,7 +42,7 @@ from ._flags import (
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,
     _F_CONVOY_LO, _F_CONVOY_HI,
     _F_INCOMING_MOVE, _F_SUP_CHAIN_CONFLICT,
-    _F_SOURCE_PROV, _F_SUP_COUNT, _F_ORDER_ASGN,
+    _F_THREAT_TOTAL, _F_SUP_COUNT, _F_ORDER_ASGN,
     _ORDER_HLD, _ORDER_MTO, _ORDER_SUP_HLD, _ORDER_SUP_MTO,
     _ORDER_CVY, _ORDER_CTO,
 )
@@ -395,7 +395,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
         (DAT_005460e8) — was g_proximity_score (always 0, making the scan
         dead code).  Unit gate now uses g_enemy_presence + g_established_ally_flag
         (was g_enemy_reach_score + g_enemy_pressure_secondary).  b_chain now
-        uses field 16 (_F_SOURCE_PROV) and accum_prov instead of field 13 and
+        uses field 16 (_F_THREAT_TOTAL) and accum_prov instead of field 13 and
         supported; includes the field-16-on-supporter post-check.
         """
         # Threat gate (SUP_HLD L55-57; SUP_MTO L63-64).
@@ -428,7 +428,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
 
             # Sister-supporter (b_chain): another own SC-province adjacent to
             # this unit carries the same type of support onto accum_prov with
-            # g_order_table[adj, 16] == 1 (DAT_00baede0, _F_SOURCE_PROV).
+            # g_order_table[adj, 16] == 1 (DAT_00baede0, _F_THREAT_TOTAL).
             b_chain = False
             for adj_prov in adjs:
                 if adj_prov in (supporter, accum_prov):
@@ -439,7 +439,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                     continue
                 if int(state.g_order_table[adj_prov, _F_DEST_PROV]) != accum_prov:
                     continue
-                if int(state.g_order_table[adj_prov, 16]) != 1:  # _F_SOURCE_PROV
+                if int(state.g_order_table[adj_prov, _F_THREAT_TOTAL]) != 1:
                     continue
                 b_chain = True
                 break
@@ -634,7 +634,9 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
             if int(state.g_order_table[src, _F_ORDER_TYPE]) == _ORDER_HLD:
                 state.g_order_table[src, _F_ORDER_TYPE] = 0.0
             state.g_order_table[src, _F_ORDER_TYPE]  = float(_ORDER_CVY)
-            state.g_order_table[src, _F_SOURCE_PROV] = float(army_prov)
+            # C DispatchSingleOrder.c:213 — col 1 (_F_SECONDARY) carries the
+            # convoyed army's province, not col 16.
+            state.g_order_table[src, _F_SECONDARY]   = float(army_prov)
             state.g_order_table[src, _F_DEST_PROV]   = float(dst)
             return
 
@@ -1106,14 +1108,13 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                 # Trust gate.
                 # not_early_game: DAT_00baed68 (g_press_flag) != 1  OR  g_near_end_game_factor >= 2.0
                 not_early_game = (state.g_press_flag != 1) or (state.g_near_end_game_factor >= 2.0)
-                accepted = False
+                # C:2549 — low trust (no ally claim on territory) → accept path.
+                low_trust = trust_hi < 1 and (trust_hi < 0 or trust_lo == 0)
                 if not_early_game or relay1_hi < 0:
-                    # Main path: C line 2549 — low trust (no ally claim on
-                    # territory) → ACCEPT; high trust → REJECT.
-                    if trust_hi < 1 and (trust_hi < 0 or trust_lo == 0):
-                        accepted = True
+                    reaches_accept = low_trust
                 else:
                     # Early-game mutual-trust path.
+                    mutual_trust = False
                     if 0 <= relay1_lo < num_powers:
                         fwd_hi = int(state.g_ally_trust_score_hi[power_index, relay1_lo])
                         fwd_lo = float(state.g_ally_trust_score[power_index, relay1_lo])
@@ -1121,51 +1122,71 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                             rev_hi = int(state.g_ally_trust_score_hi[relay1_lo, power_index])
                             rev_lo = float(state.g_ally_trust_score[relay1_lo, power_index])
                             if rev_hi >= 0 and (rev_hi > 0 or rev_lo > 1):
-                                accepted = True  # mutual high trust
-                    if not accepted:
-                        # Fallback: active convoy chain at dst, or pool-B scoring.
-                        if int(state.g_convoy_active_flag[dst]) > 0:
-                            accepted = True
-                        elif int(state.g_sc_ownership[power_index, dst]) == 1:
-                            # Pool-B scoring sub-path (item #6; partially decoded).
-                            score_convoy_fleet(state, dst, 0x7ffb)
-                            # Not accepted; continue to next candidate.
+                                mutual_trust = True
+                    # No mutual trust → C skips the gate entirely and accepts.
+                    reaches_accept = low_trust if mutual_trust else True
+
+                # C:2574 — g_ConvoyActiveFlag[dst] > 0 REJECTS the candidate
+                # (the province is already receiving one of our support orders).
+                accepted = reaches_accept and int(state.g_convoy_active_flag[dst]) <= 0
+
+                if accepted and int(state.g_sc_ownership[power_index, dst]) == 1:
+                    # C:2579-2694 own-SC block — NOT yet ported (findings 2/3 in
+                    # completed_rewrite.md).  C emits SUP_HLD or scores a convoy
+                    # fleet here and suppresses the move; Python reproduces only
+                    # the ScoreConvoyFleet side effect and suppresses the move.
+                    score_convoy_fleet(state, dst, 0x7ffb)
+                    accepted = False
 
                 if not accepted:
                     continue  # ClearConvoyState + RemoveOrderCandidate
 
-                # Accept: dispatch on whether dst is a coastal province.
-                # province_has_coast mirrors Albert.province_property[dst*0x14+0x214] > 0.
-                province_has_coast = any(
-                    adj in state.water_provinces
-                    for adj in state.adj_matrix.get(dst, [])
-                )
-                if not province_has_coast:
-                    _build_order_mto(army_src, dst, coast)
-                else:
-                    # build_convoy_orders requires g_convoy_route[src][dst]
-                    # pre-populated with the fleet chain for this dst
-                    # (per-dst shape from Fix #7).  If unavailable, fall
-                    # back to a direct MTO write — matches the C fallback
-                    # when route planning has not registered a valid
-                    # fleet chain for the (src, dst) pair.
-                    from ..moves.convoy import _get_convoy_route
-                    _fc, _ = _get_convoy_route(state, army_src, dst)
-                    if _fc > 0:
-                        build_convoy_orders(state, power_index, army_src, dst, coast)
-                    else:
-                        if int(state.g_order_table[army_src, _F_ORDER_TYPE]) == _ORDER_HLD:
-                            state.g_order_table[army_src, _F_ORDER_TYPE] = 0.0
-                        _build_order_mto(army_src, dst, coast)
+                # Accept → always a plain MTO.  C:2715 picks BuildOrder_MTO vs
+                # BuildConvoyOrders on `this + dst*0x14 + 0x214` (the convoy
+                # leg count), and that field can only be nonzero if the
+                # convoy-chain BFS at C:1674-1940 ran for this unit.  That BFS
+                # sits behind C:1669-1671, a `std::string::compare` of the
+                # unit's province token against a hard-coded 3-character
+                # literal — so it fires for at most one province per game.
+                # Everywhere else the leg count is 0 (written ungated at
+                # C:1628/1655 for every adjacency) or -1, so C:2715 always
+                # takes the MTO arm.  Consistently, BuildConvoyOrders has
+                # exactly one caller in the whole C source (ProcessTurn.c:2747)
+                # and it is behind that same dead branch.
+                #
+                # The previous `water_provinces` proxy for the leg count was
+                # true for nearly every coastal province, so this path emitted
+                # convoys where C emits none.  See finding (7) in
+                # completed_rewrite.md for the gate analysis and its caveat.
+                _build_order_mto(army_src, dst, coast)
                 consumed += 1
 
         # 1f. Support assignment ───────────────────────────────────────────────
-        # Populate g_support_demand from g_threat_level (C lines 1440-1492).
-        # C recomputes per-unit from g_ThreatScore (= max enemy reach count per
-        # province); Python's g_threat_level[power_index, prov] is the same
-        # quantity.  -1 sentinel means "no threat scored" → treat as 0.
+        # Per-province threat aggregates (C lines 1440-1492).  C walks every
+        # other power under a three-clause hostility gate and stores TWO
+        # aggregates per province: the PEAK gated reach in col 15
+        # (DAT_00baeddc = g_support_demand) at C:1488, and the SUM of gated
+        # reaches in col 16 (DAT_00baede0 = _F_THREAT_TOTAL) at C:1487.
+        #
+        # Both are substituted from ScoreProvinces' output rather than
+        # recomputed from g_ThreatScore here: scoring.py:548-576 accumulates
+        # `reach` under a hostile_gate that is clause-for-clause identical to
+        # C:1467-1471 — including the per-province is_ally_desig term — taking
+        # the max into g_threat_level and the sum into g_enemy_reach_score.
+        # So g_threat_level is C's peak and g_enemy_reach_score is C's total.
+        #
+        # C recomputes this inside the per-unit loop; it is loop-invariant
+        # (nothing in the loop touches trust, relation or reach), so hoisting
+        # it out is equivalent.  -1 sentinel means "no threat scored" → 0.
+        #
+        # Col 16 was previously never written, leaving the `== 1` / `== 2`
+        # readers in moves/support.py, monte_carlo/evaluation.py and
+        # _sup_chain_tail with nothing meaningful to read.
         state.g_support_demand[:num_provinces] = np.maximum(
             0, state.g_threat_level[power_index, :num_provinces]
+        )
+        state.g_order_table[:num_provinces, _F_THREAT_TOTAL] = np.maximum(
+            0, state.g_enemy_reach_score[power_index, :num_provinces]
         )
 
         # Find own unordered SC provinces; call AssignHoldSupports.
@@ -1784,11 +1805,14 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                 if 0 <= slot_lo < num_powers:
                     rel = int(state.g_relation_score[power_index, slot_lo]) if slot_lo < 7 else 0
                     if rel > 9 or power_index == own_power:
-                        try:
-                            trust_lo_final = int(state.g_ally_trust_score.flat[power_index * 21 + slot_lo])
-                            trust_hi_final = int(state.g_ally_trust_score_hi.flat[power_index * 21 + slot_lo])
-                        except (IndexError, AttributeError):
-                            pass
+                        # C indexes the flat 21-stride g_AllyTrustScore as
+                        # [power*0x15 + slot]; the Python array is 2D (7,7), so
+                        # the equivalent is [power, slot].  The former `.flat[]`
+                        # form indexed 49 elements with stride 21 — correct only
+                        # for power 0, wrong cell for 1-2, IndexError for 3-6
+                        # (swallowed), leaving the gate inert for six powers.
+                        trust_lo_final = int(state.g_ally_trust_score[power_index, slot_lo])
+                        trust_hi_final = int(state.g_ally_trust_score_hi[power_index, slot_lo])
 
             # C ProcessTurn.c:2543-2546: if selected_dest IS in ally-claimed territory
             # (found in reachable_provinces), override trust to (lo=3, hi=0) → gate rejects.
@@ -1796,18 +1820,22 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
             if selected_dest in reachable_provinces:
                 trust_lo_final, trust_hi_final = 3, 0
 
-            # Trust gate (C lines 2547-2694)
+            # Trust gate (C lines 2547-2574).  C control flow:
+            #   branch A (not_early or desig_b_hi < 0) → LAB_004536b5
+            #   branch B: mutual-trust test —
+            #       mutual trust holds → goto LAB_004536b5 (same gate as A)
+            #       mutual trust fails → falls into LAB_004536bf, no gate
+            #   LAB_004536b5 (C:2549): low trust → LAB_004536bf, else REJECT
+            #   LAB_004536bf (C:2574): g_ConvoyActiveFlag[dest] > 0 → REJECT
             not_early = (state.g_press_flag != 1) or (state.g_near_end_game_factor >= 2.0)
             desig_b_hi_sel = int(state.g_ally_designation_b_hi[selected_dest]) if selected_dest < 256 else -1
-            accepted_final = False
+            # "Low trust" = no ally claims on this territory → safe to enter.
+            low_trust = trust_hi_final < 1 and (trust_hi_final < 0 or trust_lo_final == 0)
             if not_early or desig_b_hi_sel < 0:
-                # C line 2549: low trust → goto LAB_004536bf (ACCEPT);
-                # high trust → fall through to LAB_004536da (REJECT).
-                # "Low trust" = no ally claims on this territory → safe.
-                if trust_hi_final < 1 and (trust_hi_final < 0 or trust_lo_final == 0):
-                    accepted_final = True
+                reaches_accept = low_trust
             else:
                 # Early-game mutual trust path
+                mutual_trust = False
                 desig_b_lo = int(state.g_ally_designation_b[selected_dest]) if selected_dest < 256 else -1
                 if 0 <= desig_b_lo < num_powers:
                     fwd_hi = int(state.g_ally_trust_score_hi[power_index, desig_b_lo])
@@ -1816,10 +1844,15 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                         rev_hi = int(state.g_ally_trust_score_hi[desig_b_lo, power_index])
                         rev_lo = float(state.g_ally_trust_score[desig_b_lo, power_index])
                         if rev_hi >= 0 and (rev_hi > 0 or rev_lo > 1):
-                            accepted_final = True
-                if not accepted_final:
-                    if int(state.g_convoy_active_flag[selected_dest]) > 0:
-                        accepted_final = True
+                            mutual_trust = True
+                # No mutual trust → C skips the gate entirely and accepts.
+                reaches_accept = low_trust if mutual_trust else True
+
+            # C:2574 — the only read of g_ConvoyActiveFlag in ProcessTurn.c, and
+            # it REJECTS.  The flag is written by BuildOrder_SUP_HLD/SUP_MTO on
+            # the supported province when the supported unit is foreign, i.e.
+            # "we already committed support here" → don't also move into it.
+            accepted_final = reaches_accept and int(state.g_convoy_active_flag[selected_dest]) <= 0
 
             if _mc_dbg:
                 _pn = id2n.get(cand_prov, str(cand_prov))
@@ -1879,33 +1912,27 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                     )
                 state.g_order_table[cand_prov, _F_ORDER_TYPE] = float(_ORDER_HLD)
             else:
-                # Check if dest is coastal (has adjacent water) for convoy routing
-                province_has_coast = any(
-                    adj in state.water_provinces
-                    for adj in state.adj_matrix.get(selected_dest, [])
-                )
+                # Always a plain MTO.  C:2715 branches on the destination's
+                # convoy-leg count, which only the name-gated BFS at
+                # C:1674-1940 can make nonzero, so C always takes the MTO arm
+                # here.  See finding (7) in completed_rewrite.md.
                 state.g_order_table[cand_prov, _F_ORDER_TYPE] = 0.0
-                if province_has_coast and utype in ('A', 'AMY'):
-                    # C line 2747: BuildConvoyOrders for coastal destinations
-                    _build_order_mto(cand_prov, selected_dest, 0)
-                else:
-                    # C line 2730: BuildOrder_MTO
-                    _build_order_mto(cand_prov, selected_dest, 0)
+                _build_order_mto(cand_prov, selected_dest, 0)
 
             # ── Post-MTO support assignment (C lines 1672-1940) ─────────
             # C condition (ProcessTurn.c:2627): skip support when
-            #   g_support_demand[dest] <= _F_INCOMING_MOVE[dest] OR coastal.
+            #   g_support_demand[dest] <= _F_INCOMING_MOVE[dest] OR cStack_7c2.
             # Equivalently: fire when _F_INCOMING_MOVE < g_support_demand AND
-            # NOT coastal.  g_support_demand is populated above from
-            # g_threat_level so values now reflect actual enemy pressure.
+            # NOT cStack_7c2.  cStack_7c2 (C:2471) is `0 < leg_count[dest]`,
+            # which only the name-gated BFS at C:1674-1940 can make true, so it
+            # is false in practice and drops out of the condition entirely.
+            # The `water_provinces` proxy that used to stand in for it was true
+            # for nearly every coastal province and so suppressed this block
+            # almost always.  See finding (7) in completed_rewrite.md.
             if selected_dest != cand_prov:
                 _incoming = int(state.g_order_table[selected_dest, _F_INCOMING_MOVE])
                 _demand   = int(state.g_support_demand[selected_dest])
-                _dest_coastal = any(
-                    adj in state.water_provinces
-                    for adj in state.adj_matrix.get(selected_dest, [])
-                )
-                if _incoming < _demand and not _dest_coastal:
+                if _incoming < _demand:
                     for sup_prov, sup_unit in state.unit_info.items():
                         if sup_unit.get('power') != power_index:
                             continue
@@ -1924,7 +1951,6 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                         state.g_order_table[sup_prov, _F_ORDER_TYPE] = float(_ORDER_SUP_MTO)
                         state.g_order_table[sup_prov, _F_SECONDARY] = float(cand_prov)
                         state.g_order_table[sup_prov, _F_DEST_PROV] = float(selected_dest)
-                        state.g_order_table[sup_prov, _F_SOURCE_PROV] = float(cand_prov)
 
         # HOLD-DBG: summarize final unit orders after Phase 2 (trial 0 only).
         if _trial == 0 and power_index == own_power:

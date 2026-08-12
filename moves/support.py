@@ -24,7 +24,7 @@ from ._constants import (
     _F_CONVOY_HI,
     _F_INCOMING_MOVE,
     _F_SUP_CHAIN_CONFLICT,
-    _F_SOURCE_PROV,
+    _F_THREAT_TOTAL,
     _F_ORDER_ASGN,
     _ORDER_MTO,
     _ORDER_SUP_HLD,
@@ -633,13 +633,13 @@ def build_order_sup_mto(
                     and int(state.g_sc_ownership[power_idx, adj_prov]) == 1
                     and int(state.g_order_table[adj_prov, _F_ORDER_TYPE]) == _ORDER_SUP_MTO
                     and int(state.g_order_table[adj_prov, _F_DEST_PROV]) == target
-                    and int(state.g_order_table[adj_prov, _F_SOURCE_PROV]) == 1):
+                    and int(state.g_order_table[adj_prov, _F_THREAT_TOTAL]) == 1):
                 b7 = True
 
         # Post-check for b7 (C L172-183): discard unless supporter's field-16 == 1;
         # if field-16 == 2 AND b1 AND b2 → skip this unit's conflict check entirely.
         if b7:
-            sup_f16 = int(state.g_order_table[supporter, _F_SOURCE_PROV])
+            sup_f16 = int(state.g_order_table[supporter, _F_THREAT_TOTAL])
             if sup_f16 != 1:
                 if sup_f16 == 2 and b1 and b2:
                     continue
@@ -776,12 +776,12 @@ def build_order_sup_hld(
                     and int(state.g_sc_ownership[power_idx, adj_prov]) == 1
                     and int(state.g_order_table[adj_prov, _F_ORDER_TYPE]) == _ORDER_SUP_HLD
                     and int(state.g_order_table[adj_prov, _F_DEST_PROV]) == dst_prov
-                    and int(state.g_order_table[adj_prov, _F_SOURCE_PROV]) == 1):
+                    and int(state.g_order_table[adj_prov, _F_THREAT_TOTAL]) == 1):
                 bVar8 = True
 
         # C L158-171: bVar8 re-evaluated against src's field-16 slot value.
         if bVar8:
-            src_f16 = int(state.g_order_table[src_prov, _F_SOURCE_PROV])
+            src_f16 = int(state.g_order_table[src_prov, _F_THREAT_TOTAL])
             if src_f16 == 1:
                 pass    # bVar8 confirmed
             elif src_f16 == 2 and bVar2 and bVar3:
