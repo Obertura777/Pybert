@@ -23,6 +23,7 @@ from ._common import (
     _extract_powers,
     _extract_provs,
     _ally_trust_ok,
+    _POWER_NAMES,
 )
 
 
@@ -107,6 +108,56 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         return _REJ
 
     prov_ids = _extract_provs(state, provs_section)
+
+    # ── Topology gate A: enemy-home-SC check ─────────────────────────────
+    # Mirrors DMZ.c handler (DAT_00bb6f28 / g_ally_promise_list path):
+    # REJ if any proposed province is a home SC of an enemy power that is
+    # not itself in the DMZ powers list.  An enemy naming their own home SC
+    # in a DMZ is trying to shield it from Albert.
+    home_sc_map = getattr(state, 'g_mdf_home_sc', {}) or {}
+    enemy_flag  = getattr(state, 'g_enemy_flag', None)
+    p2id        = getattr(state, 'prov_to_id', {}) or {}
+    if home_sc_map and enemy_flag is not None and prov_ids:
+        dmz_set = set(dmz_powers)
+        # Build {prov_id: enemy_power_idx} for all enemy home SCs.
+        enemy_home: dict = {}
+        for pidx, pname in enumerate(_POWER_NAMES):
+            if pidx == own:
+                continue
+            if int(enemy_flag[pidx]) != 1:
+                continue
+            for sc_name in home_sc_map.get(pname, []):
+                sc_id = p2id.get(sc_name.upper()) or p2id.get(sc_name)
+                if sc_id is not None:
+                    enemy_home[int(sc_id)] = pidx
+        for prov in prov_ids:
+            ep = enemy_home.get(prov)
+            if ep is not None and ep not in dmz_set:
+                return _REJ
+
+    # ── Topology gate B: counter-list map-adjacency check ────────────────
+    # Mirrors DMZ.c handler (DAT_00bb7028 / g_ally_counter_list path):
+    # For each non-Albert DMZ power that has counter-proposals recorded,
+    # at least one DMZ province must appear as a dest_prov in that power's
+    # counter-list.  If the power has proposals but none touch the DMZ
+    # provinces, the DMZ is topologically irrelevant for that power.
+    counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
+    if prov_ids and counter_map:
+        for dp in dmz_powers:
+            if dp == own:
+                continue
+            dp_recs = counter_map.get(dp) or []
+            if not dp_recs:
+                continue  # no counter-proposals for this power yet → skip
+            dp_provs: set = set()
+            for r in dp_recs:
+                if isinstance(r, dict):
+                    v = r.get('dest_prov', -1)
+                    if v != -1:
+                        dp_provs.add(int(v))
+            if dp_provs and not any(p in dp_provs for p in prov_ids):
+                return _REJ
+
     order_list = getattr(state, 'g_order_list', []) or []
 
     for prov in prov_ids:
@@ -153,10 +204,18 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
       bVar2 = from-power in ALY list
       bVar3 = no VSS-side power has any existing ALY-side power in
               ``local_88`` (the ally-side StdMap built earlier)
-      bVar4 = for each (aly_power, vss_power) pair, the per-pair compatibility
-              gate passes — checks ally trust, enemy flags, relation score,
-              proximity (g_mutual_enemy_table), proposal counter (g_relation_score),
-              and press-mode gates.
+      bVar4 = for each (aly_power != own, vss_power) pair, the per-pair
+              compatibility gate passes.
+
+      Outer branch (line 147): ``DAT_00baed5f`` (g_stabbed_flag) == 1
+      selects the stabbed-mode path (lines 147–183); else the normal path
+      (lines 185–220).  Both paths consult trust scores, enemy flags,
+      relation score, mutual-enemy table, influence-rank flags, and
+      potentially a mutual-ally scan loop (lines 165–177 / 203–213) that
+      scans every power q and sets bVar4=False when vss_p is already allied
+      with a high-priority ally of own.  ``DAT_00baed68`` (g_press_flag)
+      governs secondary trust-threshold relaxation and the diplo-override
+      gate on the normal path only.
 
     Returns YES iff (bVar1 && bVar2 && bVar3 && bVar4); else REJ.
 
@@ -172,8 +231,6 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         return _REJ
 
     aly_section = rest[0]
-    # rest[1] should be the VSS token; we ignore its identity and use its
-    # presence as a structural gate (the dispatcher already verified ALY).
     vss_section = rest[2]
 
     aly_powers = _extract_powers(aly_section)
@@ -184,72 +241,142 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     if not (bVar1 and bVar2):
         return _REJ
 
-    # bVar3: no VSS power may already be in our ALY-side relationship.  The C
-    # builds local_88 by walking aly_powers and inserting each as a key, then
-    # looks up each vss_power; a hit means "the proposed enemy is already on
-    # the ally side" → reject.
+    # bVar3: no VSS power in the ALY-side StdMap (local_88).
     aly_set = set(aly_powers)
     if any(v in aly_set for v in vss_powers):
         return _REJ
 
-    # bVar4: per-pair compatibility.  This is the bulk of _eval_aly.c.
-    # Fixed 2026-04-20 (M-COM-1): press-mode promise-queue gates now checked
-    # via g_diplomacy_state_a/B, matching C lines 180-210.
-    press_mode = int(getattr(state, 'g_press_flag', 0)) == 1
-    enemy_flag = getattr(state, 'g_enemy_flag', None)
-    rel        = state.g_relation_score           # DAT_00634e90
-    ally_mat   = state.g_ally_matrix              # DAT_006340c0/g_ally_matrix overlap
-    mutual_en  = getattr(state, 'g_mutual_enemy_table', None)  # DAT_00b9fdd8
-    diplo_a    = getattr(state, 'g_diplomacy_state_a', None)   # DAT_004d5480
-    diplo_b    = getattr(state, 'g_diplomacy_state_b', None)   # DAT_004d5484
+    # bVar4: per-pair compatibility (bulk of _eval_aly.c lines 139–228).
+    stabbed    = int(getattr(state, 'g_stabbed_flag', 0)) == 1    # DAT_00baed5f
+    press_flag = int(getattr(state, 'g_press_flag', 0)) == 1      # DAT_00baed68
+    enemy_flag    = getattr(state, 'g_enemy_flag', None)           # DAT_004cf568
+    enemy_flag_hi = getattr(state, 'g_enemy_flag_hi', None)        # DAT_004cf56c
+    rel            = state.g_relation_score                         # DAT_00634e90
+    ally_mat       = state.g_ally_matrix
+    trust_hi       = state.g_ally_trust_score_hi
+    trust_lo       = state.g_ally_trust_score
+    mutual_en      = getattr(state, 'g_mutual_enemy_table', None)  # DAT_00b9fdd8
+    infl_rank      = getattr(state, 'g_influence_rank_flag', None) # DAT_006340c0
+    enemy_slot     = getattr(state, 'g_enemy_slot', None)          # DAT_004c6bc4
+    enemy_count    = getattr(state, 'g_enemy_count', None)         # DAT_00633ec0
+    diplo_a        = getattr(state, 'g_diplomacy_state_a', None)   # DAT_004d5480
+    diplo_b        = getattr(state, 'g_diplomacy_state_b', None)   # DAT_004d5484
+    n_powers       = int(getattr(state, 'g_num_powers', 7))
+
+    def ef1(p):   return int(enemy_flag[p])    if enemy_flag    is not None else 0
+    def ef2(p):   return int(enemy_flag_hi[p]) if enemy_flag_hi is not None else 0
+    def mu(p):    return int(mutual_en[p])     if mutual_en     is not None else -1
+    def rk(a, b): return int(infl_rank[a, b])  if infl_rank     is not None else -1
+    def es0():    return int(enemy_slot[0])    if enemy_slot    is not None else -1
+    def ec(p):    return int(enemy_count[p])   if enemy_count   is not None else 0
+
+    bVar4 = True
 
     for aly_p in aly_powers:
         if aly_p == own:
             continue
         for vss_p in vss_powers:
-            # Forward enemy/relation gate.
-            if press_mode:
-                # Promise-queue gate (C _eval_aly.c lines 180-210):
-                # Check g_diplomacy_state_a[aly_p] and g_diplomacy_state_b[vss_p]
-                # to ensure we haven't already committed contradictory promises.
-                if diplo_a is not None and diplo_b is not None:
-                    dip_a = int(diplo_a[aly_p]) if aly_p < len(diplo_a) else 0
-                    dip_b = int(diplo_b[vss_p]) if vss_p < len(diplo_b) else 0
-                    # C: if DiplomacyStateA[aly_p] != 0 and already committed
-                    # to a different vss target, reject.
-                    if dip_a != 0 and dip_a != vss_p and dip_a != -1:
-                        return _REJ
-                    # C: if DiplomacyStateB[vss_p] != 0 and already committed
-                    # to a different aly partner, reject.
-                    if dip_b != 0 and dip_b != aly_p and dip_b != -1:
-                        return _REJ
+            if stabbed:
+                # Stabbed-mode path (_eval_aly.c lines 147–183).
+                ef1a = ef1(aly_p); ef2a = ef2(aly_p)
+                ef1v = ef1(vss_p); ef2v = ef2(vss_p)
+                rel_oa = int(rel[own, aly_p])
+                aam    = int(ally_mat[aly_p, vss_p])
+                # Outer gate (lines 148–152): enter block only if:
+                #   ((aly has enemy flags OR aly relation < 0) OR
+                #    (vss is not (1,0) confirmed-enemy AND vss relation >= 0))
+                #   AND aly_p/vss_p not yet allied.
+                cond_A = (ef1a != 0 or ef2a != 0) or rel_oa < 0
+                cond_B = (ef1v != 1 or ef2v != 0) and int(rel[own, vss_p]) >= 0
+                if not ((cond_A or cond_B) and aam < 1):
+                    continue
+                # Trust own→aly (lines 153–156):
+                #   trust_hi[own,aly] >= 0  AND  (trust_hi > 0  OR  trust_lo > 2)
+                th1 = int(trust_hi[own, aly_p])
+                tl1 = int(trust_lo[own, aly_p])
+                if not (th1 >= 0 and (th1 > 0 or int(tl1) > 2)):
+                    bVar4 = False
+                    continue
+                # Reversed trust aly→own + further conditions (lines 157–164):
+                #   trust_hi[aly,own] >= 0
+                #   AND (trust_hi > 0 OR trust_lo != 0)
+                #   AND aly_p NOT (1,0) enemy
+                #   AND rel[own,aly] >= 0
+                #   AND mutual_enemy[aly] == vss
+                #   AND infl_rank[own,aly] < 4
+                #   AND enemy_slot[0] != vss
+                #   AND enemy_count[own] < 2
+                th2 = int(trust_hi[aly_p, own])
+                tl2 = int(trust_lo[aly_p, own])
+                if (th2 >= 0 and (th2 > 0 or tl2 != 0) and (ef1a != 1 or ef2a != 0)
+                        and rel_oa >= 0
+                        and mu(aly_p) == vss_p
+                        and rk(own, aly_p) < 4
+                        and es0() != vss_p
+                        and ec(own) < 2):
+                    # Mutual-ally scan (lines 165–177): for each power q,
+                    # if vss_p is allied with q AND q is high-priority for
+                    # own (infl_rank < 4), this alliance would be contradictory.
+                    for q in range(n_powers):
+                        if int(ally_mat[vss_p, q]) == 1 and rk(own, q) < 4:
+                            bVar4 = False
+                    continue  # LAB_0041e8c1
+                bVar4 = False  # LAB_0041e8bc
 
-                ef = int(enemy_flag[aly_p]) if enemy_flag is not None else 0
-                if ef == 0 and int(rel[own, aly_p]) >= 0:
-                    # vss must be a real opponent we're not already allied with
-                    is_v_friendly_now = (
-                        int(rel[own, vss_p]) >= 0
-                        and (enemy_flag is None or int(enemy_flag[vss_p]) != 1)
-                    )
-                    already_allied = int(ally_mat[aly_p, vss_p]) >= 1
-                    if not is_v_friendly_now and not already_allied:
-                        if not _ally_trust_ok(state, own, aly_p):
-                            return _REJ
-                        if mutual_en is not None and int(mutual_en[aly_p]) != vss_p:
-                            return _REJ
-                        continue
-                return _REJ
             else:
-                # Non-press path (line 185+): VSS must not already be allied
-                # to ALY power, and trust gate must pass.
-                if int(ally_mat[aly_p, vss_p]) >= 1:
-                    return _REJ
-                if not _ally_trust_ok(state, own, aly_p):
-                    return _REJ
-                if mutual_en is not None and int(mutual_en[aly_p]) != vss_p:
-                    return _REJ
+                # Normal path (_eval_aly.c lines 185–220).
+                # Outer gate (lines 185–186):
+                #   vss NOT (1,0) confirmed-enemy AND aly_p/vss_p not yet allied.
+                ef1v = ef1(vss_p); ef2v = ef2(vss_p)
+                ef1a = ef1(aly_p); ef2a = ef2(aly_p)
+                aam  = int(ally_mat[aly_p, vss_p])
+                if not ((ef1v != 1 or ef2v != 0) and aam < 1):
+                    continue
+                # Trust phase 1: aly→own (lines 187–191):
+                #   trust_hi[aly,own] >= 0  AND  (trust_hi > 0 OR trust_lo != 0)
+                #   AND aly NOT (1,0) enemy
+                #   AND rel[own,aly] >= 0  (comma-expression reassigns iVar16)
+                th_ao  = int(trust_hi[aly_p, own])
+                tl_ao  = int(trust_lo[aly_p, own])
+                rel_oa = int(rel[own, aly_p])
+                if not ((th_ao >= 0 and (th_ao > 0 or tl_ao != 0))
+                        and (ef1a != 1 or ef2a != 0)
+                        and rel_oa >= 0):
+                    bVar4 = False
+                    continue
+                # Trust phase 2: own→aly (lines 193–196), with press_flag relaxation:
+                #   trust_hi[own,aly] > 0
+                #   OR (trust_hi >= 0 AND trust_lo > 2)
+                #   OR (press_flag AND trust_hi >= 0 AND (trust_hi > 0 OR trust_lo != 0))
+                # AND mutual_enemy[aly] == vss  (line 197)
+                th_oa = int(trust_hi[own, aly_p])
+                tl_oa = int(trust_lo[own, aly_p])
+                trust2 = (
+                    (th_oa > 0 or (th_oa >= 0 and int(tl_oa) > 2))
+                    or (press_flag and th_oa >= 0 and (th_oa > 0 or tl_oa != 0))
+                )
+                if not (trust2 and mu(aly_p) == vss_p):
+                    bVar4 = False
+                    continue
+                # Diplo-override gate (lines 198–199):
+                #   skip the rank+loop block when press_flag AND
+                #   diplo_a[vss]==1 AND diplo_b[vss]==0  (already dispatched).
+                da_v = int(diplo_a[vss_p]) if diplo_a is not None else 0
+                db_v = int(diplo_b[vss_p]) if diplo_b is not None else 0
+                if not (press_flag and da_v == 1 and db_v == 0):
+                    # Rank gate (lines 200–201):
+                    #   if mutual_enemy[aly] != vss OR infl_rank[own,aly] > 3 → bVar4=False
+                    if mu(aly_p) != vss_p or rk(own, aly_p) > 3:
+                        bVar4 = False
+                        continue
+                    # Mutual-ally scan when not press_flag (lines 202–213).
+                    if not press_flag:
+                        for q in range(n_powers):
+                            if int(ally_mat[vss_p, q]) == 1 and rk(own, q) < 4:
+                                bVar4 = False
+                # goto LAB_0041e8c1 (continue)
 
-    return _YES
+    return _YES if bVar4 else _REJ
 
 
 def _split_xdo_clauses(context_toks: list) -> "tuple[list, list]":
@@ -341,28 +468,40 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
 
       2. Sequence-catalog walk (C lines 299–401):
          Iterate ``state.g_broadcast_list`` (the Python equivalent of
-         ``DAT_00bb65ec``) looking for an entry whose order_candidates
-         contain **every** positive proposed clause and do NOT contain
-         any of the negative proposed clauses. First match wins.
+         ``DAT_00bb65ec``) with three gates mirroring the C:
+           *(char *)(puVar24 + 6) != '\0'  → received_flag is set
+           puVar24[7] == 0                 → type_flag == 0 (skip self-generated)
+           iStack_c0 == puVar24[0xe]       → exact positive XDO count match
+           iStack_b4 == puVar24[0x11]      → exact negative NOT-XDO count match
+           bVar27                          → all proposed clauses found in sub-trees
+         Candidates are split into positive (XDO) vs negative (NOT-XDO) sub-trees
+         and compared independently. First fully-matching entry wins.
 
       3. Matching-sequence scoring (C lines 539–630):
-         In C this computes delta = current.score[own] − predecessor.score[own]
-         and classifies into YES/REJ/BWX/HUH bands. Here we lack the score
-         vector, so we approximate: a match alone is evidence the proposal
-         aligns with own plan → YES-eligible. Set ``delta_class = 'YES'``.
+         Computes delta = current.score[own] − predecessor.score[own] (diff
+         form) or current.score[own] (fallback when history_flag < 1 or either
+         predecessor score is below the -79999 floor).  Band classification:
+           delta >= -199      → YES-eligible
+           [-89999, -199)     → REJ
+           [-99999, -89999)   → BWX
+           < -99999           → HUH
 
       4. Legitimacy gate (C lines 645–684):
-         Build a candidate-order set and invoke ``legitimacy_gate``. If the
-         min per-order score is negative AND the verdict was YES-eligible,
-         demote to REJ. (Matches the C "This proposal is now non-legit"
-         demotion path.)
+         Two post-match passes mirror CAL_VALUE.c lines 421–468:
+           Pass 1 (positive clauses, uStack_34=1 → flag_bit=1): sub-tree A
+             candidates from the matched entry, scored raw (skip own-power
+             rescore).
+           Pass 2 (negative clauses, uStack_34=0 → flag_bit=0): NOT-XDO
+             clauses from the proposal itself, eligible for own-power rescore.
+         Both pass sets are fed to ``legitimacy_gate``.  A negative aggregate
+         min demotes a YES-eligible verdict to REJ.
 
       5. Verdict emission:
          YES-eligible & gate ≥ 0  →  YES
          YES-eligible & gate < 0  →  REJ (demoted)
-         no match                 →  REJ
-         (BWX / HUH require the numeric-delta branches, currently
-          unreachable absent the score-vector schema extension.)
+         BWX-eligible             →  BWX
+         HUH-eligible             →  HUH
+         no match / plain REJ     →  REJ
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -388,22 +527,52 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     matched_index = -1
     pos_set = set(positive)
     neg_set = set(negative)
+    _NOT_TOK = 0x480D
+
+    def _cand_is_neg(tok_list: list) -> bool:
+        if not tok_list:
+            return False
+        t0 = tok_list[0]
+        return t0 == _NOT_TOK or str(t0).upper() == 'NOT'
+
+    def _neg_cand_text(tok_list: list) -> str:
+        # Strip leading NOT (and any outer parens) so the result matches the
+        # XDO-only strings stored in neg_set by _split_xdo_clauses.
+        t = tok_list[1:] if tok_list else []
+        while t and t[0] == '(' and t[-1] == ')':
+            t = t[1:-1]
+        return ' '.join(str(x) for x in t)
+
     for idx, entry in enumerate(state.g_broadcast_list):
-        cands = entry.get('order_candidates', []) if isinstance(entry, dict) else []
-        # Stringify candidate tokens for comparison with clause text.
-        cand_texts = set()
-        for c in cands:
-            t = c.get('tokens') if isinstance(c, dict) else c
-            if t is not None:
-                cand_texts.add(' '.join(str(x) for x in t) if isinstance(t, (list, tuple)) else str(t))
-        # All positive proposed clauses must be in the candidate set.
-        if not pos_set.issubset(cand_texts):
+        if not isinstance(entry, dict):
             continue
-        # No negative proposed clauses should appear in the candidate set.
-        # (C: negative XDOs check the entry's negative sub-tree; here we treat
-        # absence from the positive candidate list as sufficient evidence
-        # they're not planned.)
-        if neg_set & cand_texts:
+        # C: *(char *)(puVar24 + 6) != '\0'
+        # Field at node+24: set by FUN_0042e450 (RB-tree insert) for received entries.
+        # Python equivalent: received_flag = True (set by register_received_press).
+        if not entry.get('received_flag', False):
+            continue
+        # C: puVar24[7] == 0  — skip self-generated (type_flag == 1) entries.
+        if entry.get('type_flag', 0) != 0:
+            continue
+        cands = entry.get('order_candidates', [])
+        if not cands:
+            continue
+        # Split candidates into positive (plain XDO) and negative (NOT-XDO) sub-trees.
+        # C: ppiStack_c4 positive BST / ppiStack_b8 negative BST in the entry.
+        pos_cands_tok: list = []
+        neg_cands_tok: list = []
+        for c in cands:
+            tok = c.get('tokens', []) if isinstance(c, dict) else (c if isinstance(c, list) else [])
+            (neg_cands_tok if _cand_is_neg(tok) else pos_cands_tok).append(tok)
+        # C: iStack_c0 == puVar24[0xe] AND iStack_b4 == puVar24[0x11] — exact count.
+        if len(positive) != len(pos_cands_tok) or len(negative) != len(neg_cands_tok):
+            continue
+        # C: bVar27 — all proposed clauses found in the entry's respective sub-trees.
+        pos_texts = {' '.join(str(x) for x in t) for t in pos_cands_tok}
+        neg_texts = {_neg_cand_text(t) for t in neg_cands_tok}
+        if not pos_set.issubset(pos_texts):
+            continue
+        if not neg_set.issubset(neg_texts):
             continue
         matched_entry = entry
         matched_index = idx
@@ -492,13 +661,21 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     # negative min demotes YES → REJ. HUH/BWX paths (bVar27=false with
     # bVar5/bVar6) bypass the demotion entirely — they flow to LAB_004271da
     # with `uVar22` never set to YES.
+    #
+    # Two input passes (CAL_VALUE.c lines 421–468):
+    #   Pass 1 positive clauses  uStack_34=1 → flag_bit=1 (sub-tree A, raw score)
+    #   Pass 2 negative clauses  uStack_34=0 → flag_bit=0 (sub-tree B, rescore-eligible)
+    from ..parsers import _parse_xdo_candidates as _pxc
     try:
         cand_list = matched_entry.get('order_candidates', [])
-        gate_score = legitimacy_gate(
-            state, own_power_idx,
-            [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)
-              if isinstance(c, dict) else 0} for c in cand_list],
-        )
+        # Pass 1: positive candidates, sub-tree A → flag_bit=1 (skip rescore)
+        pos_gate = [{'order_seq': c, 'flag_bit': 1} for c in cand_list]
+        # Pass 2: negative candidates, sub-tree B → flag_bit=0 (rescore-eligible)
+        neg_gate = []
+        for neg_str in negative:
+            for parsed in _pxc(neg_str):
+                neg_gate.append({'order_seq': parsed, 'flag_bit': 0})
+        gate_score = legitimacy_gate(state, own_power_idx, pos_gate + neg_gate)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("cal_value: legitimacy_gate raised %s; treating as non-blocking", exc)
         gate_score = 0
@@ -781,7 +958,7 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
       NOT PCE          → _eval_not_pce    (FUN_0040d310)
       NOT DMZ          → _eval_not_dmz    (FUN_0041f5a0)
       NOT XDO          → _cal_value       (local_48 = [NOT, …] passed as ctx)
-      NOT NOT XDO      → _cal_value       (local_48 = [NOT, NOT, …])
+      NOT (other)      → HUH
       SUB PCE          → _eval_not_pce    (FUN_0040d310, same as NOT PCE)
       SUB DMZ          → _eval_not_dmz    (FUN_0041f5a0, same as NOT DMZ)
       SUB XDO          → _eval_sub_xdo    (FUN_0040d450, no `this`)
@@ -839,10 +1016,6 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
             return _eval_not_dmz(state, rest2, from_power)
         if _teq(t1, _XDO):
             return _cal_value(state, [_NOT] + rest)
-        if _teq(t1, _NOT):
-            if not rest2 or not _teq(rest2[0], _XDO):
-                return _HUH
-            return _cal_value(state, [_NOT, _NOT] + rest2)
         return _HUH
 
     if _teq(t0, _SUB):

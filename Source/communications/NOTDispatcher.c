@@ -1,3 +1,24 @@
+// NOTDispatcher — routes NOT ( ... ) messages to per-variant handlers.
+// Called from InboundDAIDEDispatcher (FUN_0045f1f0) when first token == NOT.
+//
+// Routes:
+//   NOT ( CCD ( power ) )  → FUN_0045e9f0     (NOT_CCD_Handler.c)
+//   NOT ( TME ( seconds ) ) → vtable +0x50    (NOT_TME_Handler.c)
+//   NOT ( ... )            → vtable +0xc0     (unknown/fallback)
+//
+// C flow:
+//   GetSubList(param_1, local_2c, 1)           — extract the NOT body sub-list
+//   GetListElement(local_2c, ..., 0)           — read first token of body
+//   if CCD  → GetSubList → FUN_0045e9f0(this, full_msg, ccd_sublist)
+//   if TME  → GetSubList → (*vtable+0x50)(full_msg, tme_sublist)
+//   else    → (*vtable+0xc0)(full_msg, ...)
+//
+// C References:
+//   InboundDAIDEDispatcher → FUN_0045f1f0 (Source/communications/InboundDAIDEDispatcher.c)
+//   CCD branch → FUN_0045e9f0 (Source/communications/NOT_CCD_Handler.c lines 25-29)
+//   TME branch → vtable +0x50 (Source/communications/NOT_TME_Handler.c lines 35-38)
+//
+// Python equivalent: not_dispatcher (communications/inbound/dispatcher.py)
 
 void __thiscall NOTDispatcher(void *this,void *param_1)
 

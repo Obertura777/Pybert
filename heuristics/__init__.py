@@ -2,6 +2,7 @@ import numpy as np
 from ..state import InnerGameState
 
 from ._primitives import (
+    BuildOrderSpec, build_candidate_list_find,
     evaluate_province_score, compute_winter_builds,
     _safe_pow, _float_to_int64, evaluate_alliance_score,
 )
@@ -19,6 +20,7 @@ from .scoring import (
     _PRESS_DISAGREE_PENALTY,
 )
 from .win import (
+    compute_build_delta,
     populate_build_candidates,
     populate_remove_candidates,
     compute_win_builds,

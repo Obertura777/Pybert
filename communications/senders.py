@@ -19,6 +19,7 @@ Contents (by broad role):
 * Press-queue lifecycle
     - ``cancel_prior_press``                     (FUN_00419060)
     - ``_prepare_ally_press_entry``              (FUN_00418db0 — de-dup THN queue)
+    - ``send_ally_press_by_power``               (FUN_00421570 — schedule THN entry)
     - ``dispatch_press_and_fallback_gof``        (GenerateAndSubmitOrders loop)
     - ``_is_game_active``                        (FUN_0046ec10 gate helper)
     - ``_check_server_reachable``                (FUN_004117d0 wrapper for dispatch)
@@ -28,6 +29,7 @@ the senders slice is fully self-contained with respect to other submodules in
 ``albert.communications``.
 """
 
+import random as _random
 import re
 import time as _time
 
@@ -35,6 +37,7 @@ from ..state import InnerGameState
 from ..monte_carlo import check_time_limit
 from .parsers import _parse_xdo_body_to_order
 from .scheduling import _fun_004117d0, dispatch_scheduled_press
+from .evaluators._common import _POWER_NAMES as _PN
 
 # ── SendAlliancePress ─────────────────────────────────────────────────────────
 
@@ -171,7 +174,32 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
 
     emitted = 0
     for prop in proposals:
-        if prop.get('type') != 'XDO_SUP':
+        prop_type = prop.get('type')
+
+        if prop_type == 'SUB_HANDSHAKE':
+            # C Branch 1 (BuildSupportProposals.c line 239): bare SUB token.
+            # Receiver HUHs it (_eval_sub_xdo with no args → HUH); score_vec = 0.
+            key = prop.get('key', 0)
+            entry = {
+                'key':              key,
+                'sent':             True,
+                'type_flag':        1,
+                'trial_count':      0,
+                'score_vector':     [0] * 7,
+                'history_flag':     1,
+                'order_candidates': [{'tokens': ['SUB'], 'type_flag': 1}],
+            }
+            bl = state.g_broadcast_list
+            insert_pos = len(bl)
+            for i, node in enumerate(bl):
+                if node.get('key', 0) >= key:
+                    insert_pos = i
+                    break
+            bl.insert(insert_pos, entry)
+            emitted += 1
+            continue
+
+        if prop_type != 'XDO_SUP':
             continue
 
         sup_prov  = int(prop['supporter_prov'])
@@ -247,7 +275,7 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
 
     if emitted:
         _log.debug(
-            "emit_xdo_proposals: emitted %d SUP proposals into g_broadcast_list "
+            "emit_xdo_proposals: emitted %d proposals into g_broadcast_list "
             "(list now %d entries)",
             emitted, len(state.g_broadcast_list),
         )
@@ -372,78 +400,144 @@ def propose_dmz(state: InnerGameState,
 
     Returns True if at least one proposal was sent.
 
-    Three message types (research.md §1381):
+    Three message types (ProposeDMZ.c):
       ≥2 contested  → PRP ( DMZ ( own ally ) prov1 prov2 … )
-      1 bilateral   → PRP ( DMZ ( own ally ) prov )
-      1 unilateral  → PRP ( DMZ ally prov )
+      1 bilateral   → PRP ( DMZ ( own ally ) prov )   (flag3=1, flag2=0)
+      1 unilateral  → PRP ( DMZ ally prov )            (flag3=0, flag2=0)
 
     g_dmz_aggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
-    Proposals to the same (power, province) pair are capped at 2.
 
-    Research.md §1381.
+    First pass (lines 65–163):
+      Collects provinces where ally_power owns the SC (GameBoard_GetPowerRec
+      check, ProposeDMZ.c:89–101), the territory is not already under an
+      active DMZ (*(char*)(iVar6+0x12)=='\0', line 111), flag1==1, flag3==1,
+      and the (ally_power, province) pair has NOT yet been recorded in
+      g_sent_proposals.
+
+    Multi-province marking loop (lines 246–287):
+      Before building the message, iterates every province in the contested
+      list, records (ally_power, province) in g_sent_proposals, and marks
+      the matching g_order_list entry as done.
+
+    Second pass (lines 168–244, triggered when first pass yields <2):
+      flag3=1, flag2=0 (bilateral)  → LAB_00432ff0
+      flag3=0, flag2=0 (unilateral) → LAB_00433254
+      Both paths check g_sent_proposals count < 2 before sending.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
     _send = send_fn if send_fn is not None else (lambda msg: _log.debug("ProposeDMZ: %s", msg))
 
-    own_power = getattr(state, 'albert_power_idx', 0)
-    threshold = int(getattr(state, 'g_dmz_aggressiveness', 0))
-    sent = False
+    own_power   = getattr(state, 'albert_power_idx', 0)
+    threshold   = int(getattr(state, 'g_dmz_aggressiveness', 0))
+    sc_own      = getattr(state, 'g_sc_ownership', None)   # np.array (7, 256)
+    active_dmz  = getattr(state, 'g_active_dmz_map', {})  # {province: power}
+    sent_props  = getattr(state, 'g_sent_proposals', {})
+    order_list  = getattr(state, 'g_order_list', [])
+    id_to_prov  = getattr(state, '_id_to_prov', None) or {
+        v: k for k, v in getattr(state, 'prov_to_id', {}).items()
+    }
+    own_tok  = _PN[own_power]  if 0 <= own_power  < len(_PN) else str(own_power)
+    ally_tok = _PN[ally_power] if 0 <= ally_power < len(_PN) else str(ally_power)
 
-    contested: list = []   # entries with flag1=1
+    # ── First pass: collect provinces where ally owns the SC and flag3==1 ──────
+    # C: puVar1[5]==power_index, !done, score>threshold, SC ownership,
+    #    flag1==1, flag3==1, not already in g_sent_proposals.
+    contested: list = []
 
-    for entry in getattr(state, 'g_order_list', []):
+    for entry in order_list:
         if entry.get('done', False):
             continue
-        province  = int(entry.get('province', -1))
-        flag1     = bool(entry.get('flag1', False))
-        flag2     = bool(entry.get('flag2', False))
-        flag3     = bool(entry.get('flag3', False))
-        score     = int(entry.get('score', 0))
-
-        if province < 0 or not flag1:
+        if int(entry.get('power', -1)) != ally_power:
             continue
-
-        # Cap per (power, province) at 2 proposals
-        key = (ally_power, province)
-        if state.g_sent_proposals.get(key, 0) >= 2:
+        province = int(entry.get('province', -1))
+        if province < 0:
             continue
-
+        score = int(entry.get('score', 0))
         if score < threshold:
             continue
-
-        contested.append({'province': province, 'flag2': flag2, 'flag3': flag3})
+        # SC ownership validation (GameBoard_GetPowerRec check, lines 89-101):
+        # only contest provinces ally_power owns as a supply center.
+        if sc_own is not None and not sc_own[ally_power, province]:
+            continue
+        if not entry.get('flag1', False):
+            continue
+        if not entry.get('flag3', False):
+            continue
+        # Active-DMZ exclusion (*(char*)(iVar6+0x12)=='\0', line 111):
+        # skip territories already under an accepted DMZ.
+        if province in active_dmz:
+            continue
+        # First pass: skip if (ally_power, province) already in g_sent_proposals.
+        if (ally_power, province) in sent_props:
+            continue
+        contested.append({'province': province, 'entry': entry,
+                          'flag2': bool(entry.get('flag2', False)),
+                          'flag3': True})
 
     if len(contested) >= 2:
-        provinces = [c['province'] for c in contested]
-        prov_str = ' '.join(str(p) for p in provinces)
-        msg = f"PRP ( DMZ ( {own_power} {ally_power} ) {prov_str} )"
-        _send(msg)
+        # ── Multi-province marking loop (lines 246–287) ───────────────────────
+        # Before sending, iterate every province: record in g_sent_proposals and
+        # mark the order entry done.
         for c in contested:
             key = (ally_power, c['province'])
-            state.g_sent_proposals[key] = state.g_sent_proposals.get(key, 0) + 1
-        sent = True
+            sent_props[key] = sent_props.get(key, 0) + 1
+            c['entry']['done'] = True
+        state.g_sent_proposals = sent_props
 
-    elif len(contested) == 1:
-        c = contested[0]
-        province = c['province']
-        key = (ally_power, province)
-        if c['flag2'] and not c['flag3']:
-            msg = f"PRP ( DMZ ( {own_power} {ally_power} ) {province} )"
-        else:
-            msg = f"PRP ( DMZ {ally_power} {province} )"
+        prov_str = ' '.join(id_to_prov.get(c['province'], str(c['province'])) for c in contested)
+        msg = f"PRP ( DMZ ( {own_tok} {ally_tok} ) {prov_str} )"
         _send(msg)
-        state.g_sent_proposals[key] = state.g_sent_proposals.get(key, 0) + 1
-        sent = True
+        _log.debug("ProposeDMZ: multi-province (%d provinces) to power %d",
+                   len(contested), ally_power)
+        return True
 
-    # Mark proposed entries as done
-    if sent:
-        proposed_provs = {c['province'] for c in contested}
-        for entry in state.g_order_list:
-            if int(entry.get('province', -1)) in proposed_provs:
-                entry['done'] = True
+    # ── Second pass (lines 168–244): <2 results from first pass ──────────────
+    # Relaxed flag conditions; respects the count-<2 cap in g_sent_proposals.
+    for entry in order_list:
+        if entry.get('done', False):
+            continue
+        if int(entry.get('power', -1)) != ally_power:
+            continue
+        province = int(entry.get('province', -1))
+        if province < 0:
+            continue
+        score = int(entry.get('score', 0))
+        if score < threshold:
+            continue
+        # SC ownership check (same as first pass, lines 191-204).
+        if sc_own is not None and not sc_own[ally_power, province]:
+            continue
+        if not entry.get('flag1', False):
+            continue
+        flag3 = bool(entry.get('flag3', False))
+        flag2 = bool(entry.get('flag2', False))
+        if flag2:
+            continue   # flag2 must be 0 for both second-pass branches
+        # Count cap: both LAB_00432ff0 and LAB_00433254 check count < 2.
+        key = (ally_power, province)
+        if sent_props.get(key, 0) >= 2:
+            continue
 
-    return sent
+        # Record in g_sent_proposals and mark done (before send, LAB_004330d8 /
+        # LAB_0043334f — FUN_00419df0 + *(puVar4+4)=1 before PROPOSE call).
+        sent_props[key] = sent_props.get(key, 0) + 1
+        state.g_sent_proposals = sent_props
+        entry['done'] = True
+
+        prov_tok = id_to_prov.get(province, str(province))
+        if flag3:
+            # LAB_00432ff0 bilateral: PRP ( DMZ ( own ally ) province )
+            msg = f"PRP ( DMZ ( {own_tok} {ally_tok} ) {prov_tok} )"
+        else:
+            # LAB_00433254 unilateral: PRP ( DMZ ally province )
+            msg = f"PRP ( DMZ {ally_tok} {prov_tok} )"
+        _send(msg)
+        _log.debug("ProposeDMZ: single-province %d to power %d (bilateral=%s)",
+                   province, ally_power, flag3)
+        return True
+
+    return False
 
 
 # ── UpdateRelationHistory ────────────────────────────────────────────────────
@@ -619,10 +713,18 @@ def friendly(state: InnerGameState) -> None:
                             elif (trust_lo == 0 and trust_hi == 0 and
                                   relation > 0 and neutral == 1):
                                 # Neutral+positive: reset to 0
+                                relation = 0
                                 state.g_relation_score[row, col] = 0
+                            # C: all Block B sub-paths converge at LAB_0042df0b
+                            # (line 153 goto) → LAB_0042df19 when own_power==row.
+                            if row == own_power:
+                                _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
+                                                             neutral, peace_sig, relation, _log)
                         else:
                             # Block C: set tentative trust (row != own_power only)
-                            if row != own_power:
+                            # NO_PRESS: skip — no agreements exist to warrant trust.
+                            if (row != own_power
+                                    and getattr(state, 'g_minimal_press_mode', 0) != 1):
                                 state.g_ally_trust_score[row, col]    = 1
                                 state.g_ally_trust_score_hi[row, col] = 0
                                 state.g_relation_score[row, col]     = 0
@@ -709,7 +811,8 @@ def cancel_prior_press(state: InnerGameState,
     proposal.  Guarded by g_cancel_press_sent (once-per-turn flag).
     Fires when:
       - curr_sc_cnt[own_power] > 0, OR
-      - reconnect flag is set (param_1+8+0x24bc in original)
+      - unit_pending count > 0 (param_1+8+0x24bc in original; reset each
+        turn by ParseNOW, compared against 0x24e0 in send_GOF/builds)
 
     Research.md §1319 / §2570 note.
     """
@@ -725,10 +828,10 @@ def cancel_prior_press(state: InnerGameState,
     if token is None:
         return
 
-    own_sc = int(state.sc_count[own_power]) if hasattr(state, 'sc_count') else 1
-    reconnect = bool(getattr(state, 'g_reconnect_flag', False))
+    own_sc = int(state.sc_count[own_power]) if hasattr(state, 'sc_count') else 0
+    unit_pending = int(getattr(state, 'g_unit_pending', 0))
 
-    if own_sc > 0 or reconnect:
+    if own_sc > 0 or unit_pending:
         msg = f"NOT ( {token} )"
         _send(msg)
         state.g_cancel_press_sent = 1
@@ -926,5 +1029,172 @@ def _prepare_ally_press_entry(state: "InnerGameState", power: int) -> None:
         e for e in master
         if not (e.get('press_type') == 'THN' and e.get('data') == [power])
     ]
+
+
+def send_ally_press_by_power(state: 'InnerGameState', power: int) -> None:
+    """
+    Port of SendAllyPressByPower (FUN_00421570).
+
+    Schedules a THN(<power>) press DM with a randomised delay, or dispatches
+    immediately when g_press_instant is set.
+
+    C flow (SendAllyPressByPower.c):
+      1. FUN_00465870(local_34)              — init empty token list (absorbed).
+         local_48[0] = power | 0x4100       — DAIDE power token.
+         FUN_00466ed0(&THN, local_44, ...)  — build THN(<power>) sequence.
+         AppendList / FreeList              — absorbed.
+      2. FUN_00418db0(power)                — PrepareAllyPressEntry: de-dup.
+      3. Compute scheduled target elapsed time (DAT_00baed32 = g_press_instant):
+           g_press_instant == 0 (randomised path):
+             uVar4 = (rand() / 0x17) % 0xf           → 0–14 integer offset
+             local_24 = now + (uVar4 − turn_start) + 7   ≡ elapsed + offset + 7
+             if DAT_00624ef4 (g_move_time_limit_sec) ≥ 1
+             and local_24 > g_move_time_limit_sec − 20:
+                 local_24 = g_move_time_limit_sec − 20   (cap 20 s before deadline)
+           g_press_instant ≠ 0 (immediate path):
+             local_24 = now − turn_start              ≡ current elapsed
+      4. FUN_00465f60 / FUN_00419c30(&DAT_00bb65bc, ..., &local_24)
+             — enqueue {'press_type': 'THN', 'data': [power]} (absorbed into append).
+
+    Note: the local_4 / ExceptionList manipulations in the decompile are MSVC
+    SEH frame bookkeeping and are not reproduced.
+    """
+    _prepare_ally_press_entry(state, power)
+
+    turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
+    elapsed = _time.time() - turn_start
+
+    if not int(getattr(state, 'g_press_instant', 0)):
+        # C: uVar4 = (rand() / 0x17) % 0xf  →  0–14
+        random_delay = (_random.randint(0, 0x7fff) // 23) % 15
+        target = elapsed + random_delay + 7
+        move_limit = int(getattr(state, 'g_move_time_limit_sec', 0))
+        if move_limit >= 1 and target > move_limit - 20:
+            target = float(move_limit - 20)
+    else:
+        # C: lVar1 = now − CONCAT44(_DAT_00ba2884, _DAT_00ba2880)
+        target = elapsed
+
+    state.g_master_order_list.append({
+        'scheduled_time': target,
+        'press_type':     'THN',
+        'data':           [power],
+    })
+
+
+# ── PROPOSE ───────────────────────────────────────────────────────────────────
+
+def propose(
+    state: 'InnerGameState',
+    message: str,
+    recipient_powers: list,
+    send_fn=None,
+) -> bool:
+    """
+    Port of PROPOSE (named C function).
+
+    Outbound proposal sender with proposal-tree dedup and game-state validation.
+
+    C flow (PROPOSE.c):
+      1. Validates own_power context and recipient list (game-state check).
+      2. Iterates g_pos_analysis_list (DAT_00bb65c8) for any unprocessed entry
+         (processed_flag == '\0') whose inner token sequence **exactly matches**
+         the new proposal (FUN_00465d90 — token-seq equality, not overlap).
+         Match found → skip send (already in flight). C lines 110–168.
+
+         Lines 129–165 contain an inner while loop that calls
+         GameBoard_GetPowerRec against a per-power std::map (piStack_c8).
+         That list is initialised empty at lines 82–86 and nothing later
+         populates it; the inner loop always exits at the sentinel check
+         before GameBoard_GetPowerRec fires.  Dead code — not replicated.
+
+      3. If no duplicate (C inserts into g_pos_analysis_list at line 204
+         before CancelPriorPress/SendDM — immaterial in single-threaded Python):
+           - Calls CancelPriorPress before the send (C line 210).
+           - Sends via send_fn / SendDM (C line 211).
+           - Inserts a tracking entry into g_pos_analysis_list (C FUN_00430370).
+           - Logs "We are proposing: %s" (C SEND_LOG).
+           - Calls BuildAllianceMsg for each recipient (C BuildAllianceMsg).
+
+    Parameters
+    ----------
+    state            : InnerGameState
+    message          : full proposal string, e.g. ``"PRP ( PCE ( 0 1 ) )"``
+    recipient_powers : list of int power indices (0-based) the proposal targets
+    send_fn          : callable(str) → wire; defaults to debug-log no-op
+
+    Returns True if the proposal was sent, False if skipped.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    _send = send_fn if send_fn is not None else (
+        lambda msg: _log.debug("propose: %s", msg)
+    )
+
+    # Game-state validation (C: own_power from context object; recipient count check)
+    own_power = getattr(state, 'albert_power_idx', None)
+    if own_power is None:
+        _log.debug("propose: skip — own_power not initialised")
+        return False
+    if not recipient_powers:
+        _log.debug("propose: skip — no recipients")
+        return False
+
+    # C FUN_00465d90: exact token-sequence equality (not overlap / frozenset intersection).
+    proposal_tokens = message.split()
+
+    # Proposal-tree matching (C PROPOSE.c lines 110–168):
+    # Walk g_pos_analysis_list; skip processed entries (C: sent_flag != '\0' → advance).
+    # Exact token-list match on an unprocessed entry → proposal already in flight, skip.
+    for entry in getattr(state, 'g_pos_analysis_list', []):
+        if entry.get('processed_flag', 0) != 0:
+            continue
+        if proposal_tokens == entry.get('tokens', []):
+            _log.debug("propose: dedup skip — exact match in g_pos_analysis_list")
+            return False
+
+    # C: CancelPriorPress(param_1) — called before SendDM
+    cancel_prior_press(state, own_power, _send)
+
+    # C: SendDM(pvVar5, local_6c)
+    # Send only to the intended recipients — not broadcast to all powers.
+    # respond() uses the same {'message': ..., 'recipient': ...} dict convention
+    # that _send_dm understands; without it, _send_dm fans out to every power.
+    _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+    for _pwr in recipient_powers:
+        _rcpt = _POWER_FULL[_pwr] if 0 <= _pwr < len(_POWER_FULL) else None
+        _send({'message': message, 'recipient': _rcpt} if _rcpt else message)
+    _log.info("We are proposing: %s", message)
+
+    # C: FUN_00465f60 copy + FUN_00430370 insert into DAT_00bb65c8
+    # Mirrors receive_proposal entry schema so ack_matcher / RECEIVE_PROPOSAL
+    # dedup can match against it next turn.
+    from .parsers import _parse_xdo_candidates
+    sub_entries = []
+    for cand in _parse_xdo_candidates(message):
+        sub_entries.append({
+            'province':   cand.get('province', cand.get('src_prov', -1)),
+            'order_type': cand.get('order_type', -1),
+            'power':      cand.get('power', own_power),
+        })
+
+    state.g_pos_analysis_list.append({
+        'tokens':         proposal_tokens,
+        'token_set':      frozenset(proposal_tokens),
+        'power_count':    0,
+        'sub_entries':    sub_entries,
+        'press_entries':  [],
+        'sender_power':   own_power,
+        'processed_flag': 0,
+        'role_b_set':     set(),
+        'role_c_set':     set(),
+    })
+
+    # C: BuildAllianceMsg(&DAT_00bbf638, ...) for each recipient power
+    from .alliance import build_alliance_msg
+    for pwr in recipient_powers:
+        build_alliance_msg(state, pwr)
+
+    return True
 
 

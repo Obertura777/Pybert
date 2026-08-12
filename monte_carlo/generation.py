@@ -16,6 +16,7 @@ the four enumerators from ``..moves``.
 import numpy as np
 
 from ..state import InnerGameState
+from ..heuristics._primitives import _safe_pow
 from ..moves import (
     enumerate_hold_orders,
     enumerate_convoy_reach,
@@ -40,7 +41,7 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
       Phase 3  — Snapshot g_influence_matrix → g_influence_matrix_raw.
       Phase 4  — Per-power noise injection (_safe_pow approx).
       Phase 5  — Row-normalize g_influence_matrix to row-sums of 100.
-      Phase 6  — Asymmetric g_alliance_score from Raw matrix.
+      Phase 6  — Asymmetric g_alliance_score from Raw matrix (via compute_alliance_score).
       Phase 7  — g_opening_target per power (SPR + g_deceit_level==1 only).
       Finally  — enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach,
                  build_support_opportunities (mirrors post-loop calls in binary).
@@ -164,8 +165,9 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
             state.g_influence_matrix[col, p] = total
 
     # ── Phase 3–4 — Snapshot Raw, inject noise ────────────────────────────────
-    # Phase 3: copy g_influence_matrix → g_influence_matrix_raw
-    state.g_influence_matrix_raw = state.g_influence_matrix.copy()
+    # Phase 3: copy g_influence_matrix → g_influence_matrix_raw (in-place to
+    # preserve any external references to the array object).
+    state.g_influence_matrix_raw[:] = state.g_influence_matrix
     # g_InfluenceMatrix_B (GenerateOrders.c:352-383) uses the same per-power gate
     # and heat arrays as Phase 1h; it equals the pre-normalization raw matrix.
     state.g_influence_matrix_b[:] = state.g_influence_matrix_raw
@@ -178,7 +180,7 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     for i in range(NUM_POWERS):
         for j in range(NUM_POWERS):
             base = state.g_influence_matrix[i, j] / (col_sums[j] + 1.0)
-            state.g_influence_matrix[i, j] += (base ** 0.3) * 500.0
+            state.g_influence_matrix[i, j] += _safe_pow(base, 0.3) * 500.0
 
     # ── Phase 5 — Row-normalize g_influence_matrix to row-sums of 100 ─────────
     for i in range(NUM_POWERS):
@@ -187,28 +189,13 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
             state.g_influence_matrix[i] *= 100.0 / row_sum
 
     # ── Phase 6 — Compute asymmetric g_alliance_score ─────────────────────────
-    # research.md §5568–5584:
-    #   col_sum[row] = column sum of Raw over all rows (= total influence directed at row)
-    #   A = Raw[row][col], B = Raw[col][row]
-    #   A < B → col threatens row more → g_alliance_score[row][col] = -3*(A/(B+1))*(B/col_sum)
-    #   else  → row dominates col      → g_alliance_score[row][col] = +3*(B/(A+1))*(B/col_sum)
-    for row in range(NUM_POWERS):
-        col_sum = float(np.sum(state.g_influence_matrix_raw[:, row]))
-        curr_sc_row = int(np.sum(state.g_sc_ownership[row]))
-        for col in range(NUM_POWERS):
-            if col == row:
-                continue
-            curr_sc_col = int(np.sum(state.g_sc_ownership[col]))
-            if curr_sc_row == 0 or curr_sc_col == 0:
-                state.g_alliance_score[row, col] = 0.0
-            else:
-                A = float(state.g_influence_matrix_raw[row, col])
-                B = float(state.g_influence_matrix_raw[col, row])
-                denom = col_sum if col_sum != 0.0 else 1.0
-                if A < B:
-                    state.g_alliance_score[row, col] = -3.0 * (A / (B + 1.0)) * (B / denom)
-                else:
-                    state.g_alliance_score[row, col] =  3.0 * (B / (A + 1.0)) * (B / denom)
+    # Delegated to compute_alliance_score (heuristics/influence.py).
+    # C condition (GenerateOrders.c:593): (A < B) == (A == B) simplifies to
+    # A > B → -3*(A/(B+1))*(B/col_sum); else +3*(B/(A+1))*(B/col_sum).
+    # where A = Raw[row][col], B = Raw[col][row],
+    # col_sum = column sum of Raw for column=row.
+    from ..heuristics import apply_influence_scores, set_opening_targets, compute_alliance_score
+    compute_alliance_score(state)
 
     # ── ApplyInfluenceScores ────────────────────────────────────────────────
     # C binary: GenerateOrders.c L619 calls ApplyInfluenceScores after the
@@ -217,7 +204,6 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     # (Pass 5), which downstream feeds g_general_orders via the press
     # translator pipeline.  Without this call g_order_list stays empty and
     # the MC trial loop (ProcessTurn Phase 1c) has no orders to dispatch.
-    from ..heuristics import apply_influence_scores, set_opening_targets
     apply_influence_scores(state, own_power)
     set_opening_targets(state)
 

@@ -54,7 +54,7 @@ from ...heuristics import (
 )
 from ...dispatch import validate_and_dispatch_order
 
-from .._shared import _POWER_NAMES
+from .._shared import _POWER_NAMES, _DAIDE_POWER_NAMES
 from ..orders import (
     _populate_retreat_orders,
     _format_retreat_commands,
@@ -97,7 +97,7 @@ class _PressMixin:
             return
         try:
             coro = self.game.set_orders(
-                power_name=self.power_name, orders=orders, wait=False)
+                power_name=self.power_name, orders=orders, wait=True)
         except TypeError:
             coro = self.game.set_orders(
                 power_name=self.power_name, orders=orders)
@@ -144,6 +144,29 @@ class _PressMixin:
         logger.debug("SendDM: %r", msg)
         if self.game is None:
             return
+
+        # Directed-message dict: {'message': str, 'recipient': power_name}.
+        # respond() produces this format so YES/REJ responses go only to
+        # the original proposer rather than being broadcast to all powers.
+        _explicit_recipient: str | None = None
+        if isinstance(msg, dict):
+            _explicit_recipient = msg.get('recipient')
+            msg = msg.get('message', '')
+
+        # GOF is a server-readiness signal, not a press message.  Set the
+        # wait flag to False instead of broadcasting to other powers.
+        body_str = ' '.join(str(t) for t in msg) if isinstance(msg, list) else str(msg)
+        if body_str.strip() == 'GOF':
+            import asyncio as _asyncio
+            coro = self.game.no_wait()
+            if coro is not None and _asyncio.iscoroutine(coro):
+                try:
+                    _asyncio.get_running_loop().create_task(coro)
+                except RuntimeError:
+                    logger.warning("_send_dm: GOF no_wait — no running loop")
+            logger.info("_send_dm: GOF → no_wait() (wait=False) for %s", self.power_name)
+            return
+
         # Skip all outbound press in no-press mode.
         if getattr(self.state, 'g_minimal_press_mode', 0) == 1:
             return
@@ -155,7 +178,7 @@ class _PressMixin:
 
         # Determine recipient set.  An explicit per-power recipient on the
         # message object wins; otherwise fan out to every other power.
-        msg_recipient = getattr(msg, 'recipient', None)
+        msg_recipient = _explicit_recipient or getattr(msg, 'recipient', None)
         powers_attr = getattr(self.game, 'powers', None) or {}
         try:
             all_powers = list(powers_attr.keys())
@@ -167,6 +190,18 @@ class _PressMixin:
             recipients = [p for p in all_powers if p != self.power_name]
         if not recipients:
             logger.debug("_send_dm: no recipients (powers=%r); dropping", all_powers)
+            return
+
+        # Game-not-playing guard: the server rejects send_game_message when the
+        # game hasn't reached 'active' status yet (e.g. not all powers have
+        # joined).  Drop the fan-out silently rather than generating N ERROR
+        # log lines from the diplomacy library for each failed round-trip.
+        game_status = getattr(self.game, 'status', '') or ''
+        if game_status and game_status != 'active':
+            logger.debug(
+                "_send_dm: game not active (status=%r) — dropping press",
+                game_status,
+            )
             return
 
         # Phase-staleness guard: compare the phase Albert was scoring for
@@ -209,50 +244,32 @@ class _PressMixin:
                 continue
 
             if is_network:
-                _SEND_RETRIES = 3
-                for _attempt in range(_SEND_RETRIES):
-                    try:
-                        fut = self.game.send_game_message(message=message_obj)
-                        if _asyncio.iscoroutine(fut):
-                            coro = fut
+                try:
+                    fut = self.game.send_game_message(message=message_obj)
+                    if _asyncio.iscoroutine(fut):
+                        try:
+                            loop = _asyncio.get_running_loop()
+                            fut = loop.create_task(fut)
+                        except RuntimeError:
+                            _asyncio.run(fut)
+                            continue
+                    if hasattr(fut, 'add_done_callback'):
+                        def _log_send_error(f, _r=recipient, _p=phase):
                             try:
-                                loop = _asyncio.get_running_loop()
-                                fut = loop.create_task(coro)
-                            except RuntimeError:
-                                _asyncio.run(coro)
-                                break
-                        if hasattr(fut, 'add_done_callback'):
-                            def _log_send_error(f, _r=recipient, _p=phase):
-                                try:
-                                    f.result()
-                                except Exception as exc:
-                                    logger.warning(
-                                        "_send_dm: send_game_message rejected"
-                                        " (recipient=%r, phase=%r): %s: %s",
-                                        _r, _p, type(exc).__name__, exc,
-                                    )
-                            fut.add_done_callback(_log_send_error)
-                        break  # dispatch succeeded
-                    except Exception as exc:
-                        if _attempt < _SEND_RETRIES - 1:
-                            _delay = 0.5 * (2 ** _attempt)
-                            logger.info(
-                                "_send_dm: send_game_message attempt %d/%d"
-                                " failed (recipient=%r, phase=%r): %s —"
-                                " retrying in %.1fs",
-                                _attempt + 1, _SEND_RETRIES,
-                                recipient, phase, exc, _delay,
-                            )
-                            import time as _time
-                            _time.sleep(_delay)
-                        else:
-                            logger.warning(
-                                "_send_dm: send_game_message failed after"
-                                " %d attempts (recipient=%r, phase=%r):"
-                                " %s: %s",
-                                _SEND_RETRIES, recipient, phase,
-                                type(exc).__name__, exc,
-                            )
+                                f.result()
+                            except Exception as exc:
+                                logger.debug(
+                                    "_send_dm: send rejected"
+                                    " (recipient=%r, phase=%r): %s: %s",
+                                    _r, _p, type(exc).__name__, exc,
+                                )
+                        fut.add_done_callback(_log_send_error)
+                except Exception as exc:
+                    logger.debug(
+                        "_send_dm: send_game_message raised synchronously"
+                        " (recipient=%r, phase=%r): %s: %s",
+                        recipient, phase, type(exc).__name__, exc,
+                    )
             else:
                 # Server-game / offline path (kept for unit tests).
                 try:
@@ -280,16 +297,15 @@ class _PressMixin:
                                          collapsed to game.set_orders (MC already ran).
           4. UpdateScoreState           — refresh ally order tables after commit
                                          (line 395 inside inner loop, post-submission).
-          5. SendAllyPressByPower loop  — for each power when g_history_counter > 0
-                                         (lines 659–666).
-          6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass — process
-                                         g_broadcast_list received entries
-                                         (lines 490–569); calls
-                                         EvaluateOrderProposalsAndSendGOF
-                                         (FUN_00457520) after each RESPOND.
-          6b. g_deal_list press — trust+overlap check, SendAlliancePress
-                                         (lines 847–1271; g_proposal_history_map
-                                         proxied by g_deal_list).
+          Outer broadcast-list loop (LAB_004579a9, do{}while(true)):
+            per-node CheckTimeLimit (line 207);
+            per-node ScheduledPressDispatch inside inner trial sub-loop (line 342);
+            per-node RECEIVE_PROPOSAL + EvaluatePress + RESPOND for received
+              entries (lines 490–570), EvaluateOrderProposalsAndSendGOF after each;
+            per-node SendAllyPressByPower for own entries (lines 575–582);
+            after all nodes: proposal-history map pass (g_deal_list proxy,
+              lines 648–1211) with time-shortcut (line 654) and restart
+              (goto LAB_004579a9, lines 1204–1211) when new entries added.
           7. CancelPriorPress           — withdraw stale prior-press token (line 693).
 
         FUN_00411740 absorbed: synchronous "all g_broadcast_list entries dispatched?" predicate;
@@ -464,90 +480,125 @@ class _PressMixin:
         # ── 4. UpdateScoreState — post-commit refresh (line 395) ─────────────
         update_score_state(self.state)
 
-        # ── 5. SendAllyPressByPower loop (lines 659–666) ─────────────────────
-        # C: if puVar18[4] == DAT_00baed60 AND g_history_counter > 0:
-        #      for i in range(n_powers): SendAllyPressByPower(i)
-        # The g_broadcast_list node condition collapses to "own proposal processed"
-        # which is always true here after order submission.
-        if self.state.g_history_counter > 0:
-            for power_i in range(n_powers):
-                _send_ally_press_by_power(self.state, power_i)
-
-        # ── 6a. RECEIVE_PROPOSAL + EvaluatePress + RESPOND pass ───────────────
-        # C: BuildAndSendSUB outer loop (lines 490–569) processes g_broadcast_list
-        #    entries where received_flag==1 AND type_flag==0 AND
-        #    trial_count == g_press_proposals_cap.
-        # Python: MC already ran; treat all received entries as fully scored.
-        # After RESPOND, C calls FUN_00457520 (EvaluateOrderProposalsAndSendGOF).
-        from ...communications import (
-            receive_proposal as _receive_proposal,
-            evaluate_press   as _evaluate_press,
-            respond          as _respond,
-        )
+        # ── Outer broadcast-list loop (LAB_004579a9) ─────────────────────────
+        # C: do { } while(true) — iterates g_broadcast_list with a per-node
+        # CheckTimeLimit (line 207), ScheduledPressDispatch inside the inner
+        # trial sub-loop (line 342), per-node proposal processing for received
+        # entries (lines 490–570), per-node SendAllyPressByPower for own
+        # entries (lines 575–582), and a restart (goto LAB_004579a9, lines
+        # 1204–1211) after proposal-history processing when g_history_counter>19.
+        # Python: MC already ran so inner trial sub-loop is elided; the outer
+        # structure, time checks, and restart logic are preserved.
         press_cap = getattr(self.state, 'g_press_proposals_cap', 30)
-        for _entry in list(self.state.g_broadcast_list):
-            if not _entry.get('received_flag'):
-                continue
-            if _entry.get('type_flag', 0) != 0:
-                continue
-            # Python MC already ran; treat trial_count as complete.
-            _entry['trial_count'] = press_cap
+        _processed_ids: set = set()
+        # register_received_press inserts two entries per incoming proposal
+        # (pass-1 watermark=None, pass-2 watermark=size_before).  Both have
+        # received_flag=True/type_flag=0, so without dedup the loop calls
+        # respond() twice and sends duplicate YES/REJ messages.
+        _responded_proposals: set = set()
+        _time_expired = False
+        submitted_provs = {e[0] for e in order_pairs if e}
 
-            _from_tok  = _entry.get('from_power_tok', 0)
-            _from_idx  = _from_tok & 0xff
-            _prop_toks = _entry.get('sublist3', _entry.get('press_content', []))
+        from ...communications import (
+            receive_proposal    as _receive_proposal,
+            evaluate_press      as _evaluate_press,
+            respond             as _respond,
+            send_alliance_press as _send_alliance_press,
+        )
 
-            # RECEIVE_PROPOSAL — dedup + log + PrepareAllyPressEntry
-            _receive_proposal(self.state, _from_idx, _prop_toks, self._send_dm)
+        _restart = True
+        while _restart:
+            _restart = False
 
-            # EvaluatePress = FUN_0042fc40 → YES (0x481C) or REJ (0x4814)
-            _sVar2 = _evaluate_press(self.state, _entry)
-
-            # RESPOND = albert/Source/RESPOND.c
-            _st = _entry.get('sched_time', 0)
-            _respond(
-                self.state,
-                press_list=_entry,
-                response_type=_sVar2,
-                elapsed_lo=_st & 0xFFFFFFFF,
-                elapsed_hi=(_st >> 32) & 0xFFFFFFFF,
-                send_fn=self._send_dm,
-            )
-            # C line 569: FUN_00457520 = EvaluateOrderProposalsAndSendGOF
-            _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
-
-        # ── 6b. g_deal_list press deal matching (lines 847–1271, g_history_counter>19)
-        # C iterates g_broadcast_list for own-proposal entries; for each entry
-        #   with trust ≥ 1/2 and province overlap, sends SUB press via
-        #   SendAlliancePress.  Proxy: iterate g_deal_list (trust ≥ 3, overlap).
-        if self.state.g_history_counter > 19:
-            from ...communications import send_alliance_press
-            submitted_provs = {entry[0] for entry in order_pairs if entry}
-            for deal in list(getattr(self.state, 'g_deal_list', [])):
-                other = deal.get('power', -1)
-                if other < 0:
+            for _entry in list(self.state.g_broadcast_list):
+                if id(_entry) in _processed_ids:
                     continue
-                trust = int(self.state.g_ally_trust_score[own_power_idx, other])
-                if trust < 3:
-                    continue
-                deal_provs = deal.get('province_set', set())
-                overlap = deal_provs & submitted_provs
-                if overlap:
-                    press_seq = f"PRP ( PCE ( {own_power_idx} {other} ) )"
-                    send_alliance_press(
+
+                # C line 207: CheckTimeLimit at each outer-loop iteration
+                if check_time_limit(self.state):
+                    _time_expired = True
+                    break
+
+                _processed_ids.add(id(_entry))
+                _entry['trial_count'] = press_cap
+
+                # C line 342: ScheduledPressDispatch inside inner trial sub-loop
+                dispatch_scheduled_press(self.state, self._send_dm)
+
+                # C lines 490–570: RECEIVE_PROPOSAL + EvaluatePress + RESPOND
+                # Only for received entries (received_flag==1, type_flag==0).
+                if _entry.get('received_flag') and _entry.get('type_flag', 0) == 0:
+                    _from_tok  = _entry.get('from_power_tok', 0)
+                    _from_idx  = _from_tok & 0xff
+                    _prop_toks = _entry.get('sublist3', _entry.get('press_content', []))
+                    _prop_key  = (_from_idx, tuple(_prop_toks))
+                    if _prop_key in _responded_proposals:
+                        continue
+                    _responded_proposals.add(_prop_key)
+                    _receive_proposal(self.state, _from_idx, _prop_toks, self._send_dm)
+                    _sVar2 = _evaluate_press(self.state, _entry)
+                    _st = _entry.get('sched_time', 0)
+                    _respond(
                         self.state,
-                        key=other,
-                        entry_data={
-                            'power':        other,
-                            'province_set': overlap,
-                            'press_seq':    press_seq,
-                        },
+                        press_list=_entry,
+                        response_type=_sVar2,
+                        elapsed_lo=_st & 0xFFFFFFFF,
+                        elapsed_hi=(_st >> 32) & 0xFFFFFFFF,
+                        send_fn=self._send_dm,
                     )
-                    logger.debug(
-                        "Deal match: queued alliance press to power %d "
-                        "(trust=%d, overlap=%s)",
-                        other, trust, overlap,
-                    )
+                    # C line 569: FUN_00457520 = EvaluateOrderProposalsAndSendGOF
+                    _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
+
+                # C lines 575–582: SendAllyPressByPower for own-entry nodes
+                # Condition: not a received entry AND g_history_counter > 0
+                if not _entry.get('received_flag') and self.state.g_history_counter > 0:
+                    for power_i in range(n_powers):
+                        _send_ally_press_by_power(self.state, power_i)
+
+            if _time_expired:
+                break
+
+            # C lines 648–1211: after all nodes done, if g_history_counter > 19,
+            # process proposal-history map (proxied by g_deal_list) then restart
+            # the outer loop (goto LAB_004579a9) to pick up newly added entries.
+            if self.state.g_history_counter > 19:
+                # C line 654: time-shortcut — skip remaining proposal work if
+                # nearly out of time, fall through to AwaitPressAndSendGOF.
+                if check_time_limit(self.state):
+                    break
+                _any_new = False
+                for deal in list(getattr(self.state, 'g_deal_list', [])):
+                    other = deal.get('power', -1)
+                    if other < 0:
+                        continue
+                    trust = int(self.state.g_ally_trust_score[own_power_idx, other])
+                    if trust < 3:
+                        continue
+                    deal_provs = deal.get('province_set', set())
+                    overlap = deal_provs & submitted_provs
+                    if overlap:
+                        own_tok   = _DAIDE_POWER_NAMES[own_power_idx] if 0 <= own_power_idx < len(_DAIDE_POWER_NAMES) else str(own_power_idx)
+                        other_tok = _DAIDE_POWER_NAMES[other]         if 0 <= other         < len(_DAIDE_POWER_NAMES) else str(other)
+                        press_seq = f"PRP ( PCE ( {own_tok} {other_tok} ) )"
+                        _send_alliance_press(
+                            self.state,
+                            key=other,
+                            entry_data={
+                                'power':        other,
+                                'province_set': overlap,
+                                'press_seq':    press_seq,
+                            },
+                        )
+                        _any_new = True
+                        logger.debug(
+                            "Deal match: queued alliance press to power %d "
+                            "(trust=%d, overlap=%s)",
+                            other, trust, overlap,
+                        )
+                # Restart outer loop if alliance press may have enqueued new
+                # broadcast_list entries (C lines 1204–1211 reset list pointers).
+                if _any_new:
+                    _restart = True
 
         # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
         cancel_prior_press(self.state, own_power_idx, self._send_dm)

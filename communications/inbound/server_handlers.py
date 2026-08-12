@@ -68,16 +68,33 @@ def handle_mdf(state: InnerGameState, message: str) -> None:
 
     Port of FUN_0045ad50.
 
-    DAIDE: MDF ( power_list ) ( supply_centres ) ( adjacencies )
+    DAIDE provinces block layout (python-diplomacy encoding):
+      groups[1] = ( ( sc_groups... ) ( non_sc_provs ) )
+      sc_groups = ( power prov prov ... ) per power + ( UNO prov ... )
 
-    C behaviour (inferred): parses the full map topology — provinces,
-    adjacency lists, supply-centre ownership. In python-diplomacy, the
-    map is loaded from Map objects; we store the raw MDF data for
-    reference but do not parse it into the adjacency model.
+    Parses home supply centres per power into state.g_mdf_home_sc.
+    C equivalent: the on-MDF vtable hook (+0xd8) populates province[p]+0x14
+    (home-SC power sets), consumed by SetOwnPower to build inner+0x243c.
     """
     groups = _extract_top_paren_groups(message)
     state.g_mdf_data = groups if groups else []
     _log.info("handle_mdf: received MDF with %d groups", len(groups) if groups else 0)
+
+    # Parse supply centres: groups[1] = provinces block = ( (sc_group) (non_sc) )
+    home_sc_raw: dict = {}
+    if len(groups) >= 2:
+        provinces_sub = _extract_top_paren_groups(groups[1])
+        if provinces_sub:
+            for sg in _extract_top_paren_groups(provinces_sub[0]):
+                tokens = sg.split()
+                if len(tokens) >= 2:
+                    pw = tokens[0].upper()
+                    if pw in _DAIDE_POWERS:
+                        home_sc_raw[pw] = [t.split('/')[0].upper() for t in tokens[1:]]
+    state.g_mdf_home_sc = home_sc_raw
+    if home_sc_raw:
+        _log.debug("handle_mdf: parsed home SCs for powers: %s",
+                   sorted(home_sc_raw))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -266,6 +283,10 @@ def handle_out(state: InnerGameState, message: str) -> None:
         state.g_out_powers.add(power_idx)
         # Also add to CCD since eliminated powers are trivially disconnected
         state.g_ccd_powers.add(power_idx)
+        # C also clears the power's SC count (inner+0x258c[power_idx] = 0)
+        # so scoring does not keep crediting an eliminated power until the
+        # next SCO arrives — OUT_Handler.c.
+        state.g_sco_power_sc_count[power_idx] = 0
         _log.info("handle_out: %s(%d) has been eliminated", power_str, power_idx)
     else:
         _log.warning("handle_out: could not extract power from %r", message[:100])

@@ -159,9 +159,9 @@ def handle_yes_tme(state: InnerGameState, full_message: str, inner_group: str) -
 
     Port of vtable slot +0xa8.
 
-    C behaviour (inferred): the server has granted additional time for
-    the current phase. Update the move time limit so that press scheduling
-    and Monte Carlo evaluation can use the extra time.
+    C behaviour: DAT_00624ef4 += granted_secs (14-bit DAIDE token & 0x3fff).
+    Python extension: also extends g_turn_deadline by the same amount, mirroring
+    the SetTurnDeadline call that ParseHSTResponse makes on initial HLO processing.
     """
     # Extract the granted seconds
     tme_groups = _extract_top_paren_groups(inner_group)
@@ -178,11 +178,14 @@ def handle_yes_tme(state: InnerGameState, full_message: str, inner_group: str) -
 
     if secs_str.isdigit():
         granted_secs = int(secs_str)
-        # Extend the move time limit
         old_limit = getattr(state, 'g_move_time_limit_sec', 0)
         state.g_move_time_limit_sec = old_limit + granted_secs
-        _log.info("handle_yes_tme: time extension granted: +%d sec (new limit=%d)",
-                  granted_secs, state.g_move_time_limit_sec)
+        # Mirror SetTurnDeadline: extend the absolute epoch deadline.
+        # C YES_TME_Handler only updates DAT_00624ef4; SetTurnDeadline is the
+        # Python-port addition that keeps g_turn_deadline in sync.
+        state.g_turn_deadline = getattr(state, 'g_turn_deadline', 0.0) + granted_secs
+        _log.info("handle_yes_tme: time extension granted: +%d sec (new limit=%d, deadline=%.0f)",
+                  granted_secs, state.g_move_time_limit_sec, state.g_turn_deadline)
     else:
         _log.info("handle_yes_tme: TME accepted (seconds=%r)", secs_str)
 

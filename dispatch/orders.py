@@ -33,26 +33,29 @@ from ..state import InnerGameState
 
 from ._errors import logger
 
-# Order-table field indices (must match monte_carlo._constants)
-_F_ORDER_TYPE   = 0
-_F_UNIT_TYPE    = 1
-_F_DEST_PROV    = 2
-_F_DEST_COAST   = 3
-_F_SECONDARY    = 4
-_F_CONVOY_LEG0  = 8
-_F_CONVOY_LEG1  = 9
-_F_CONVOY_LEG2  = 10
-_F_INCOMING_MOVE = 13
-_F_SOURCE_PROV  = 16
-_F_ORDER_ASGN   = 20
+# Order-table field indices and order-type codes.
+# Imported from the canonical definitions rather than redeclared: this module
+# previously defined _F_SECONDARY = 4, which collided with _F_HOLD_WEIGHT and
+# disagreed with moves/_constants.py and monte_carlo/_flags.py (both 1).
+from ..moves._constants import (  # noqa: E402
+    _F_ORDER_TYPE,
+    _F_SECONDARY,
+    _F_DEST_PROV,
+    _F_CONVOY_LEG0,
+    _F_INCOMING_MOVE,
+    _F_SOURCE_PROV,
+    _F_ORDER_ASGN,
+    _ORDER_MTO,
+    _ORDER_SUP_HLD,
+    _ORDER_SUP_MTO,
+    _ORDER_CVY,
+    _ORDER_CTO,
+)
 
-# Order type constants
-_ORDER_HLD     = 1
-_ORDER_MTO     = 2
-_ORDER_SUP_HLD = 3
-_ORDER_SUP_MTO = 4
-_ORDER_CVY     = 5
-_ORDER_CTO     = 6
+_F_DEST_COAST   = 3
+_F_CONVOY_LEG1  = _F_CONVOY_LEG0 + 1
+_F_CONVOY_LEG2  = _F_CONVOY_LEG0 + 2
+_ORDER_HLD      = 1
 
 
 def parse_destination_with_coast(dest_token):
@@ -174,11 +177,16 @@ def dispatch_single_order(state: InnerGameState, power_index: int,
 
             if 0 <= src_prov < 256:
                 dest_id = state.prov_to_id.get(prov_str.upper(), -1)
+                # C BuildOrder_SUP_MTO.c:29-31 —
+                #   col 0 = 4, col 1 (_F_SECONDARY) = supported unit's province,
+                #   col 2 (_F_DEST_PROV) = that unit's destination.
+                # These two were swapped (and _F_SECONDARY was 4, i.e. the
+                # hold-weight column) before 2026-08-12.
                 state.g_order_table[src_prov, _F_ORDER_TYPE] = float(_ORDER_SUP_MTO)
                 if target_src >= 0:
-                    state.g_order_table[src_prov, _F_DEST_PROV] = float(target_src)
+                    state.g_order_table[src_prov, _F_SECONDARY] = float(target_src)
                 if dest_id >= 0:
-                    state.g_order_table[src_prov, _F_SECONDARY] = float(dest_id)
+                    state.g_order_table[src_prov, _F_DEST_PROV] = float(dest_id)
         else:
             # SUP-HLD
             formatted_order = f"{unit_str} S {target_unit}"

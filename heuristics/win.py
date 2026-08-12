@@ -38,6 +38,51 @@ _SPR_FAL_WEIGHTS = _SPR_ROUND_WEIGHTS  # backward-compat alias
 _WIN_DAIDE_POWER_NAMES: list = ['AUS', 'ENG', 'FRA', 'GER', 'ITA', 'RUS', 'TUR']
 
 
+def compute_build_delta(state: InnerGameState) -> bool:
+    """Port of FUN_0040ab10 (ComputeBuildDelta).
+
+    Called from the WIN-season NOW path.  Counts SC and unit totals for
+    every power, writes per-power build/remove flag and count into
+    ``state.g_build_delta``, and returns True when any power's SC count
+    differs from its unit count.
+
+    ``state.g_build_delta[p]`` is a dict ``{'flag': int, 'delta': int}``
+    where ``flag == 1`` means BUILD (SC > units) and ``flag == 0`` means
+    REMOVE (units >= SC).  ``delta`` is the absolute difference.
+
+    C stores the same data in a std::map at ``this+0x2468``; the BST
+    candidate fields (``candidates_ptr``, ``candidate_bst``) from that
+    struct are not needed in Python because candidate seeding is done by
+    ``populate_build_candidates`` / ``populate_remove_candidates``.
+    """
+    num_powers = 7
+    unit_counts = [0] * num_powers
+    # Mirror C:79 — stamp province unit-holder field (province[prov]+0x20 = power|0x4100)
+    # so g_sc_owner is fresh before _hostility / compute_influence_matrix read it.
+    state.g_sc_owner.fill(-1)
+    for prov, info in state.unit_info.items():
+        p = int(info['power'])
+        if 0 <= p < num_powers:
+            unit_counts[p] += 1
+            if prov < 256:
+                state.g_sc_owner[prov] = p
+
+    imbalance = False
+    build_delta: dict = {}
+    for p in range(num_powers):
+        sc    = int(state.sc_count[p])
+        units = unit_counts[p]
+        if units < sc:
+            build_delta[p] = {'flag': 1, 'delta': sc - units}
+        else:
+            build_delta[p] = {'flag': 0, 'delta': units - sc}
+        if sc != units:
+            imbalance = True
+
+    state.g_build_delta = build_delta
+    return imbalance
+
+
 def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     """Seed g_candidate_scores[own_power] with eligible WIN build provinces.
 

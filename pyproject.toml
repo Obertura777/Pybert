@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "numpy",
     "diplomacy",
+    "pytest>=9.0.3",
 ]
 
 [tool.uv.sources]

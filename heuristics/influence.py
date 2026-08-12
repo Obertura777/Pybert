@@ -291,7 +291,9 @@ def compute_alliance_score(state: InnerGameState) -> None:
     """
     Port of g_AllianceScore computation (GenerateOrders.c lines 567-618).
 
-    Called after compute_influence_matrix (which populates g_influence_matrix_raw).
+    Called from generate_orders Phase 6, after Phase 3 snapshots
+    g_influence_matrix → g_influence_matrix_raw.  NOTE: g_AllianceScore has no
+    read sites in the C binary; this write is faithful to C but currently dead.
     For each ordered power pair (row, col) where row != col:
 
       col_sum = Σ_k g_influence_matrix_raw[k][row]   (column sum of column `row`)
@@ -357,9 +359,16 @@ def set_opening_targets(state: InnerGameState) -> None:
         for prov in range(NUM_PROVINCES):
             if prov not in state.unit_info:
                 continue
-            if state.unit_info[prov]['type'] == 'A':
+            unit = state.unit_info[prov]
+            if unit['type'] in ('A', 'AMY'):
                 # C filter: unit_type != 'A' OR secondary_byte == 0x14
                 # 0x14 (army-coast secondary) not tracked in Python — skip armies
+                continue
+            # Opening target must be an enemy/neutral fleet province.
+            # Own fleet provinces always win the heat comparison (re-pinned at 100)
+            # but Adjustment 4 in ScoreProvinces is inside the non-own/non-ally branch,
+            # so they can never receive the +150 boost — exclude them here.
+            if unit.get('power') == power:
                 continue
             g_prov = float(state.g_global_province_score[prov])
             if g_prov == 0.0:
@@ -466,12 +475,44 @@ def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
 
 def normalize_influence_matrix(state: InnerGameState) -> None:
     """
-    Port of the row-normalisation step (Phase 4 of ComputeInfluenceMatrix).
+    Port of NormalizeInfluenceMatrix (standalone C function).
 
-    Normalises each row of g_influence_matrix so it sums to 100.0.
-    Research.md §4292 Phase 4.
+    Runs all four phases that the C version runs:
+      Phase 1 — trust-adjust: g_influence_matrix[r,c] = raw[r,c] / (trust[r,c] + 1)
+                No own_power exemption and no divide-by-6 branch (contrast with
+                compute_influence_matrix Phase 1).  Divisor is the full 64-bit
+                (trust_hi:trust_lo) + 1, matching CONCAT44 carry propagation in C.
+      Phase 2 — per-row sum via PackScoreU64 (_float_to_int64 of row sum).
+      Phase 3 — noise injection: cell += _safe_pow(cell / (row_sum+1), 0.3) * 500.
+      Phase 4 — row-normalise each row to sum 100 (skip if row_sum == 0).
     """
     num_powers = 7
+
+    # Phase 1 — unconditional trust-adjust (no own_power special-casing)
+    # Divisor mirrors CONCAT44(trust_hi + carry, trust_lo + 1): reconstruct the
+    # full 64-bit trust value so carry from lo→hi is handled correctly.
+    for row in range(num_powers):
+        for col in range(num_powers):
+            raw = float(state.g_influence_matrix_raw[row, col])
+            trust_lo = int(np.uint32(state.g_ally_trust_score[row, col]))
+            trust_hi = int(state.g_ally_trust_score_hi[row, col])
+            divisor = ((trust_hi << 32) | trust_lo) + 1
+            state.g_influence_matrix[row, col] = raw / divisor if divisor != 0 else raw
+
+    # Phase 2 — per-row sum via PackScoreU64
+    power_sum = np.array(
+        [_float_to_int64(float(np.sum(state.g_influence_matrix[p]))) for p in range(num_powers)],
+        dtype=np.int64,
+    )
+
+    # Phase 3 — noise injection
+    for row in range(num_powers):
+        row_sum = float(power_sum[row])
+        for col in range(num_powers):
+            base = float(state.g_influence_matrix[row, col]) / (row_sum + 1.0)
+            state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
+
+    # Phase 4 — row-normalise to 100
     for row in range(num_powers):
         row_sum = float(np.sum(state.g_influence_matrix[row]))
         if row_sum != 0.0:

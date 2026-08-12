@@ -2,6 +2,8 @@
 
 Split from heuristics.py during the 2026-04 refactor.
 
+- ``BuildOrderSpec``           — one build-order candidate node (C tree node)
+- ``build_candidate_list_find`` — g_BuildCandidateList lower-bound lookup
 - ``evaluate_province_score`` — EvaluateProvinceScore (FUN_00433ce0)
 - ``compute_winter_builds``   — ComputeWinterBuilds (FUN_00445be0)
 - ``_safe_pow``                — pow with base<=0 guard (FUN_0047b370 proxy)
@@ -12,9 +14,39 @@ These are leaf primitives — they depend only on ``numpy`` and
 (``influence``) that need the base<=0 guard.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from ..state import InnerGameState
+
+
+@dataclass
+class BuildOrderSpec:
+    """One build-order candidate node in g_build_candidate_list.
+
+    Mirrors the C order-node layout at DAT_00bc1e1c:
+      +0x10  target_province  (int)
+      +0x14  coast_short      (ushort)
+      +0x20  score            (double, capped at 30.0 in ComputeWinterBuilds)
+    """
+    target_province: int
+    coast_short: int
+    score: float
+
+
+def build_candidate_list_find(state: InnerGameState, province_id: int) -> list:
+    """Python port of g_BuildCandidateList (FUN_00…, Source/heuristics/g_BuildCandidateList.c).
+
+    C: lower-bound lookup on the (province_id, coast_short)-keyed BST at
+    DAT_00bc1e1c; inserts an empty sub-list node when the key is absent.
+
+    Python: the BST is a dict[province_id, list[BuildOrderSpec]]; lower-bound
+    collapses to setdefault because outer iteration in compute_winter_builds
+    does not require sorted-province traversal.  coast_short is implicit in
+    the sub-list ordering (entries appended in insertion order).
+    """
+    return state.g_build_candidate_list.setdefault(province_id, [])
 
 def evaluate_province_score(state: InnerGameState, province_id: int, power_id: int) -> int:
     """
@@ -45,24 +77,27 @@ def evaluate_province_score(state: InnerGameState, province_id: int, power_id: i
         if pct > 50:
             total_reach = state.g_total_reach_score[power_id, province_id]
             own_reach = state.g_own_reach_score[power_id, province_id]
-            
-            if (total_reach + 1) <= own_reach:
+
+            # C (EvaluateProvinceScore.c:149-160): formula fires when own_reach
+            # <= total_reach + 1 (province contested — not dominated by us).
+            # own_reach > total_reach + 1 → we dominate → score = 50.
+            if own_reach <= total_reach + 1:
                 score = ((pct - 50) * 150) // 100 + 50
-                if own_reach > total_reach + 1:
-                    score = ((score - 50) * 150) // 100 + 50
             else:
                 score = 50
         else:
             score = 50
 
+    # C gate (line 163-170): fires on local_38 == 0 (max_threatening_adj_scs == 0),
+    # NOT on score == 0 — the convoy-reach branch can set score != 0 before this.
     if state.g_uniform_mode == 1 and state.g_near_end_game_factor < 3.0:
-        if score == 0 and state.g_enemy_mobility_count[power_id, province_id] > 0:
+        if max_threatening_adj_scs == 0 and state.g_enemy_mobility_count[power_id, province_id] > 0:
             score = 2
             
     return score
 
 
-def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power: int):
+def compute_winter_builds(state: InnerGameState, own_power: int):
     """
     Port of FUN_00445be0 / ComputeWinterBuilds.
     Scores winter build-order candidates.
@@ -71,9 +106,9 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
       For each province_id (outer tree iterator on g_BuildCandidateList):
         Read unit descriptor at province_id:
           uVar2 = *(ushort*)(gamestate + province_id * 0x24 + 0x20)
-          high byte = unit type char ('A' → local_3c = coast_lo, else local_3c = 0x14)
-          Armies use the low byte (coast index) for comparisons;
-          Fleets use sentinel 0x14 (never matches any real coast).
+          high byte = unit type char ('A' → local_3c = power_idx, else local_3c = 0x14)
+          Armies use the low byte (power index, 0-6) for comparisons;
+          Fleets use sentinel 0x14 (never equals any real power index).
 
         For each order in the province's sub-list (inner tree walk):
           order_score = min(*(double*)(iVar6 + 0x20), 30.0)  — capped to 30.0
@@ -103,8 +138,7 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
 
                 if local_3c == own_power:
                   if NOT (stab_flag[target] == 1 OR retreat_flag[target] == 1):
-                    if NOT (g_friendly_unit_flag[target] == 1 OR g_established_ally_flag[target] == 1):
-                      → skip trust check
+                    → skip trust check  (friendly/ally entry does NOT open the trust path)
                   ally_idx = own_power * 21 + unit_record.power
                   if trust_hi[ally_idx] < 1 AND (trust_hi < 0 OR trust_lo < 3):
                     local_48 += 10000.0 / order_score
@@ -114,17 +148,17 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
     order.target_coast vs unit record's coast (matching C's *(short*)(iVar6+0x14)
     == *(short*)(ppiVar10+1) pattern).
     """
-    for province_id, sub_list in build_candidate_list.items():
+    for province_id, sub_list in state.g_build_candidate_list.items():
         local_4c = 0.0  # position score A — own unit fitness
         local_48 = 0.0  # position score B — ally unit fitness
 
         # C: uVar2 = *(ushort*)(gamestate + province_id * 0x24 + 0x20)
-        # high byte = type char; low byte = coast index.
-        # If type == 'A': local_3c = coast_lo (the army's province coast).
-        # Else (FLT): local_3c = 0x14 (sentinel — never matches a real power).
+        # high byte = type char; low byte = unit's power index (0-6).
+        # If type == 'A': local_3c = power of the army at province_id.
+        # Else (FLT): local_3c = 0x14 (sentinel — never equals own_power 0-6).
         unit_at_prov = state.unit_info.get(province_id)
         if unit_at_prov is not None and unit_at_prov.get('type', 'A') == 'A':
-            local_3c = unit_at_prov.get('coast', 0)   # army coast index
+            local_3c = unit_at_prov.get('power', 0)   # army power index
         else:
             local_3c = 0x14  # fleet sentinel
 
@@ -144,9 +178,8 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
             iVar11 = own_power * 0x100
             if int(state.g_sc_ownership[own_power, target]) == 1:
                 target_unit = state.unit_info.get(target)
-                order_coast = getattr(order, 'target_coast', getattr(order, 'coast', 0)) or 0
                 unit_coast = target_unit.get('coast', 0) if target_unit else -1
-                if order_coast == unit_coast:
+                if order.coast_short == unit_coast:
                     local_4c += 10000.0 / order_score
 
             # Section 3: friendly/ally unit bonus (local_48)
@@ -170,9 +203,8 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
             if enter_ally_bonus:
                 # LAB_00445f2e: UnitList_FindOrInsert → compare coast shorts
                 target_unit = state.unit_info.get(target)
-                order_coast = getattr(order, 'target_coast', getattr(order, 'coast', 0)) or 0
                 unit_coast = target_unit.get('coast', 0) if target_unit else -1
-                if order_coast == unit_coast:
+                if order.coast_short == unit_coast:
                     # C: if (ppiVar10[2] == local_3c) OR
                     #       (local_3c == 0x14 AND ppiVar10[2] != piVar5)
                     unit_power = target_unit.get('power', -1) if target_unit else -1
@@ -181,9 +213,9 @@ def compute_winter_builds(state: InnerGameState, build_candidate_list, own_power
 
                     # C: if (local_3c == piVar5) — i.e. local_3c == own_power
                     if local_3c == own_power:
-                        # Check stab/retreat flags first; then friendly/ally flags
-                        # C: if NOT (stab OR retreat) AND NOT (friendly OR ally) → skip
-                        if stab_flag == 1 or retreat_flag == 1 or friendly_flag == 1 or ally_flag == 1:
+                        # C lines 195-201: trust check runs only when stab OR retreat is set;
+                        # friendly/ally entry does NOT open this path.
+                        if stab_flag == 1 or retreat_flag == 1:
                             # Trust gate: C uses stride 21, but Python arrays are (7,7).
                             # Fixed 2026-04-21: use correct flat index for (7,7): own_power * 7 + unit_power
                             try:
@@ -209,35 +241,15 @@ def _safe_pow(base: float, exp: float) -> float:
 def _float_to_int64(value: float) -> int:
     """Port of FloatToInt64 / PackScoreU64 (Source/utils/FloatToInt64.c).
 
-    Both C functions perform:
-      1. ROUND (x87 FRNDINT — banker's rounding, round-to-even)
-      2. Remainder check:  frac = value - rounded
-      3. Truncation correction: subtract/add 1 if |frac| >= 0.5
-         (via ``0x80000000 < (uint)-(float)(frac)`` test)
-
-    Net effect: the correction always undoes the ROUND half-up/half-down
-    ambiguity, producing **truncation toward zero** for values exactly at
-    ±0.5 boundaries.  For all other values the result is the same as
-    ``round()`` (banker's).
-
-    Python ``int()`` truncates toward zero unconditionally — which is
-    close but diverges for e.g. 2.7 → int gives 2, round gives 3.
-    Python ``round()`` does banker's rounding — matches the ROUND step
-    but lacks the correction.  The safest portable match is ``int(round(v))``
-    with a tie-break toward zero, which is what we implement here.
+    The C sequence (x87 FISTP + remainder check) is truncation toward zero
+    for ALL inputs, not just half-integer boundaries.  Trace:
+      ROUND(v) → nearest integer r (banker's mode)
+      frac = v - r
+      positive branch: if frac < 0 (rounded up), r -= 1
+      negative branch: if -frac < 0 (rounded away from zero), r += 1
+    Both branches undo any round-away-from-zero step, giving int(v) exactly.
     """
-    if value == 0.0:
-        return 0
-    r = round(value)           # banker's round (matches FRNDINT)
-    frac = value - float(r)
-    # Correction: if remainder magnitude >= 0.5 (exactly at .5 boundary),
-    # C truncates toward zero → undo the round-away-from-zero.
-    if abs(frac) >= 0.5:
-        if value > 0:
-            r -= 1
-        else:
-            r += 1
-    return int(r)
+    return int(value)
 
 
 def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:

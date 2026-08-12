@@ -44,9 +44,10 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
     ulonglong via PackScoreU64 banker-rounding; we keep full precision here).
 
     Globals consumed (all on InnerGameState):
-      Pass A: g_threat_level, g_sc_ownership, g_enemy_presence, g_attack_count,
-              g_attack_history, g_defense_score, g_province_weight
-              → g_unit_move_prob, g_order_table[_F_DEF_NEG_*]
+      Pass A: g_own_reach_score, g_ally_reach_score, g_sc_ownership, g_enemy_presence,
+              g_attack_count, g_attack_history, g_max_prov_score_per_power,
+              g_province_weight, g_max_province_score
+              → g_unit_move_prob, g_order_table[_F_CONVOY_LO/_F_CONVOY_HI]
       Pass B: g_unit_move_prob, g_convoy_chain_score, g_support_demand
               → g_fleet_support_score
       Pass C: g_proximity_score, g_sc_ownership, g_enemy_presence, g_unit_move_prob,
@@ -59,7 +60,8 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
               → g_order_table[_F_RETREAT_CNT/_F_RETREAT_FLAG]
       Pass F: g_fleet_support_score, g_unit_move_prob, g_cut_support_risk,
               g_convoy_source_prov, g_convoy_chain_score, g_support_demand,
-              g_attack_history, g_sc_ownership, g_attack_count, g_defense_score
+              g_attack_history, g_sc_ownership, g_attack_count,
+              g_max_prov_score_per_power
               → returns accumulated score
     """
     ot = state.g_order_table  # shape (256, 30), dtype float64
@@ -67,11 +69,54 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
     state.g_unit_move_prob.fill(0.0)
 
     # ── Pass A: Unit-order probability ──────────────────────────────────────
-    # Gate: order_table[prov, 13] (_F_INCOMING_MOVE) is the threat-level field
-    # that guards entry; C line 86: uVar3 = local_f4[0xd]; skip when <= 0.
-    # Written to g_unit_move_prob[prov] and negated defense into fields [6]/[7].
+    # Two-level gate (EvaluateOrderScore.c:83-87):
+    #   Outer: skip when g_own_reach_score < 0, or both own and ally reach are 0.
+    #   Inner: field[13] (_F_INCOMING_MOVE) >= 1 → main path; == 0 with field[15] > 0
+    #          and the -1 sentinel on fields [18,19] → fallback path; else skip.
+    # Outputs: g_unit_move_prob[prov], ot[prov, _F_CONVOY_LO/_F_CONVOY_HI].
     for prov in range(256):
-        if int(ot[prov, _F_INCOMING_MOVE]) <= 0:
+        own_r = int(state.g_own_reach_score[power_idx, prov])
+        ally_r = float(state.g_ally_reach_score[power_idx, prov])
+        if own_r < 0 or (own_r == 0 and ally_r == 0.0):
+            continue
+
+        incoming = int(ot[prov, _F_INCOMING_MOVE])
+        if incoming < 1:
+            target_v = int(ot[prov, _F_TARGET_PROV])
+            if (incoming == 0
+                    and target_v > 0
+                    and (int(ot[prov, _F_SUP_TARGET]) & int(ot[prov, _F_SUP_TARGET + 1])) == -1):
+                # Fallback: no incoming attack but potential target set, no support committed.
+                # C: uVar3 reassigned to field[15]; iStack_fc = 0 (since target_v > 0).
+                own_sc_f = int(state.g_sc_ownership[power_idx, prov])
+                ep       = int(state.g_enemy_presence[power_idx, prov])
+                if own_sc_f == 0:
+                    if own_r > 0 or ally_r > target_v:
+                        move_prob = 1.0
+                    elif own_r == 0 and ally_r == float(target_v):
+                        move_prob = 0.25 if ep == 1 else 0.33
+                    else:
+                        if ep != 1:
+                            move_prob = 0.25
+                        else:
+                            # C byte+3 of unit record: 0=army/empty, 1=fleet at bicoastal
+                            # coastal position (AssignSupportOrder.c:94 checks == '\x01').
+                            # Python: type=='F' and coast!='' identifies bicoastal fleets.
+                            ui = state.unit_info.get(prov, {})
+                            is_bicoastal = (ui.get('type') == 'F'
+                                            and ui.get('coast', '') != '')
+                            move_prob = 0.05 if is_bicoastal else 0.15
+                else:
+                    src_prov_f = int(ot[prov, _F_SOURCE_PROV])
+                    prov_wt    = float(state.g_province_weight[power_idx, prov])
+                    if src_prov_f == 1:
+                        move_prob = min(prov_wt, 1.0)
+                    else:
+                        move_prob = min(target_v * 0.5, 1.0)
+                state.g_unit_move_prob[prov] = move_prob
+                max_s = float(state.g_max_province_score[prov])
+                ot[prov, _F_CONVOY_LO] = -max_s
+                ot[prov, _F_CONVOY_HI] = -max_s
             continue
 
         target_prov = int(ot[prov, _F_TARGET_PROV])
@@ -82,7 +127,11 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
         enemy_pres  = int(state.g_enemy_presence[power_idx, prov])
         atk_count   = float(state.g_attack_count[power_idx, prov])
         atk_history = float(state.g_attack_history[power_idx, prov])
-        def_score   = float(state.g_defense_score[power_idx, prov])
+        # C reads g_MaxProvinceScore[power*0x100+prov] (DAT_0055b0e8) here —
+        # bound in Python as g_max_prov_score_per_power.  This used to read
+        # g_defense_score, a duplicate binding of the same C global that
+        # nothing ever wrote, so the value was always 0.
+        def_score   = float(state.g_max_prov_score_per_power[power_idx, prov])
         prov_weight = float(state.g_province_weight[power_idx, prov])
 
         if own_sc == 1:
@@ -145,13 +194,21 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
     # C condition: head==tail on the per-province support-opportunity sub-list
     # (DAT_00baed74), keyed by target_prov.  g_support_demand (DAT_00baeddc) is
     # a different global and was the wrong proxy.
+    #
+    # C (EvaluateOrderScore.c:264–329) iterates all provinces with order type 2
+    # (MTO), not just fleets.  Guards: _F_INCOMING_MOVE > 0 and _F_ORDER_ASGN < 2
+    # (piVar14[0xb] > 0 and piVar14[0x12] < 2 with piVar14 at _F_DEST_PROV).
     _sup_opp_targets: set[int] = {
         opp['target_prov']
         for opp in getattr(state, 'g_support_opportunities_set', [])
     }
     for _ in range(3):
         for prov in range(256):
-            if state.get_unit_type(prov) != 'F':
+            if int(ot[prov, _F_ORDER_TYPE]) != _ORDER_MTO:
+                continue
+            if int(ot[prov, _F_INCOMING_MOVE]) <= 0:
+                continue
+            if int(ot[prov, _F_ORDER_ASGN]) >= 2:
                 continue
 
             move_prob = float(state.g_unit_move_prob[prov])
@@ -333,7 +390,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
             atk_history = float(state.g_attack_history[power_idx, prov])
             own_sc      = int(state.g_sc_ownership[power_idx, prov])
             atk_count   = float(state.g_attack_count[power_idx, prov])
-            def_score   = float(state.g_defense_score[power_idx, prov])
+            def_score   = float(state.g_max_prov_score_per_power[power_idx, prov])
             if atk_history > 10.0 and own_sc == 0 and atk_count > 0.0 and def_score > 0.0:
                 local_120 += fleet_score * 0.4
 
@@ -341,42 +398,40 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
         if cut_risk != 0.0:
             local_120 += cut_risk * 100.0
 
-    # ── Destination-discrimination bonus ────────────────────────────────────
-    # The else branch above adds ot[src, _F_SUP_TARGET] = final_score_set[power, src]
-    # (the source province score), which is constant for all orders from a given
-    # unit — it does NOT vary with destination.  Destination discrimination in the
-    # C comes from fleet-support and convoy-chain scoring passes (Pass B / puVar15[-8]
-    # fleet_score accumulation) that aren't fully ported.  Compensate by adding
-    # each own unit's end-of-province final_score_set entry directly: destination
-    # for MTO/CTO, source for HLD/CVY/SUP_*.  Crediting both move and stay
-    # alternatives prevents the bot from gratuitously vacating would-be-captured
-    # SCs in Fall (e.g. A SPA - MAR) just because MTO had a unilateral lead.
-    #
-    # Fall capture bonus: ending FAL at an unowned SC gains that SC next turn —
-    # a strategic +1 SC.  Mirrors EvaluateOrderScore.c L692-694, scaled up to
-    # dominate BFS-derived destination scores (a corner SC like SPA can otherwise
-    # lose to a central non-SC like GAS whose heat-diffusion value is higher).
-    fall_capture = season == 'FAL'
-    sc_provinces = getattr(state, 'sc_provinces', frozenset())
-    for prov, info in state.unit_info.items():
-        if info['power'] != power_idx:
-            continue
-        o = int(ot[prov, _F_ORDER_TYPE])
-        if o == _ORDER_MTO or o == _ORDER_CTO:
-            end_prov = int(ot[prov, _F_DEST_PROV])
-        else:
-            end_prov = prov
-        # final_score_set is (7, 256) — province scores from score_order_candidates
-        local_120 += float(state.final_score_set[power_idx, end_prov])
-        if (fall_capture
-                and end_prov in sc_provinces
-                and state.g_sc_ownership[power_idx, end_prov] == 0):
-            local_120 += 500.0
-
     return local_120
 
 
-def evaluate_order_proposal(state: InnerGameState, power_idx: int) -> None:
+def insert_candidate_record(state: InnerGameState, candidate: dict,
+                             trial_idx: int = 0) -> tuple:
+    """Port of InsertCandidateRecord — BST insert into g_candidate_record_list.
+
+    The C function maintains a sorted BST keyed on the order combination so
+    that two MC trials producing identical orders for a power share one record.
+    On a duplicate the existing node's per-trial score slot is updated rather
+    than discarding the new score (matching the TrialEvaluateOrders field-copy
+    that follows InsertCandidateRecord in EvaluateOrderProposal.c:918-920).
+    Returns (inserted, record): inserted=False means an identical order set
+    already existed and record is that existing entry.
+    """
+    key = (candidate['power'], tuple(sorted(candidate['orders'])))
+    key_map: dict = state.__dict__.setdefault('_candidate_key_map', {})
+    if key in key_map:
+        existing = state.g_candidate_record_list[key_map[key]]
+        ts = existing['trial_scores']
+        if trial_idx < len(ts):
+            ts[trial_idx] = candidate['score']
+        return False, existing
+    # Pre-allocate 30-slot array (matches C's 30-element per-trial arrays in
+    # the candidate record struct copied by TrialEvaluateOrders).
+    candidate['trial_scores'] = [0.0] * 30
+    candidate['trial_scores'][min(trial_idx, 29)] = candidate['score']
+    key_map[key] = len(state.g_candidate_record_list)
+    state.g_candidate_record_list.append(candidate)
+    return True, candidate
+
+
+def evaluate_order_proposal(state: InnerGameState, power_idx: int,
+                             trial_idx: int = 0) -> None:
     """
     Port of FUN_0044e070 = EvaluateOrderProposal.
 
@@ -451,218 +506,241 @@ def evaluate_order_proposal(state: InnerGameState, power_idx: int) -> None:
             int(ot[prov, _F_SECONDARY]),
         ))
 
-        # Deviation detection: applies only to Albert's own power
+        # Deviation detection: applies only to Albert's own power (C line 214)
         if power_idx == own_power:
             expected = state.g_deviation_tree.get((power_idx, prov), 0)
             if expected != 0 and expected != order_type:
                 local_d31 = 1
 
-            # SUB-map check: province not in committed order map and not MTO/CTO → 500
-            if prov in state.g_sub_order_map:
-                if order_type not in (_ORDER_MTO, _ORDER_CTO):
-                    local_d04 = 500
+        # SUB-map check (C lines 256-278): runs for ANY power_idx, not just own.
+        # If province IS in committed order map and order is not MTO/CTO → 500.
+        if prov in state.g_sub_order_map:
+            if order_type not in (_ORDER_MTO, _ORDER_CTO):
+                local_d04 = 500
 
-            # Alternate-order list: → 750 (overrides 500)
-            alt_list = state.g_alt_order_list.get(power_idx, set())
-            if prov in alt_list:
-                local_d04 = 750
+        # Alternate-order list (C lines 279-320): own_power only.
+        # For MTO/CTO: skip 750 iff current dest matches expected dest in record
+        # (C line 311: ppiVar11[9] == found_node[4]).  For other order types: always 750.
+        if power_idx == own_power:
+            alt_map = state.g_alt_order_list.get(power_idx, {})
+            if prov in alt_map:
+                if order_type in (_ORDER_MTO, _ORDER_CTO):
+                    if int(ot[prov, _F_DEST_PROV]) != alt_map[prov]:
+                        local_d04 = 750
+                else:
+                    local_d04 = 750
 
-    # ── No-deviation committed-order copy (C lines 358–440) ─────────────────
-    # Gate: (ppiVar9 == local_cdc) && (local_d31 != 1).
-    # The ppiVar9==local_cdc check tests whether g_CandidateRecordList is at
-    # its sentinel (no prior matching entry); in Python that check collapses to
-    # local_d31 == 0 since the list-sentinel comparison has no Python analogue.
-    #
-    # Walk A (lines 375–440, FUN_00433a20 serialisation): copies fields
-    # 0x0c/0x20–0x38 from each committed order entry and serialises them into
-    # the local candidate buffer (local_648/local_cbc).  In Python, local_cac
-    # already contains this data from Step 2; no separate pass is needed.
-    #
-    # Walk B (lines 443–488, DAT_00baed68 trust branch): for MTO orders whose
-    # destination is occupied by an enemy Army, compute local_d24 from the
-    # ally-trust scores.  The result feeds C line 887:
-    #   local_c10 = global_base + local_d04 + local_d24
-    # Python stores it in candidate['trust_adjustment'].
-    local_d24 = 0
-    if local_d31 == 0:
+    # ── Gate: duplicate-record and deviation check (C lines 327–358) ───────────
+    # C: BST search for local_cac in g_CandidateRecordList; if result == sentinel
+    # (no existing match) AND local_d31 != 1 (no deviation), enter the scoring and
+    # proposal block.  Walk A/B, Steps 3–5, and BuildSupportProposals are ALL
+    # inside this gate in the original binary.
+    # Python: _candidate_key_map provides an O(1) lookup instead of the BST walk.
+    _gate_key = (power_idx, tuple(sorted(local_cac)))
+    _already_exists = _gate_key in state.__dict__.setdefault('_candidate_key_map', {})
+
+    if not _already_exists and local_d31 == 0:
+        # ── Walk A: committed-order serialisation (C lines 375–440) ─────────
+        # FUN_00433a20 re-serialises each committed order into local_648/local_cbc.
+        # Python: local_cac already holds the full data; no-op here.
+
+        # ── Walk B: conviction/deceit trust adjustment (C lines 443–488) ─────
+        # DAT_00baed68 == 1 (g_deceit_level) gates this block.
+        # For own MTO units whose destination holds an enemy Army, assign
+        # local_d24 from ally-trust scores (last qualifying unit wins — C assigns,
+        # not accumulates).  Feeds C line 887:
+        #   local_c10 = global_base + local_d04 + local_d24
+        local_d24 = 0
+        if state.g_deceit_level == 1:
+            for prov, info in state.unit_info.items():
+                if info['power'] != power_idx:
+                    continue
+                order_type = int(ot[prov, _F_ORDER_TYPE])
+                if order_type == 0:
+                    continue
+                if order_type != _ORDER_MTO:
+                    continue
+                dest_prov = int(ot[prov, _F_DEST_PROV])
+                # C line 455: byte+3 of dest unit record — 0 means no unit present
+                if not state.has_unit(dest_prov):
+                    continue
+                # C lines 460-464: type != 'A' → power set to 0x14 (invalid) → skip fleet
+                dest_unit_type = state.get_unit_type(dest_prov)
+                if dest_unit_type in ('F', 'FLT'):
+                    continue
+                dest_power = state.get_unit_power(dest_prov)
+                if dest_power is None or dest_power == power_idx:
+                    continue
+                # C lines 467-483: assign (not +=) local_d24 from trust direction
+                trust_fwd = float(state.g_ally_trust_score[power_idx, dest_power])
+                if trust_fwd < 1.0:
+                    local_d24 = 50         # 0x32 — low forward trust
+                else:
+                    trust_rev = float(state.g_ally_trust_score[dest_power, power_idx])
+                    if trust_rev > 1.0:
+                        local_d24 = 150    # 0x96 — high mutual trust
+                    else:
+                        local_d24 = 110    # 0x6e — medium trust
+
+        # ── Step 3 — per-power heat score accumulation ───────────────────────
+        heat_scores = [0] * NUM_POWERS
+        # local_c1c: near-end conviction bonus accumulated once per own MTO/CTO
+        # unit (C line 129 init, line 564 += 0x32).  Stored in candidate record.
+        local_c1c = 0
+
         for prov, info in state.unit_info.items():
             if info['power'] != power_idx:
                 continue
+
             order_type = int(ot[prov, _F_ORDER_TYPE])
-            # Walk A: all non-zero orders are re-serialised (FUN_00433a20);
-            # in Python this is implicit in local_cac — nothing extra needed.
             if order_type == 0:
                 continue
-            # Walk B: trust-adjustment applies only to MTO (field_0x20 == 2)
-            if order_type != _ORDER_MTO:
-                continue
-            dest_prov = int(ot[prov, _F_DEST_PROV])
-            # Line 455: gate on unit presence at destination
-            if not state.has_unit(dest_prov):
-                continue
-            # Lines 460-464: Army-only check — fleet at dest skips trust scoring
-            dest_unit_type = state.get_unit_type(dest_prov)
-            if dest_unit_type in ('F', 'FLT'):
-                continue
-            dest_power = state.get_unit_power(dest_prov)
-            if dest_power is None or dest_power == power_idx:
-                continue
-            # Lines 467-483: forward/reverse trust accumulates into local_d24
-            # C adds per-unit (not assigns): multiple MTO units each contribute.
-            trust_fwd = float(state.g_ally_trust_score[power_idx, dest_power])
-            if trust_fwd < 1.0:
-                local_d24 += 50        # low forward trust
-            else:
-                trust_rev = float(state.g_ally_trust_score[dest_power, power_idx])
-                if trust_rev > 1.0:
-                    local_d24 += 150   # high mutual trust
-                else:
-                    local_d24 += 110   # medium trust
 
-    # ── Step 3 — per-power heat score accumulation ───────────────────────────
-    heat_scores = [0] * NUM_POWERS
+            src = prov
 
-    for prov, info in state.unit_info.items():
-        if info['power'] != power_idx:
-            continue
+            if order_type in (_ORDER_MTO, _ORDER_CTO):
+                dest = int(ot[prov, _F_DEST_PROV])
 
-        order_type = int(ot[prov, _F_ORDER_TYPE])
-        if order_type == 0:
-            continue
+                # Near-end SC-under-threat conviction check (C lines 531–563).
+                # Evaluated BEFORE the per-power loop.  When it fires, +50 goes
+                # to local_c1c and the per-power heat loop is skipped for this
+                # unit (C: goto LAB_0044ee24 → LAB_0044f133, bypassing LAB_0044ee60).
+                own_r_src  = float(state.g_own_reach_score[power_idx, src])
+                ally_r_src = float(state.g_ally_reach_score[power_idx, src])
+                prox_src   = float(state.g_proximity_score[power_idx, src])
+                _skip_heat = False
 
-        src = prov
+                # C lines 531–562: own SC + lead flag + NearEnd > 5
+                #   + proximity[param_1,src] > own_reach + ally_reach
+                if (state.g_near_end_game_factor > 5.0
+                        and state.g_other_power_lead_flag == 1
+                        and int(state.g_sc_ownership[power_idx, src]) == 1
+                        and prox_src > own_r_src + ally_r_src):
+                    local_c1c += 50
+                    _skip_heat = True
+                # C LAB_0044edc1: NearEnd > 6 fallback (no SC-ownership requirement)
+                elif (state.g_near_end_game_factor > 6.0
+                        and state.g_other_power_lead_flag == 1
+                        and prox_src > own_r_src + ally_r_src):
+                    local_c1c += 50
+                    _skip_heat = True
 
-        if order_type in (_ORDER_MTO, _ORDER_CTO):
-            dest = int(ot[prov, _F_DEST_PROV])
-
-            for power in range(NUM_POWERS):
-                # Allied-SC-under-threat bonus (any endgame defensive pressure)
-                if (state.g_other_power_lead_flag == 1
-                        and state.g_near_end_game_factor > 5.0
-                        and state.g_sc_ownership[power_idx, src] == 1):
-                    heat_scores[power] += 50
-
-                if state.g_near_end_game_factor > 6.0 and state.g_other_power_lead_flag == 1:
-                    # Near-end branch: DAT_005460ec > DAT_0058f8ec + DAT_005658ec
-                    # (g_proximity_score > g_own_reach_score + g_ally_reach_score at src)
-                    prox  = float(state.g_proximity_score[power, src])
-                    own_r = float(state.g_own_reach_score[power_idx, src])
-                    ally_r = float(state.g_ally_reach_score[power_idx, src])
-                    if prox > own_r + ally_r:
-                        heat_scores[power] += src + dest + 1000
-                else:
-                    # Normal branch: DAT_005460ec[src+power*0x40] > DAT_0058f8ec[src+param_1*0x40]
-                    prox  = float(state.g_proximity_score[power, src])
-                    own_r = float(state.g_own_reach_score[power_idx, src])
-                    if prox > own_r:
-                        # H1 fix: filter adjacencies by unit type, matching C's
-                        # AdjacencyList_FilterByUnitType (EvaluateOrderProposal.c:485-552).
-                        # Without this, fleets see landlocked adjacencies and armies
-                        # see sea zones, inflating heat scores for unreachable provinces.
-                        unit_type = info.get('type', 'A')
-                        for adj_q in state.get_unit_adjacencies(prov):
-                            # Skip provinces this unit type cannot reach
-                            if unit_type in ('A', 'AMY') and adj_q in state.water_provinces:
-                                continue
-                            if unit_type in ('F', 'FLT') and adj_q in state.land_provinces:
-                                continue
-                            if state.g_own_reach_score[power_idx, adj_q] > 1:
+                if not _skip_heat:
+                    for power in range(NUM_POWERS):
+                        if state.g_near_end_game_factor > 6.0 and state.g_other_power_lead_flag == 1:
+                            # Near-end branch: proximity[power,src] > own_reach + ally_reach at src
+                            prox  = float(state.g_proximity_score[power, src])
+                            own_r = float(state.g_own_reach_score[power_idx, src])
+                            ally_r = float(state.g_ally_reach_score[power_idx, src])
+                            if prox > own_r + ally_r:
                                 heat_scores[power] += src + dest + 1000
-                                break
+                        else:
+                            # Normal branch: proximity[power,src] > own_reach[power_idx,src]
+                            prox  = float(state.g_proximity_score[power, src])
+                            own_r = float(state.g_own_reach_score[power_idx, src])
+                            if prox > own_r:
+                                # H1 fix: filter adjacencies by unit type, matching C's
+                                # AdjacencyList_FilterByUnitType (EvaluateOrderProposal.c:485-552).
+                                unit_type = info.get('type', 'A')
+                                for adj_q in state.get_unit_adjacencies(prov):
+                                    if unit_type in ('A', 'AMY') and adj_q in state.water_provinces:
+                                        continue
+                                    if unit_type in ('F', 'FLT') and adj_q in state.land_provinces:
+                                        continue
+                                    if state.g_own_reach_score[power_idx, adj_q] > 1:
+                                        heat_scores[power] += src + dest + 1000
+                                        break
 
-        elif order_type == _ORDER_SUP_MTO:
-            dest = int(ot[prov, _F_DEST_PROV])
+            elif order_type == _ORDER_SUP_MTO:
+                dest = int(ot[prov, _F_DEST_PROV])
 
-            for power in range(NUM_POWERS):
-                # Any reach array non-zero at support source → press this province
-                if (state.g_own_reach_score[power_idx, src] > 0
-                        or state.g_convoy_support[power_idx, src] > 0
-                        or state.g_convoy_reach[power_idx, src] > 0
-                        or state.g_support_reach[power_idx, src] > 0):
-                    heat_scores[power] += src + 500 + dest
+                for power in range(NUM_POWERS):
+                    if (state.g_own_reach_score[power_idx, src] > 0
+                            or state.g_convoy_support[power_idx, src] > 0
+                            or state.g_convoy_reach[power_idx, src] > 0
+                            or state.g_support_reach[power_idx, src] > 0):
+                        heat_scores[power] += src + 500 + dest
 
-        elif order_type == _ORDER_SUP_HLD:
-            dest = int(ot[prov, _F_SECONDARY])  # province being held/supported
+            elif order_type == _ORDER_SUP_HLD:
+                dest = int(ot[prov, _F_SECONDARY])
 
-            for power in range(NUM_POWERS):
-                # DAT_0058f8ec[src*8] > 0 OR DAT_005c48ec[dest*8] > 0 OR DAT_005ba0ec[src*8] > 0
-                if (state.g_own_reach_score[power_idx, src] > 0
-                        or state.g_convoy_reach[power_idx, dest] > 0
-                        or state.g_support_reach[power_idx, src] > 0):
-                    heat_scores[power] += src + 0x2ee + dest  # 0x2ee = 750
+                for power in range(NUM_POWERS):
+                    if (state.g_own_reach_score[power_idx, src] > 0
+                            or state.g_convoy_reach[power_idx, dest] > 0
+                            or state.g_support_reach[power_idx, src] > 0):
+                        heat_scores[power] += src + 0x2ee + dest  # 0x2ee = 750
 
-        elif order_type in (_ORDER_HLD, _ORDER_CVY):
-            for power in range(NUM_POWERS):
-                # DAT_0058f8ec[dest*8] > 0 OR DAT_005ba0ec[dest*8] > 0
-                if (state.g_own_reach_score[power_idx, src] > 0
-                        or state.g_support_reach[power_idx, src] > 0):
-                    heat_scores[power] += src + 4000
+            elif order_type in (_ORDER_HLD, _ORDER_CVY):
+                for power in range(NUM_POWERS):
+                    if (state.g_own_reach_score[power_idx, src] > 0
+                            or state.g_support_reach[power_idx, src] > 0):
+                        heat_scores[power] += src + 4000
 
-    # ── Step 4 — early-game adjacency bonus ──────────────────────────────────
-    early_game_bonus = 0
-    if state.g_near_end_game_factor == 1.0 and state.g_deceit_level == 1:
-        # Count how many own-unit adjacencies cover each province
-        # H1 fix: filter adjacencies by unit type (armies skip water, fleets skip land)
-        adj_order_count = [0] * 256
-        for prov, info in state.unit_info.items():
-            if info['power'] != power_idx:
-                continue
-            unit_type = info.get('type', 'A')
-            for adj in state.get_unit_adjacencies(prov):
-                if unit_type in ('A', 'AMY') and adj in state.water_provinces:
+        # ── Step 4 — early-game adjacency bonus ──────────────────────────────
+        early_game_bonus = 0
+        if state.g_near_end_game_factor == 1.0 and state.g_deceit_level == 1:
+            # H1 fix: filter adjacencies by unit type (armies skip water, fleets skip land)
+            adj_order_count = [0] * 256
+            for prov, info in state.unit_info.items():
+                if info['power'] != power_idx:
                     continue
-                if unit_type in ('F', 'FLT') and adj in state.land_provinces:
+                unit_type = info.get('type', 'A')
+                for adj in state.get_unit_adjacencies(prov):
+                    if unit_type in ('A', 'AMY') and adj in state.water_provinces:
+                        continue
+                    if unit_type in ('F', 'FLT') and adj in state.land_provinces:
+                        continue
+                    adj_order_count[adj] += 1
+
+            for prov in range(256):
+                if not state.has_unit(prov):
                     continue
-                adj_order_count[adj] += 1
+                unit_power = state.get_unit_power(prov)
+                if unit_power == power_idx:
+                    continue
+                trust_lo = int(state.g_ally_trust_score[power_idx, unit_power])
+                trust_hi = int(state.g_ally_trust_score_hi[power_idx, unit_power])
+                # C: (-1 < trust_hi) && (trust_hi > 0 || (uint)trust_lo > 1) && adj_count > 1
+                if trust_hi >= 0 and (trust_hi > 0 or trust_lo > 1) and adj_order_count[prov] > 1:
+                    early_game_bonus += 0xa0  # +160 per qualifying province
+            state.g_early_game_bonus += early_game_bonus
 
-        for prov in range(256):
-            if not state.has_unit(prov):
-                continue
-            unit_power = state.get_unit_power(prov)
-            if unit_power == power_idx:
-                continue
-            trust = float(state.g_ally_trust_score[power_idx, unit_power])
-            if trust >= 2 and adj_order_count[prov] > 1:
-                early_game_bonus += 0xa0  # +160 per qualifying province
-        state.g_early_game_bonus += early_game_bonus
+        # ── Step 5 — finalize, score, record, and propose ────────────────────
+        heat_scores[power_idx] = 0  # zero own entry (no self-pressure)
 
-    # ── Step 5 — finalize, score, record, and propose ────────────────────────
-    heat_scores[power_idx] = 0  # zero own entry (no self-pressure)
+        score = evaluate_order_score(power_idx, state)
 
-    score = evaluate_order_score(power_idx, state)
+        candidate = {
+            'power': power_idx,
+            'orders': local_cac,
+            'score': score,
+            'final_dim_score': score,
+            'heat_scores': heat_scores,
+            'deviation': local_d31,
+            'pressure_cost': local_d04,
+            'trust_adjustment': local_d24,
+            'conviction_bonus': local_c1c,
+            'early_game_bonus': early_game_bonus,
+            'sc_count': int(state.sc_count[power_idx]),
+        }
+        insert_candidate_record(state, candidate, trial_idx)
 
-    candidate = {
-        'power': power_idx,
-        'orders': local_cac,
-        'score': score,
-        'trial_scores': [score],
-        'final_dim_score': score,
-        'heat_scores': heat_scores,
-        'deviation': local_d31,
-        'pressure_cost': local_d04,
-        'trust_adjustment': local_d24,
-        'early_game_bonus': early_game_bonus,
-        'sc_count': int(state.sc_count[power_idx]),
-    }
-    state.g_candidate_record_list.append(candidate)
+        if power_idx == 3 and _dbg_log.isEnabledFor(logging.DEBUG):
+            id2n = getattr(state, '_id_to_prov', {})
+            _order_names = {0: 'NUL', 1: 'HLD', 2: 'MTO', 3: 'SUP_HLD',
+                            4: 'SUP_MTO', 5: 'SUP_MTO', 6: 'CTO', 7: 'CVY'}
+            _summary = []
+            for entry in local_cac:
+                _p = entry[0]
+                _ot = entry[1]
+                _dst = entry[2] if len(entry) > 2 else _p
+                _pn = id2n.get(_p, str(_p))
+                _dn = id2n.get(_dst, str(_dst))
+                _otn = _order_names.get(_ot, str(_ot))
+                _summary.append(f"{_pn}:{_otn}→{_dn}" if _ot == 2 else f"{_pn}:{_otn}")
+            _dbg_log.debug(
+                "EVAL_DBG[GER] score=%.1f orders=[%s]",
+                score, ", ".join(_summary),
+            )
 
-    # Debug: log candidate details for Germany (power 3)
-    if power_idx == 3 and _dbg_log.isEnabledFor(logging.DEBUG):
-        id2n = getattr(state, '_id_to_prov', {})
-        _order_names = {0: 'NUL', 1: 'HLD', 2: 'MTO', 3: 'SUP_HLD',
-                        4: 'SUP_MTO', 5: 'SUP_MTO', 6: 'CTO', 7: 'CVY'}
-        _summary = []
-        for entry in local_cac:
-            p = entry[0]
-            ot = entry[1]
-            dst = entry[2] if len(entry) > 2 else p
-            pn = id2n.get(p, str(p))
-            dn = id2n.get(dst, str(dst))
-            otn = _order_names.get(ot, str(ot))
-            _summary.append(f"{pn}:{otn}→{dn}" if ot == 2 else f"{pn}:{otn}")
-        _dbg_log.debug(
-            "EVAL_DBG[GER] score=%.1f orders=[%s]",
-            score, ", ".join(_summary),
-        )
-
-    build_support_proposals(state, power_idx)
+        build_support_proposals(state, power_idx)

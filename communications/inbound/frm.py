@@ -15,6 +15,7 @@ Cross-module deps: handlers in ``.history``, ``.ack``, ``.gate`` and
 """
 
 import re
+import time as _time
 
 from ...state import InnerGameState
 from ..alliance import build_alliance_msg
@@ -29,6 +30,7 @@ from .ack import (
     _ACK_TOK_BWX,
 )
 from .gate import delay_review, register_received_press
+from ..senders import _prepare_ally_press_entry
 
 
 def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
@@ -140,8 +142,13 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
             'REJ': _ACK_TOK_REJ,
             'BWX': _ACK_TOK_BWX,
         }
-        ack_matcher(state, sender_id, ack_tok_map[top_tok],
-                    proposal_tokens=top_body if top_body else None)
+        matched = ack_matcher(state, sender_id, ack_tok_map[top_tok],
+                              proposal_tokens=top_body if top_body else None)
+        # C RECEIVE_PROPOSAL:227 — FUN_00418db0(sender) fires only in the
+        # acceptance branch (acStack_102=='\0'), which maps to YES + matched.
+        # Cancels any pending THN(<sender>) entries from g_master_order_list.
+        if top_tok == 'YES' and matched:
+            _prepare_ally_press_entry(state, sender_id)
 
     # ── HUH inbound: peer ERR-strip replay salvage (FUN_0042cd70) ──────────
     # C: FRMHandler body_tok == HUH → huh_err_strip_replay, which strips
@@ -184,11 +191,11 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                         current_trust = state.g_ally_trust_score[sender_id, ally_id]
                         state.g_ally_trust_score[sender_id, ally_id] = max(0.0, current_trust - 2.0)
 
-                        # Update alliance tree — C's FRMHandler always calls
-                        # BuildAllianceMsg for ALY arrivals. Fixed 2026-04-20
-                        # (audit finding C2).
-                        ally_key = ally_id | 0x4100
-                        build_alliance_msg(state, ally_key)
+                        # Update alliance tree — C: BuildAllianceMsg(&DAT_00bbf638,
+                        # buf, elapsed_sec+10000).  Key is game-elapsed seconds
+                        # + 10000, NOT a power token.  Fixed 2026-05-02.
+                        _elapsed_key = int(_time.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
+                        build_alliance_msg(state, _elapsed_key)
 
     elif top_tok in ('PRP', 'YES') and 'ALY' in content_str:
         match = re.search(r'ALY \((.*?)\)', content_str)
@@ -208,9 +215,8 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
                         state.g_ally_trust_score[ally_id, sender_id] += 1.0
 
                         # Update alliance tree — mirrors REJ branch above.
-                        # Fixed 2026-04-20 (audit finding C2).
-                        ally_key = ally_id | 0x4100
-                        build_alliance_msg(state, ally_key)
+                        _elapsed_key = int(_time.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
+                        build_alliance_msg(state, _elapsed_key)
 
 
 def parse_message(state: InnerGameState, sender: str, message: str):
@@ -252,17 +258,38 @@ def parse_message(state: InnerGameState, sender: str, message: str):
         state.g_game_over = True
         return
 
-    # ── Bare top-level handshake replies ───────────────────────────────
-    # YES/REJ/BWX/HUH/NOT at the top level are server acks for messages
-    # WE sent (MDF/HLO/NOT negotiation, etc.), not peer press replies.
-    # python-diplomacy's message-loop surfaces most of these as high-level
-    # callbacks; we log at warning level so a drop is at least visible.
-    if first in ('YES', 'REJ', 'BWX', 'HUH', 'NOT'):
+    # ── Bare peer press messages (python-diplomacy strips the FRM envelope) ────
+    # In the C binary, inter-bot press is wrapped in FRM (from)(to)(content).
+    # python-diplomacy delivers only the content body as the message string;
+    # sender/recipient are in the Message metadata.  Synthesize the FRM
+    # envelope from that metadata so process_frm_message can dispatch normally.
+    #
+    # PRP: inbound proposal — register for EvaluatePress + RESPOND.
+    # YES/REJ/BWX/HUH: peer ack to one of our outbound proposals — run
+    #   through ack_matcher just as the FRM path does.
+    # NOT: bare NOT at top level is also sometimes a peer signal.
+    if first in ('PRP', 'YES', 'REJ', 'BWX', 'HUH', 'NOT'):
         import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "parse_message: top-level %s from server not ported — message=%r",
-            first, message[:200],
+        _log_pm = _logging.getLogger(__name__)
+        _power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
+                        "ITALY", "RUSSIA", "TURKEY"]
+        _daide_names = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
+        sender_upper = sender.upper()
+        if sender_upper not in _power_names:
+            _log_pm.debug(
+                "parse_message: bare %s from unknown sender %r — dropping",
+                first, sender,
+            )
+            return
+        sender_daide = _daide_names[_power_names.index(sender_upper)]
+        own_idx = getattr(state, 'albert_power_idx', 0)
+        own_daide = _daide_names[own_idx] if 0 <= own_idx < len(_daide_names) else 'UNO'
+        frm_msg = f"FRM ( {sender_daide} ) ( {own_daide} ) ( {message} )"
+        _log_pm.debug(
+            "parse_message: bare %s from %s — synthesised FRM envelope",
+            first, sender_daide,
         )
+        process_frm_message(state, sender, frm_msg)
         return
 
     # Unknown / unhandled top-level token. Keep it debug-level so noise

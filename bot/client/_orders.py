@@ -47,12 +47,14 @@ from ...heuristics import (
     score_provinces,
     score_order_candidates_all_powers,
     score_order_candidates_own_power,
+    compute_build_delta,
     populate_build_candidates,
     populate_remove_candidates,
     compute_win_builds,
     compute_win_removes,
     _WIN_BUILD_WEIGHTS,
     _WIN_REMOVE_WEIGHTS,
+    snapshot_province_state,
 )
 from ...dispatch import validate_and_dispatch_order
 
@@ -159,14 +161,34 @@ class _OrdersMixin:
             self.state.g_pending_orders_B = 0
 
         # Step 4 — press flag refresh
-        # Clear press flag, then re-arm from one-shot config flag (DAT_004c6bdc).
         # DAT_00baed68: 0 = press off, 1 = run ComputePress this turn.
-        if self.state.g_press_flag == 1:
-            self.state.g_press_flag = 0
-        one_shot_press = getattr(self.state, 'g_one_shot_press', 0)
-        if one_shot_press == 1:
-            self.state.g_press_flag = 1
-            self.state.g_one_shot_press = 0
+        # In the DAIDE path, process_hst (called from hlo_dispatch) sets
+        # g_history_counter from HLO LVL.  In the python-diplomacy client
+        # path there is no DAIDE HLO, so g_history_counter stays 0.
+        # Detect that case: if g_minimal_press_mode is 0 (press game) but
+        # g_history_counter has not been set yet, initialize it to 100 so
+        # all DAIDE press types (PCE, DMZ, ALY, VSS, XDO, AND, ORR) are
+        # enabled and the g_history_counter > N gates in the press pipeline
+        # pass correctly.  process_hst is idempotent after first call
+        # (g_history_counter will be 100, not 0, so the guard won't re-fire).
+        if (self.state.g_history_counter == 0
+                and getattr(self.state, 'g_minimal_press_mode', 0) == 0):
+            from ...communications.inbound.history import process_hst
+            process_hst(self.state, 'LVL 100')
+            # No server deadline in this path (process_hst received no MTL).
+            # _send_ally_press_by_power normally schedules THN entries 7+ s in
+            # the future so other bots can press first; with deadline=0 that
+            # window never elapses (g_turn_start_time resets each phase).
+            # g_press_instant=1 sets target=elapsed so entries fire on the
+            # first dispatch_scheduled_press call instead.
+            self.state.g_press_instant = 1
+
+        self.state.g_press_flag = (
+            1
+            if (self.state.g_history_counter > 0
+                and getattr(self.state, 'g_minimal_press_mode', 0) == 0)
+            else 0
+        )
 
         if game_over:
             logger.info("Game-over flag set — skipping order generation")
@@ -218,8 +240,9 @@ class _OrdersMixin:
         if movement_phase:
             _analyze_position(self.state)
 
-        # MOVE_ANALYSIS gate: year-1, press-off, Fall, allied own power
-        ally_own: bool = int(self.state.g_ally_matrix[own_power_idx, own_power_idx]) != 0
+        # C gate: curr_sc_cnt[own_power] != 0 (own power not eliminated).
+        # Previously checked g_ally_matrix[own, own] which is never set → always False.
+        ally_own: bool = int(self.state.sc_count[own_power_idx]) != 0
         if (
             self.state.g_deceit_level == 1
             and self.state.g_press_flag == 0
@@ -228,7 +251,12 @@ class _OrdersMixin:
         ):
             _move_analysis(self.state)
 
-        # 5e — DAT_00baed6d = 0  (deviation/retry sentinel cleared before GenerateOrders)
+        # 5e — SnapshotProvinceState (Source/bot/SnapshotProvinceState.c)
+        # Must run after g_deceit_level increment (5d) and after _analyze_position
+        # so g_other_power_lead_flag / trust matrices reflect the current turn.
+        snapshot_province_state(self.state)
+
+        # DAT_00baed6d = 0  (deviation/retry sentinel cleared before GenerateOrders)
         self.state.g_baed6d = 0
 
         # 5f — GenerateOrders + ScoreOrderCandidates (FUN_004559c0)
@@ -301,6 +329,7 @@ class _OrdersMixin:
         if hasattr(self.state, 'g_alliance_orders'):
             self.state.g_alliance_orders = {}
         self.state.g_candidate_record_list = []
+        self.state.__dict__.pop('_candidate_key_map', None)
 
         # Translate inbound press registry → per-power general / alliance order
         # sets so MC sub-pass 1c can dispatch received-XDO orders.  Without
@@ -351,9 +380,20 @@ class _OrdersMixin:
                     self.state, own_power_idx,
                     skip_power=own_power_idx if _no_press else -1,
                 )
-                if n_self:
-                    logger.debug(
-                        "Self-proposal fallback: generated %d proposals", n_self)
+                # HOLD-DBG: log self-proposal output so we can see what MC gets to work with.
+                _gen_ord_by_power = {
+                    p: [(o.get('type'), o.get('unit'), o.get('target'))
+                        for o in orders]
+                    for p, orders in self.state.g_general_orders.items()
+                } if hasattr(self.state, 'g_general_orders') else {}
+                logger.info(
+                    "HOLD_DBG[%s] self_proposals generated=%s  "
+                    "skip_power=%s  g_general_orders_by_power=%s",
+                    self.power_name,
+                    n_self,
+                    own_power_idx if _no_press else -1,
+                    _gen_ord_by_power,
+                )
             except Exception:
                 logger.exception(
                     "generate_self_proposals raised; continuing without "
@@ -421,6 +461,13 @@ class _OrdersMixin:
                         if press_cap == 0 and p != own_power_idx:
                             re_trials = 1
                         process_turn(self.state, p, num_trials=re_trials)
+        # Post-MC refresh: advance round counter so all processed powers are
+        # stale, then run UpdateScoreState (UpdateAllyOrderScore +
+        # RefreshOrderTable) to populate g_current_best_order from the
+        # accumulated MC candidates.  Mirrors BuildAndSendSUB.c:311.
+        self.state.g_current_round += 1
+        update_score_state(self.state)
+
         # Candidate-vs-press corroboration penalty
         # (Source/ScoreOrderCandidates.c lines 342–630).  Marks candidates
         # whose orders disagree with received-press XDOs with a -2.5e36
@@ -521,7 +568,7 @@ class _OrdersMixin:
                 )
 
         # 5i — alliance-active block
-        # Gate: ally[own_power] != 0 AND DAT_00baed33 == 0 (alliance debug flag off)
+        # Gate: curr_sc_cnt[own_power] != 0 AND DAT_00baed33 == 0 (alliance debug flag off)
         alliance_debug: bool = getattr(self.state, 'g_alliance_debug', False)
         if ally_own and not alliance_debug:
             logger.debug("Alliance block active")
@@ -555,6 +602,11 @@ class _OrdersMixin:
         else:
             # Retreat / adjustment phase — no SUB, but HOSTILITY runs in WIN
             if phase == 'WIN':
+                # C: ComputeBuildDelta is called from ParseNOW; parse_now now
+                # mirrors that.  Re-stamp here to guarantee g_sc_owner freshness
+                # immediately before _hostility / compute_influence_matrix.
+                compute_build_delta(self.state)
+
                 _hostility(self.state)
 
                 # WIN build/remove candidate pipeline — mirrors send_GOF WIN branch:
@@ -577,28 +629,20 @@ class _OrdersMixin:
                 # Restore real SC ownership for build/remove candidate selection.
                 self.state.g_sc_ownership[:] = saved_sc_ownership
 
-                # Count units directly from unit_info (mirrors FUN_0040ab10 which
-                # counts from the unit list rather than any cached counter).
-                # g_unit_count is only refreshed by _analyze_position in movement
-                # phases, so it may be stale here.
-                sc    = int(self.state.sc_count[own_power_idx])
-                units = sum(
-                    1 for u in self.state.unit_info.values()
-                    if u.get('power') == own_power_idx
-                )
-                if units < sc:
+                own_delta = self.state.g_build_delta[own_power_idx]
+                if own_delta['flag'] == 1:
                     # BUILD: unit_count < sc_count
                     populate_build_candidates(self.state, own_power_idx)
                     score_order_candidates_own_power(
                         self.state, _WIN_BUILD_WEIGHTS, own_power_idx)
-                    compute_win_builds(self.state, sc - units)
-                elif sc < units:
+                    compute_win_builds(self.state, own_delta['delta'])
+                elif own_delta['delta'] > 0:
                     # REMOVE: sc_count < unit_count
                     populate_remove_candidates(self.state, own_power_idx)
                     score_order_candidates_own_power(
                         self.state, _WIN_REMOVE_WEIGHTS, own_power_idx)
-                    compute_win_removes(self.state, units - sc)
-                # else sc == units: no builds/removes, no waives — empty GOF
+                    compute_win_removes(self.state, own_delta['delta'])
+                # else delta == 0: no builds/removes, no waives — empty GOF
 
                 # Submit build/remove/waive orders to the game engine.
                 self._submit_adjustment_orders()

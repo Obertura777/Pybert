@@ -14,15 +14,14 @@ proposal, produce the outbound response:
 
 Module-level deps: ``...state.InnerGameState``;
 ``..senders._prepare_ally_press_entry`` (receive_proposal),
-``..alliance.build_alliance_msg`` (receive_proposal / respond),
-``..scheduling._send_ally_press_by_power`` (respond).
+``..alliance.build_alliance_msg`` (receive_proposal),
+``..senders.send_ally_press_by_power`` (respond).
 """
 
 import time as _time
 
 from ...state import InnerGameState
-from ..scheduling import _send_ally_press_by_power
-from ..senders import _prepare_ally_press_entry
+from ..senders import _prepare_ally_press_entry, send_ally_press_by_power as _send_ally_press_by_power
 from ..alliance import build_alliance_msg
 
 
@@ -91,14 +90,18 @@ def receive_proposal(
     # ── Overlap check against g_pos_analysis_list ───────────────────────────────
     # C outer loop iterates g_pos_analysis_list nodes; FUN_00465d90(node+4, &stack4)
     # returns True when node's token set overlaps the incoming proposal.
+    # C line 126: if (*(char*)(puVar2+8) != '\0') goto LAB_0043232b — processed
+    # entries are skipped (the goto path does NOT set the match flag, so the
+    # outer loop simply advances to the next node without treating it as a match).
     # The inner power-record loop uses piStack_c8 which is always empty for
     # freshly inserted entries (power_count == 0), so it never executes and
     # acStack_102[0] stays '\x01' → the outer loop breaks immediately on any
-    # overlap, treating the proposal as already seen.
+    # overlap with an unprocessed entry, treating the proposal as already seen.
     proposal_set = frozenset(proposal_tokens)
     already_seen = any(
         proposal_set & entry['token_set']
         for entry in state.g_pos_analysis_list
+        if entry.get('processed_flag', 0) == 0
     )
 
     if already_seen:
@@ -428,10 +431,19 @@ def respond(
 
             if not skip_deceit:
                 # ── Deceit path: respond YES instead of REJ ───────────────────
-                # C: FUN_00466f80(&YES, &local_6c, local_3c) → [YES] + sublist3
-                response_tokens = [_YES] + list(sublist3)
+                # Build a properly formatted DAIDE response string directed at
+                # the sender.  In python-diplomacy there is no FRM envelope —
+                # the message body alone is delivered, so we must produce the
+                # full DAIDE string (e.g. "YES ( PRP ( ALY ... ) )") rather
+                # than the C-internal token-int list.
+                _press_str = ' '.join(str(t) for t in sublist3)
+                _deceit_msg = f"YES ( PRP ( {_press_str} ) )"
+                _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
+                               "ITALY", "RUSSIA", "TURKEY"]
+                _rcpt = (_POWER_FULL[sender_power]
+                         if 0 <= sender_power < len(_POWER_FULL) else None)
 
-                _log.debug("We are DECEITFULLY responding to: (%s)", response_tokens)
+                _log.debug("We are DECEITFULLY responding to: %s", _deceit_msg)
 
                 # C: (&DAT_00633768)[(byte)local_c8[0]] = 1
                 g_active = getattr(state, 'g_power_active_turn', None)
@@ -442,12 +454,11 @@ def respond(
                 state.g_master_order_list.append({
                     'scheduled_time': target,
                     'press_type':     'SND',
-                    'data':           response_tokens,
+                    'data':           {'message': _deceit_msg, 'recipient': _rcpt},
                     'target_power':   sender_power,
                 })
 
-                # C: BuildAllianceMsg(&DAT_00bbf638, apuStack_7c, (int*)&puStack_bc)
-                build_alliance_msg(state, sender_power)
+                state.g_alliance_msg_tree.add(sender_power)
 
                 _respond_walk_pos_analysis(
                     state, sublist3, sender_power, response_type, own_power
@@ -455,20 +466,42 @@ def respond(
                 return
 
     # ── Normal path (LAB_00421d01) ────────────────────────────────────────────
-    # C: FUN_00466f80(&param_2, &local_6c, local_3c) → [response_type] + sublist3
-    response_tokens = [response_type] + list(sublist3)
+    # Build a properly formatted DAIDE response string directed at the sender.
+    # In python-diplomacy the FRM envelope is absent; callers expect a plain
+    # DAIDE body like "YES ( PRP ( ALY ( AUS GER ) VSS ( RUS ) ) )".
+    _resp_name = {_YES: 'YES', _REJ: 'REJ', _HUH: 'HUH'}.get(response_type, 'REJ')
+    _press_str = ' '.join(str(t) for t in sublist3)
+    _resp_msg = f"{_resp_name} ( PRP ( {_press_str} ) )"
 
-    _log.debug("Our response to a message was: %s", response_tokens)
+    _log.debug("Our response to a message was: %s", _resp_msg)
+
+    # C: local_2c = [sender_token] + non-own power tokens from sublist2
+    # (FUN_00466480 type-filter absorbed; all non-own tokens pass through)
+    # ScheduledPressDispatch extracts these via GetSubList(node+6, ..., 2) to
+    # call SendAllyPressByPower for each power in the list.
+    _seen: set = {sender_power}
+    _target_powers: list = [sender_power]
+    for _pw in sublist2:
+        _idx = _pw & 0xff
+        if _idx != own_power and _idx not in _seen:
+            _seen.add(_idx)
+            _target_powers.append(_idx)
+
+    # Response is directed only at the original sender (first in _target_powers).
+    # Store as a dict so dispatch_scheduled_press / _send_dm can route it.
+    _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
+                   "ITALY", "RUSSIA", "TURKEY"]
+    _rcpt = (_POWER_FULL[sender_power]
+             if 0 <= sender_power < len(_POWER_FULL) else None)
 
     # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_ac)
     state.g_master_order_list.append({
         'scheduled_time': target,
         'press_type':     'SND',
-        'data':           response_tokens,
-        'target_power':   sender_power,
+        'data':           {'message': _resp_msg, 'recipient': _rcpt},
+        'target_powers':  _target_powers,
     })
 
-    # C: BuildAllianceMsg(&DAT_00bbf638, apuStack_7c, (int*)&puStack_bc)
-    build_alliance_msg(state, sender_power)
+    state.g_alliance_msg_tree.add(sender_power)
 
     _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)

@@ -106,7 +106,10 @@ def ack_matcher(
 
         # ── +10000-keyed event into g_alliance_msg_tree ─────────────────────
         # C: BuildAllianceMsg(&DAT_00bbf638, buf, elapsed_sec + 10000).
-        state.g_alliance_msg_tree.add(int(_t.time()) + 10000)
+        # elapsed_sec = current_time − _DAT_00ba2880 (g_session_start_time).
+        state.g_alliance_msg_tree.add(
+            int(_t.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
+        )
 
         match_count += 1
         _log.debug(
@@ -176,24 +179,24 @@ _STANCE_TOKEN_CODES = {
     'AND': _TOK_AND,
     'ORR': _TOK_ORR,
     'XDO': _TOK_XDO,
-    'PRP': 0x4A11,
-    'YES': 0x4A12,
-    'REJ': 0x4A13,
-    'BWX': 0x4A14,
-    'HUH': 0x4A15,
-    'TRY': 0x4A16,
-    'FCT': 0x4A17,
-    'THK': 0x4A18,
-    'WHY': 0x4A19,
-    'IDK': 0x4A1A,
-    'SUG': 0x4A1B,
-    'HOW': 0x4A1D,
-    'QRY': 0x4A1E,
-    'NOT': 0x4A20,
-    'NAR': 0x4A21,
-    'CCL': 0x4A22,
-    'FRM': 0x4A23,
-    'SND': 0x4A24,
+    'PRP': 0x4A13,   # utils/tokens.py "4A13":"PRP"
+    'YES': 0x481C,   # utils/tokens.py "481C":"YES"
+    'REJ': 0x4814,   # utils/tokens.py "4814":"REJ"
+    'BWX': 0x4A02,   # utils/tokens.py "4A02":"BWX"
+    'NOT': 0x480D,   # utils/tokens.py "480D":"NOT"
+    'HUH': 0x4806,   # utils/tokens.py "4806":"HUH"
+    'TRY': 0x4A1A,   # utils/tokens.py "4A1A":"TRY"
+    'FCT': 0x4A07,   # utils/tokens.py "4A07":"FCT"
+    'THK': 0x4A18,   # utils/tokens.py "4A18":"THK"
+    'WHY': 0x4A1E,   # utils/tokens.py "4A1E":"WHY"
+    'IDK': 0x4A0A,   # utils/tokens.py "4A0A":"IDK"
+    'SUG': 0x4A17,   # utils/tokens.py "4A17":"SUG"
+    'HOW': 0x4A09,   # utils/tokens.py "4A09":"HOW"
+    'QRY': 0x4A14,   # utils/tokens.py "4A14":"QRY"
+    'NAR': 0x4A21,   # (no entry in utils/tokens.py — keep as-is)
+    'CCL': 0x4A22,   # (no entry in utils/tokens.py — keep as-is)
+    'FRM': 0x4802,   # utils/tokens.py "4802":"FRM"
+    'SND': 0x4817,   # utils/tokens.py "4817":"SND"
 }
 
 

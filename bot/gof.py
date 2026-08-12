@@ -160,12 +160,16 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
     if getattr(state, 'g_gof_sent', False):
         logger.debug("_send_gof: skipped — GOF already sent this turn")
         return
-    gof_seq = _build_gof_seq(state)          # FUN_00464460
-    if len(gof_seq) > 1:                     # TokenSeq_Count(local_2c) > 1
-        send_dm('GOF')                       # SendDM — plain GOF signal
-        state.g_gof_sent = True
-        # Disarm the fallback-GOF guard (DAT_00baed47 = 0 in AwaitPressAndSendGOF)
-        state.g_cancel_press_sent = 0
+    # FUN_0045aa40 (this function) only sends the GOF+orders DAIDE message when
+    # orders exist (TokenSeq_Count > 1).  But FUN_00443ed0 (AwaitPressAndSendGOF)
+    # is ALWAYS called in C at LAB_004574e6 in send_GOF.c — including the no-units
+    # path and WIN with delta==0.  In Python, send_dm('GOF') = game.no_wait(), the
+    # readiness signal that must always fire regardless of whether there are orders.
+    _build_gof_seq(state)                    # FUN_00464460 (order check — unused in Python)
+    send_dm('GOF')                           # FUN_00443ed0 equivalent — always signal ready
+    state.g_gof_sent = True
+    # Disarm the fallback-GOF guard (DAT_00baed47 = 0 in AwaitPressAndSendGOF)
+    state.g_cancel_press_sent = 0
 
 
 # ── EvaluateOrderProposalsAndSendGOF ─────────────────────────────────────────
@@ -266,10 +270,15 @@ def _evaluate_order_proposals_and_send_gof(
                     )
 
                 # ── Inner press-entry loop (node+0x15/0x16 sub-list) ──────────
-                # C: FUN_00405090 + FUN_00465f60(auStack_a8, inner+0xc)
+                # C: FUN_00405090(&stack0xffffff68, (int)(puVar5 + 0xf))
+                #       → copies outer proposal's press_entries list into
+                #         in_stack_00000018 so XDO() can iterate candidates.
+                #    FUN_00465f60(auStack_a8, inner+0xc)
                 #    cVar7 = CAL_MOVE(param_1); if cVar7==1 → bVar4 = true
                 press_entries = entry.get('press_entries', [])
                 for pe in press_entries:
+                    # FUN_00405090: expose outer candidate list to _handle_xdo
+                    state.g_xdo_candidate_list = press_entries
                     tokens = pe.get('tokens', []) if isinstance(pe, dict) else list(pe)
                     if cal_move(state, tokens):
                         bVar4 = True

@@ -1,26 +1,32 @@
-"""NOT dispatcher sub-handlers — CCD, TME, and fallback.
+"""NOT dispatcher sub-handlers — CCD, TME, XDO, and fallback.
 
 Ported during the 2026-04 handler port.
 
 The NOT dispatcher (NOTDispatcher.c) routes NOT variants to:
   * NOT ( CCD ( power ) )  → handle_not_ccd  — FUN_0045e9f0
   * NOT ( TME ( secs ) )   → handle_not_tme  — vtable +0x50
-  * NOT ( ... )            → handle_not_unknown — vtable +0xc0
+  * NOT ( XDO ( ... ) )    → handle_not_xdo  — vtable +0xc0 (NOT_XDO)
+  * NOT ( ... )            → handle_not_unknown — vtable +0xc0 (same slot, no-op for unknowns)
 
-No C source exists for FUN_0045e9f0 or the vtable slots. Implementations
+C source for vtable +0xc0: Source/communications/NOT_XDO.c.
+No C source exists for FUN_0045e9f0 or vtable +0x50. Those implementations
 are derived from DAIDE protocol specification and inferred C behaviour.
 
 DAIDE protocol semantics:
-  NOT (CCD (power))  — Server announces a power is NO LONGER in civil disorder
-                        (reconnected). Reverses a prior CCD announcement.
+  NOT (CCD (power))   — Server announces a power is NO LONGER in civil disorder
+                         (reconnected). Reverses a prior CCD announcement.
   NOT (TME (seconds)) — Server rejects a TME (time extension) request.
                          Albert should note that extra time was not granted.
+  NOT (XDO (order))   — Server or ally cancels a previously proposed XDO order.
+                         Albert retracts from g_xdo_candidate_list and rebuilds
+                         the alliance message (NOT_XDO / vtable +0xc0).
 """
 
 import logging as _logging
 
 from ...state import InnerGameState
 from ..parsers import _extract_top_paren_groups
+from ..evaluators.cancellation import _not_xdo
 
 _log = _logging.getLogger(__name__)
 
@@ -101,19 +107,44 @@ def handle_not_tme(state: InnerGameState, full_message: str, inner_group: str) -
     # g_move_time_limit_sec from the HST/MTL parse.
 
 
+def handle_not_xdo(state: InnerGameState, full_message: str, variant_group: str) -> None:
+    """
+    Handle NOT ( XDO ( ... ) ) — order cancellation (vtable +0xc0, NOT_XDO).
+
+    Port of NOT_XDO (Source/communications/NOT_XDO.c).
+
+    C behaviour: retracts the XDO order from g_xdo_candidate_list entries,
+    appends xdo_content into g_not_xdo_list_by_sender per sender power, logs
+    "Recalculating: Because we have applied a NOT XDO: (%s)", calls
+    BuildAllianceMsg, then clears g_xdo_candidate_list via SerializeOrders.
+
+    The heavy lifting is shared with the FRM-level NOT(XDO) path via
+    _not_xdo() in evaluators/cancellation.py.
+
+    Args:
+        state: InnerGameState.
+        full_message: the complete NOT message string.
+        variant_group: the first paren group content from the NOT body,
+                       e.g. "XDO ( A PAR - BUR )".
+    """
+    # Flatten variant_group to whitespace-separated tokens for _not_xdo.
+    # variant_group looks like "XDO ( A PAR - BUR )" — strip parens and split.
+    tokens = variant_group.replace('(', ' ').replace(')', ' ').split()
+    # tokens[0] should be 'XDO'; tokens[1:] are the order body.
+    if not tokens or tokens[0].upper() != 'XDO':
+        tokens = ['XDO'] + tokens
+    _not_xdo(state, tokens)
+
+
 def handle_not_unknown(state: InnerGameState, full_message: str, variant_group: str) -> None:
     """
-    Handle NOT ( ... ) — unknown NOT variant (fallback).
+    Handle NOT ( ... ) — truly unrecognised NOT variant.
 
-    Port of vtable slot +0xc0.
-
-    C behaviour (inferred): logs the unexpected NOT variant. Most NOT
-    variants that Albert doesn't handle are server-level rejections of
-    proposals we never send (NOT(GOF), NOT(DRW), etc.).
-
-    The FRM-level NOT handling (NOT inside press envelopes) is already
-    handled by process_frm_message → ack_matcher with _ACK_TOK_REJ.
-    This handler covers bare top-level NOT from the server.
+    C behaviour: vtable +0xc0 (NOT_XDO) is called for all non-CCD/non-TME
+    variants, but meaningful work only happens for XDO content. For any
+    other variant the loop over g_xdo_candidate_list is a no-op and
+    BuildAllianceMsg fires harmlessly. In Python we route XDO explicitly
+    (handle_not_xdo) and log a warning for anything else.
 
     Args:
         state: InnerGameState.

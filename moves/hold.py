@@ -5,24 +5,29 @@ Split from moves.py during the 2026-04 refactor.
 Early-pipeline helpers run by ``generate_orders`` before support and convoy
 enumeration:
 
-  * ``enumerate_hold_orders`` — full port of ``EnumerateHoldOrders``
+  * ``enumerate_hold_orders``   — full port of ``EnumerateHoldOrders``
     (``FUN_00455fd0``).  Populates ``g_hold_weight``, builds per-power
     ordered province sets, and fills ``g_unit_province_reach`` /
     ``g_max_non_ally_reach`` (consumed by ``EvaluateAllianceScore``).
     Phase 6 builds per-power default-hold DAIDE token sequences
     (``g_hold_order_seqs``) for the fallback submission path.
-  * ``compute_safe_reach``    — port of ``FUN_0043dfb0`` computing the
+  * ``compute_safe_reach``      — port of ``FUN_0043dfb0`` computing the
     per-unit safe-reach score (``g_safe_reach_score``).
+  * ``assign_hold_supports``    — port of ``FUN_0041d270``; clears and
+    re-populates ``g_convoy_fleet_candidates`` with random scores for
+    each unordered SC province (called by the MC trial loop Phase 1f).
 
-Module-level deps: ``bisect``, ``logging``, ``numpy``, ``..state.InnerGameState``.
+Module-level deps: ``bisect``, ``logging``, ``numpy``, ``random``, ``..state.InnerGameState``.
 """
 
 import bisect
 import logging
+import random
 
 import numpy as np
 
 from ..state import InnerGameState
+from .convoy import score_convoy_fleet
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +187,12 @@ def _build_reach_matrices(state: InnerGameState):
     state.g_unit_province_reach[:] = 0
     state.g_max_non_ally_reach[:] = 0
 
-    # Per-power ordered province sets.  C uses STL ordered-set (RB-tree);
-    # we use sorted lists with bisect (same semantics, O(n) insert).
-    power_sets: list[list[int]] = [[] for _ in range(NUM_POWERS)]
+    # C's OrderedSet_FindOrInsert(gamestate + 0x4000 + power*0xc, &prov)
+    # looks up the per-power province→score map and returns a pointer to the
+    # int64 score, which the caller dereferences.  That map is
+    # state.final_score_set — the same one BuildOrder_SUP_HLD/_MTO read.
+    # Before 2026-08-12 this used a bisect insertion index (an ordinal rank)
+    # in place of the score.
 
     # ── Phase 2: Walk units ───────────────────────────────────────────────
     unit_snapshot = list(state.unit_info.items())
@@ -192,12 +200,12 @@ def _build_reach_matrices(state: InnerGameState):
         unit_power = unit_data['power']
         unit_type = unit_data.get('type', 'A')   # 'A' or 'F'
 
-        # 2a. Insert province into each power's ordered set and record rank.
+        # 2a. Record each power's score for this province.
         # C (lines 68-87): for each power, OrderedSet_FindOrInsert →
-        #   g_unit_province_reach[province + power*256] = rank
+        #   g_unit_province_reach[province + power*256] = *result
         for p in range(NUM_POWERS):
-            rank = _find_or_insert(power_sets[p], prov_id)
-            state.g_unit_province_reach[p, prov_id] = rank
+            state.g_unit_province_reach[p, prov_id] = \
+                state.final_score_set[p, prov_id]
 
         # 2b. Get type-filtered adjacencies.
         # C (line 99): AdjacencyList_FilterByUnitType(gamestate, unit_type)
@@ -221,15 +229,15 @@ def _build_reach_matrices(state: InnerGameState):
         # 2d. Walk adjacencies — ally-trust gate.
         # C (lines 111-166): for each adj province, check 3 designation
         # arrays.  If the adjacent province is NOT controlled by a trusted
-        # ally (trust == 0), insert it into the unit-power's ordered set and
-        # update MaxNonAllyReach if the new rank exceeds the current value.
+        # ally (trust == 0), look up that province's score for the unit's
+        # power and keep the running maximum.
         for adj_prov in adj_list:
             trust = _get_ally_trust_for_adj(state, unit_power, adj_prov)
             if trust == 0:
-                adj_rank = _find_or_insert(power_sets[unit_power], adj_prov)
+                adj_score = float(state.final_score_set[unit_power, adj_prov])
                 cur_max = state.g_max_non_ally_reach[unit_power, prov_id]
-                if adj_rank > cur_max:
-                    state.g_max_non_ally_reach[unit_power, prov_id] = adj_rank
+                if adj_score > cur_max:
+                    state.g_max_non_ally_reach[unit_power, prov_id] = adj_score
 
 
 def compute_safe_reach(state: InnerGameState):
@@ -257,7 +265,7 @@ def compute_safe_reach(state: InnerGameState):
     num_powers = 7
 
     # Phase 1 — initialise
-    state.g_safe_reach_score = np.full(num_provinces, 0xFFFFFFFF, dtype=np.uint32)
+    state.g_safe_reach_score = np.full(num_provinces, -1.0, dtype=np.float64)
     contested = np.zeros((num_provinces, num_powers), dtype=np.int32)
 
     # Phase 2 — mark unit province + adjacencies contested for all other powers
@@ -288,28 +296,23 @@ def compute_safe_reach(state: InnerGameState):
             for power in range(num_powers):
                 contested[prov_id, power] = 1
 
-    # Phase 4 — compute safe-reach scores using per-power sorted province sets.
-    # OrderedSet_FindOrInsert returns the 0-based rank of the province in the
-    # sorted set (ascending by province_id, matching SortedList_Insert key order).
-    power_sets: list[list[int]] = [[] for _ in range(num_powers)]
-
-    def _find_or_insert(sorted_set: list, province: int) -> int:
-        idx = bisect.bisect_left(sorted_set, province)
-        if idx >= len(sorted_set) or sorted_set[idx] != province:
-            sorted_set.insert(idx, province)
-        return idx
-
+    # Phase 4 — compute safe-reach scores from the per-power province score
+    # map.  C's OrderedSet_FindOrInsert(param_1 + 0x4000 + power*0xc, &prov)
+    # returns a pointer to that province's int64 score (state.final_score_set),
+    # which the caller dereferences and maximises over the unit's province and
+    # its adjacencies.  Before 2026-08-12 this used bisect insertion indices
+    # (ordinal ranks) instead of the scores.
     for prov_id, unit_data in _unit_snapshot:
         unit_power = unit_data['power']
         adj = state.get_unit_adjacencies(prov_id)
 
-        score = _find_or_insert(power_sets[unit_power], prov_id)
+        score = float(state.final_score_set[unit_power, prov_id])
         is_safe = (contested[prov_id, unit_power] != 1)
 
         for adj_prov in adj:
-            adj_rank = _find_or_insert(power_sets[unit_power], adj_prov)
-            if adj_rank > score:
-                score = adj_rank
+            adj_score = float(state.final_score_set[unit_power, adj_prov])
+            if adj_score > score:
+                score = adj_score
             if contested[adj_prov, unit_power] == 1:
                 is_safe = False
 
@@ -425,4 +428,34 @@ def _build_hold_order_seqs(state: InnerGameState, power_idx: int) -> None:
     # to avoid stale HLD entries leaking into subsequent phases.
     state.g_order_table[:, 0] = 0.0
 
+
+# ---------------------------------------------------------------------------
+#  AssignHoldSupports — port of FUN_0041d270
+# ---------------------------------------------------------------------------
+
+def assign_hold_supports(state: InnerGameState, candidates) -> None:
+    """Port of FUN_0041d270 = AssignHoldSupports.
+
+    Clears ``g_convoy_fleet_candidates`` (Albert+0x4cfc), then re-populates
+    it from *candidates* (own unordered SC provinces) with random scores.
+
+    Decompile trace:
+      1. FUN_004019f0(root) + sentinel reset → clear BST → .clear()
+      2. Iterate param_1 (candidate std::set) in tree order.
+      3. Per node: province = *(node+0xC)
+         [MSVC release layout: node[0]=_Left, node[1]=_Parent,
+          node[2]=_Right, node[3]=key]
+      4. score = (_rand() // 0x17) % 0x7c17 + 500
+         MSVC _rand() ∈ [0, RAND_MAX=32767=0x7fff]
+         → score ∈ [500, 1924]
+      5. ScoreConvoyFleet(this+0x4cfc, buf, &score) → bisect.insort
+
+    *candidates* may be any iterable of province ints (or a dict whose
+    keys are province ints — matching the caller in monte_carlo/trial.py).
+    """
+    state.g_convoy_fleet_candidates.clear()
+    for prov in candidates:
+        r = random.randint(0, 32767)          # MSVC _rand() ∈ [0, 0x7fff]
+        score = (r // 0x17) % 0x7c17 + 500   # range [500, 1924]
+        score_convoy_fleet(state, prov, score)
 

@@ -12,15 +12,19 @@ keep working unchanged. Organized into three internal submodules:
 from .hold import (
     enumerate_hold_orders,
     compute_safe_reach,
+    assign_hold_supports,
 )
 from .support import (
     build_support_opportunities,
     assign_support_order,
+    build_order_sup_mto,
+    build_order_sup_hld,
     build_support_proposals,
 )
 from .convoy import (
     enumerate_convoy_reach,
     register_convoy_fleet,
+    score_convoy_fleet,
     build_convoy_orders,
     populate_convoy_routes,
 )

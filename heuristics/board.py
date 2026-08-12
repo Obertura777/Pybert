@@ -346,7 +346,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         t_hi_2 = int(trust_hi_mat[own_power, top_enemy_2])
         t_lo_2 = int(state.g_ally_trust_score[own_power, top_enemy_2])
 
-        rel_hist = getattr(state, 'g_relation_history', None)
+        # DAT_00634e90 — written by FRIENDLY.c / CAL_BOARD.c.  This used to
+        # read g_relation_history, a duplicate binding nothing wrote.
+        rel_hist = getattr(state, 'g_relation_score', None)
         if rel_hist is not None:
             hist_1 = int(rel_hist[own_power, top_enemy_1])
             hist_2 = int(rel_hist[own_power, top_enemy_2])
@@ -391,8 +393,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 n1 = _neutral(top_enemy_1)
                 n2 = _neutral(top_enemy_2)
                 peace_ctr = getattr(state, 'g_peace_counter', None)
-                pc1_zero = peace_ctr is None or int(peace_ctr[top_enemy_1]) == 0
-                pc2_zero = peace_ctr is None or int(peace_ctr[top_enemy_2]) == 0
+                pc1_zero = peace_ctr is None or peace_ctr[top_enemy_1] == 0
+                pc2_zero = peace_ctr is None or peace_ctr[top_enemy_2] == 0
 
                 if pc2_zero and (not n1):
                     # "peace signal from enemy 2" → select enemy 1
@@ -556,9 +558,74 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                                          getattr(state, 'g_opening_best_ally', -1)))
             power_exp = getattr(state, 'g_power_exp_score', None)
 
-            # Opening-alliance preservation (C lines 1626-1686)
+            # Opening-alliance preservation / late-game selection (C lines 1626-1799)
             b4_done = False
-            if history_counter < 10 or True:  # C: g_HistoryCounter < 10 → LAB_00429d0f
+            _enter_opening = history_counter < 10  # C: g_HistoryCounter < 10 → LAB_00429d0f
+
+            if not _enter_opening:
+                # C lines 1730-1799: late-game branch (g_HistoryCounter >= 10)
+
+                # Coalition counts: powers allied with top_enemy_1 (ec) and top_enemy_2 (lc)
+                # C lines 556-604 (ally counts built in earlier loop; reconstructed here)
+                ally_mat = getattr(state, 'g_ally_matrix', None)
+                if ally_mat is not None:
+                    ec = sum(1 for p in range(num_powers)
+                             if p != top_enemy_2 and int(ally_mat[p, top_enemy_1]) == 1)
+                    lc = sum(1 for p in range(num_powers)
+                             if p != top_enemy_1 and int(ally_mat[p, top_enemy_2]) == 1)
+                    if dac_4c6bc4_b4 == top_enemy_1:
+                        ec -= 1
+                    elif dac_4c6bc4_b4 == top_enemy_2:
+                        lc -= 1
+                else:
+                    ec = lc = 0
+
+                # C lines 1731-1766: preliminary top_enemy_1 selection
+                inf1_lg = float(inf_alt[own_power, top_enemy_1])
+                fvar28_lg = (inf1_lg * 100.0) / (inf1_lg + 1.0)
+                if dac_4c6bc4_b4 != top_enemy_1 and lc < ec and fvar28_lg > 20.0:
+                    pe_ok_lg = fvar28_lg > 70.0
+                    if not pe_ok_lg and power_exp is not None:
+                        pe_own_lg = float(power_exp[own_power]) \
+                            if hasattr(power_exp, '__getitem__') else 0.0
+                        pe_te1_lg = float(power_exp[top_enemy_1]) \
+                            if hasattr(power_exp, '__getitem__') else 0.0
+                        if (pe_own_lg - pe_te1_lg * 1.7) + 69.0 > 0.0:
+                            pe_ok_lg = True
+                    if pe_ok_lg:
+                        state.g_enemy_flag[top_enemy_1] = 1
+                        state.g_ally_trust_score[own_power, top_enemy_1] = 0
+                        if hasattr(trust_hi_mat, '__setitem__'):
+                            trust_hi_mat[own_power, top_enemy_1] = 0
+                        # Reverse-trust adjustment (C lines 1760-1763)
+                        if (int(state.g_ally_trust_score[top_enemy_1, own_power]) == 1
+                                and int(trust_hi_mat[top_enemy_1, own_power]) == 0):
+                            state.g_ally_trust_score[top_enemy_1, own_power] = 0
+                            if hasattr(trust_hi_mat, '__setitem__'):
+                                trust_hi_mat[top_enemy_1, own_power] = 0
+
+                # C lines 1767-1774: secondary gate — redirect to opening block if any holds
+                inf2_sg = float(inf_alt[own_power, top_enemy_2])
+                fvar28_sg = (inf2_sg * 100.0) / (inf2_sg + 1.0)
+                pe_fail_sg = (
+                    fvar28_sg <= 70.0 and power_exp is not None
+                    and ((float(power_exp[own_power]) if hasattr(power_exp, '__getitem__') else 0.0)
+                         - (float(power_exp[top_enemy_2]) if hasattr(power_exp, '__getitem__') else 0.0)
+                         * 1.7 + 69.0) <= 0.0
+                )
+                if (history_counter < 10 or dac_4c6bc4_b4 == top_enemy_2
+                        or lc <= ec or fvar28_sg <= 20.0 or pe_fail_sg):
+                    _enter_opening = True
+                else:
+                    # C lines 1775-1799: late-game identified enemy = top_enemy_2
+                    state.g_enemy_flag[top_enemy_2] = 1
+                    state.g_ally_trust_score[own_power, top_enemy_2] = 0
+                    if hasattr(trust_hi_mat, '__setitem__'):
+                        trust_hi_mat[own_power, top_enemy_2] = 0
+                    b4_done = True
+
+            if _enter_opening:
+                # C: LAB_00429d0f — opening-alliance preservation
                 if dac_4c6bc4_b4 >= 0:
                     if top_enemy_1 == dac_4c6bc4_b4:
                         # enemy1 IS opening ally → pick enemy2, keep alliance

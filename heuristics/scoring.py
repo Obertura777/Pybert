@@ -12,14 +12,11 @@ Module-level deps: ``numpy``, ``..state.InnerGameState``,
 ``_PRESS_DISAGREE_PENALTY`` consumed by ``apply_press_corroboration_penalty``.
 """
 
-import logging
 import numpy as np
 
 from ..state import InnerGameState
 
 from ._primitives import evaluate_province_score, _float_to_int64
-
-_dbg_log = logging.getLogger("pybert.scoring_dbg")
 
 # M2: ScoreProvinces normalization exponent — the C binary's _safe_pow call
 # uses an FPU-stack argument not recoverable from Ghidra decompile.
@@ -40,13 +37,32 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
     Port of ScoreOrderCandidates_AllPowers / FUN_0044a040.
     Per-power per-province influence dot-product scoring pass.
     """
-    # C (ScoreOrderCandidates_AllPowers.c:67):
-    #   local_80 = this[0x4d98] - this[0x4d38]  = FAL_round[0] - SPR_round[0] = 500
-    dominance_weight = (state.g_fal_round_weights[0] - state.g_spr_round_weights[0])
+    # C lines 67-69: 64-bit subtraction with borrow correction.
+    #   local_80 = FAL_lo − SPR_lo  (uint32)
+    #   local_7c = (FAL_hi − SPR_hi) − borrow  (uint32), borrow = 1 if FAL_lo < SPR_lo
+    #   dominance_weight = (local_7c << 32) | local_80  (uint64)
+    _fal0 = state.g_fal_round_weights[0]
+    _spr0 = state.g_spr_round_weights[0]
+    _fal_lo, _fal_hi = _fal0 & 0xFFFFFFFF, (_fal0 >> 32) & 0xFFFFFFFF
+    _spr_lo, _spr_hi = _spr0 & 0xFFFFFFFF, (_spr0 >> 32) & 0xFFFFFFFF
+    _borrow = 1 if _fal_lo < _spr_lo else 0
+    dominance_weight = (((_fal_hi - _spr_hi - _borrow) & 0xFFFFFFFF) << 32) | ((_fal_lo - _spr_lo) & 0xFFFFFFFF)
+
+    # Reset before computing fresh scores so stale values from the previous
+    # phase don't leak into score_threshold (Phase 2 Step 2) via provinces
+    # that are no longer BFS candidates (g_candidate_scores == 0 for them).
+    state.final_score_set.fill(0)
 
     for power in range(7):
         for province in range(256):
-            if not state.candidate_set_contains(power, province):
+            # Use the heat_move candidate list from generate_orders (g_candidate_scores),
+            # which matches the C binary's ScoreOrderCandidates_AllPowers iteration source.
+            # g_candidate_scores comes from GenerateOrders Phase 1f and EXCLUDES own-army
+            # positions (those are skipped in the top-N selection).  Using g_candidate_bfs
+            # round-0 (the prior gate) seeded own-SC provinces like LVP with a high
+            # g_attack_count value, inflating final_score_set for those hold positions and
+            # causing armies to perpetually hold at home SCs.
+            if state.g_candidate_scores[power, province] <= 0:
                 continue
 
             total = 0.0
@@ -72,8 +88,10 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
             
     # Pass 2 - Score normalization (C Phase 1b, lines 131-211)
     # Above-threshold: (raw * 1000 / global_max) + 15
-    # Sub-threshold, non-zero, non-min: sqrt(raw / threshold) * 10 + 1
-    import random as _rnd
+    # Sub-threshold, non-zero: pow(raw/threshold, 0.5) * 10 + 1
+    # Assembly: FILD [score], FLD [0.5], _safe_pow → FSTP local_78
+    #           FILD [threshold], FLD [0.5], _safe_pow
+    #           FDIVR local_78 → FMUL [10.0] → FADD [1.0]
     global_max = np.max(state.g_max_province_score)
     threshold = global_max / 100.0
     # Off-by-one guard — C: if min == threshold → threshold = min+1
@@ -89,17 +107,8 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
             if raw_score >= threshold and global_max > 0:
                 score = (raw_score * 1000.0 / global_max) + 15.0
             else:
-                if raw_score == 0:
-                    score = 1.0
-                elif raw_score == state.g_min_score[province]:
-                    score = float(_rnd.randint(1, 10))
-                else:
-                    # C: pow(raw/threshold, 0.5) * 10 + 1
-                    # Assembly: FILD [score], FLD [0.5], _safe_pow → FSTP local_78
-                    #           FILD [threshold], FLD [0.5], _safe_pow
-                    #           FDIVR local_78 → FMUL [10.0] → FADD [1.0]
-                    ratio = max(raw_score / max(threshold, 1.0), 0.0)
-                    score = pow(ratio, _SCORE_NORM_EXPONENT) * _SCORE_NORM_SCALE + _SCORE_NORM_OFFSET
+                ratio = max(raw_score / max(threshold, 1.0), 0.0)
+                score = pow(ratio, _SCORE_NORM_EXPONENT) * _SCORE_NORM_SCALE + _SCORE_NORM_OFFSET
                 if score > 10.0:
                     score = 10.0
 
@@ -121,7 +130,7 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                                if hasattr(state, 'g_max_prov_score_per_power')
                                else state.g_max_province_score[province])
                 if score < per_pow_max:
-                    state.final_score_set[power, province] = score - float(per_pow_max)
+                    state.final_score_set[power, province] = float(per_pow_max) - score
 
     # Pass 3b - Recompute g_max_province_score from normalized final_score_set.
     # In C (lines 192-201), g_max_province_score is updated DURING the
@@ -317,22 +326,22 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
         build_support_opportunities(state)
 
     # Pass 11 - g_support_candidate_mark via enemy-reachable ally-designated
-    # adjacencies (C Phase 9, lines 591-681).
+    # adjacencies (C ScoreOrderCandidates_AllPowers, lines ~631-674).
     sup_mark = getattr(state, 'g_support_candidate_mark', None)
-    ally_e = getattr(state, 'g_ally_designation_e', None)
-    if sup_mark is not None and ally_e is not None:
+    ally_a_hi = getattr(state, 'g_ally_designation_a_hi', None)
+    ally_a = getattr(state, 'g_ally_designation_a', None)
+    if sup_mark is not None and ally_a_hi is not None and ally_a is not None:
         for power in range(7):
             for unit_prov in (state.get_power_units(power)
                               if hasattr(state, 'get_power_units') else []):
                 for adj1 in (state.get_adjacent_provinces(unit_prov)
                              if hasattr(state, 'get_adjacent_provinces') else []):
-                    if ally_e[adj1] < 0:
+                    # C: guard is DAT_004d2e14[adj*2] >= 0 (g_ally_designation_a_hi)
+                    if ally_a_hi[adj1] < 0:
                         continue
-                    # C: (&DAT_004d2e10)[adj*2] != local_f4 → designated for
-                    # a different power. Without dual-orientation mirror we
-                    # approximate via AllyDesignation_A ≠ own power.
-                    if (hasattr(state, 'g_ally_designation_a')
-                        and state.g_ally_designation_a[adj1] == power):
+                    # C: skip when g_AllyDesignation_A[adj]==power AND hi==0
+                    # (64-bit match against {hi=0, lo=power}; hi = power>>31 = 0)
+                    if ally_a[adj1] == power and ally_a_hi[adj1] == 0:
                         continue
                     if state.g_enemy_reach_score[power, adj1] <= 0:
                         continue
@@ -391,13 +400,20 @@ def score_provinces(state: InnerGameState,
     state.g_ally_reach_score.fill(0)      # g_ally_reach_score  DAT_005658e8
     state.g_enemy_reach_score.fill(0)     # g_enemy_reach_score DAT_00535ce8
     state.g_total_reach_score.fill(0)     # g_total_reach_score DAT_0052b4e8
-    state.g_threat_level.fill(0)         # g_ThreatScore     DAT_005460e8
+    state.g_threat_level.fill(-1)        # g_ThreatScore sentinel: -1 = unassigned (ScoreProvinces.c:162, second-pass init)
     state.g_convoy_reach_count.fill(0)    # g_convoy_reach_count DAT_005850e8
     state.g_enemy_mobility_count.fill(0)  # g_enemy_mobility_count DAT_0057a8e8
     state.g_sc_ownership.fill(0)         # g_sc_ownership     DAT_00520ce8
     state.g_coverage_flag.fill(0)        # g_coverage_flag
+    state.g_province_weight.fill(0)      # g_province_weight  DAT_00540ce8
     state.g_max_province_score.fill(0)
     state.g_min_score.fill(1_000_000)    # g_min_score sentinel
+    # C zeroes g_MaxProvinceScore (DAT_0055b0e8/ec) and seeds the paired min
+    # (DAT_005508e8) with 1000000 on every call — ScoreProvinces.c:125,126.
+    # These were left at their construction-time ±2^62 sentinels, which leaks
+    # into every consumer of the per-power maxima.
+    state.g_max_prov_score_per_power.fill(0)
+    state.g_min_prov_score_per_power.fill(1_000_000)
 
     # Friendly/unit-presence flags.
     # g_friendly_unit_flag and g_established_ally_flag are *persisted* to state
@@ -488,17 +504,22 @@ def score_provinces(state: InnerGameState,
 
         # Section 4a — friendly/established-ally unit flags (updated 2026-04-21)
         # C indexes these as [outer_power * 0x100 + prov], making them 2D.
-        # For each unit: if trust >= 0, set g_friendly_unit_flag[outer_power, prov] = 1.
-        # If relation <= 9 (established ally), also set g_established_ally_flag[outer_power, prov] = 1.
+        # ScoreProvinces.c:796-803: set g_enemy_presence when trust is zero/unknown
+        # (hi < 0 OR (hi == 0 AND lo == 0)); set friendly flags otherwise.
         for prov, info in state.unit_info.items():
             unit_power = info['power']
             if unit_power == outer_power:
                 continue  # own units don't get friendly/ally flags
-            trust = float(state.g_ally_trust_score[outer_power, unit_power])
-            if trust < 0:
-                # Hostile unit — no flags set
+            trust_lo = float(state.g_ally_trust_score[outer_power, unit_power])
+            try:
+                trust_hi = int(state.g_ally_trust_score_hi[outer_power, unit_power])
+            except (AttributeError, IndexError):
+                trust_hi = 0
+            # Unknown/enemy trust → enemy_presence (ScoreProvinces.c:803)
+            if trust_hi < 0 or (trust_hi == 0 and trust_lo == 0):
+                state.g_enemy_presence[outer_power, prov] = 1
                 continue
-            # Non-hostile unit (trust >= 0) → set friendly flag
+            # Known trust → friendly flag
             state.g_friendly_unit_flag[outer_power, prov] = 1
             # Check established ally flag (relation <= 9)
             try:
@@ -542,6 +563,54 @@ def score_provinces(state: InnerGameState,
                         state.g_convoy_reach_count[own_power, adj2] += 1
                     if info['power'] != own_power:
                         state.g_enemy_mobility_count[own_power, adj2] += 1
+
+        # Section 4g — per-power province weight (C: ScoreProvinces.c:651-762,
+        # writing DAT_00540ce8[outer_power*0x100 + prov]).
+        #
+        # For every unit, count the adjacencies that (a) outer_power can reach
+        # (g_own_reach_score > 0) and (b) belong to a foreign unit that is not
+        # shielded by a trusted-ally designation; then spread 1/count evenly
+        # across *all* of that unit's adjacencies.  The second walk in C does
+        # not re-apply the gate.
+        #
+        # This pass had no Python port before 2026-08-12, so g_province_weight
+        # stayed all-zero and every consumer in monte_carlo/evaluation.py took
+        # its fallback branch.
+        #
+        # Note: C indexes the relation-score lookup with a stale local
+        # (local_557c); by analogy with ScoreProvinces.c:819 it is the unit's
+        # power, which is what is used here.
+        for prov, info in state.unit_info.items():
+            unit_power = info['power']
+            unit_type = info.get('type', 'A')
+            adj_list = [a for a in state.get_unit_adjacencies(prov)
+                        if state.can_reach_by_type(prov, a, unit_type)]
+
+            count = 0
+            for adj in adj_list:
+                if int(state.g_own_reach_score[outer_power, adj]) <= 0:
+                    continue
+                if unit_power == outer_power:
+                    continue
+                is_designated = (
+                    int(state.g_ally_designation_a[adj]) == outer_power
+                    or int(state.g_ally_designation_b[adj]) == outer_power
+                    or int(state.g_ally_designation_c[adj]) == outer_power
+                )
+                trust_lo = float(state.g_ally_trust_score[outer_power, unit_power])
+                trust_hi = int(state.g_ally_trust_score_hi[outer_power, unit_power])
+                relation = int(state.g_relation_score[outer_power, unit_power])
+                if (trust_lo != 0 or trust_hi != 0) and relation > 9:
+                    if (trust_hi < 0
+                            or (trust_hi < 1 and trust_lo < 2)
+                            or is_designated):
+                        continue
+                count += 1
+
+            if count > 0:
+                share = 1.0 / float(count)
+                for adj in adj_list:
+                    state.g_province_weight[outer_power, adj] += share
 
         # Section 4h — province score assignment (main scoring pass)
         # Updated 2026-04-14: now runs for every `outer_power` (not just
@@ -589,18 +658,6 @@ def score_provinces(state: InnerGameState,
                     break
 
         near_end = float(state.g_near_end_game_factor)
-
-        # Debug: log flag and state for Germany (power 3)
-        _is_dbg = _dbg_log.isEnabledFor(logging.DEBUG) and outer_power == 3
-        if _is_dbg:
-            id2n = getattr(state, '_id_to_prov', {})
-            _dbg_log.debug(
-                "SCORE_DBG[GER] local_5581_flag=%s  near_end=%.1f  "
-                "sc_ownership_GER=%s",
-                local_5581_flag, near_end,
-                [id2n.get(p, str(p)) for p in range(num_provinces)
-                 if state.g_sc_ownership[3, p] == 1],
-            )
 
         # Broadened 2026-04-14 (pass 2) to all 256 provinces — matches C's
         # per-alive-province iteration (ScoreProvinces.c:982-991) so that
@@ -678,11 +735,18 @@ def score_provinces(state: InnerGameState,
             else:
                 score = 2.0  # Base score for untrusted or unoccupied (C 1061)
 
-            # Adjustment 4 — opening target match (applies to unoccupied / untrusted).
-            if score == 0.0 or uowner_here == -1:
-                ot = getattr(state, 'g_opening_target', None)
-                if ot is not None and ot[outer_power] == prov:
-                    score = 150.0
+            # Adjustment 4 — opening target match (C ScoreProvinces.c:1080-1085).
+            # Gate: non-own/non-ally province (ppiVar10 == 0x14 branch) AND no army
+            # present (fleet or empty).  C sets the base score to 2 just before this
+            # check (line 1062), so score == 2.0 here for all qualifying provinces.
+            if not is_own_or_ally:
+                _no_army = (uowner_here == -1 or
+                            state.unit_info.get(prov, {}).get('type', 'A')
+                            not in ('A', 'AMY'))
+                if _no_army:
+                    ot = getattr(state, 'g_opening_target', None)
+                    if ot is not None and ot[outer_power] == prov:
+                        score = 150.0
 
             # Adjustment 7 — unoccupied province match / default (C 1071-1149).
             # Fixed 2026-04-28: Removed `not is_home_center` gating which broke S1902 unoccupied SC logic.
@@ -773,18 +837,6 @@ def score_provinces(state: InnerGameState,
                     score = 90.0
                 else:
                     score = 150.0
-
-            # Debug: log non-zero scores for Germany
-            if _is_dbg and score > 0:
-                _pn = id2n.get(prov, str(prov))
-                _dbg_log.debug(
-                    "SCORE_DBG[GER] prov=%-4s score=%6.1f  uowner=%d  "
-                    "is_own_ally=%s  owns_sc=%d  adj9_fired=%s",
-                    _pn, score, uowner_here,
-                    is_own_or_ally if 'is_own_or_ally' in dir() else '?',
-                    int(state.g_sc_ownership[outer_power, prov]),
-                    state.g_sc_ownership[outer_power, prov] == 1,
-                )
 
             state.g_attack_count[outer_power, prov] = score
             # max-accumulate — only track global max from own_power's
@@ -1153,19 +1205,20 @@ def score_order_candidates_own_power(state: InnerGameState,
     if local_max <= 0.0:
         local_max = 1.0
 
-    # Pass 2 — normalise to [0, 1000] + max-accumulate into g_max_province_score
+    # Pass 2 — normalise to [0, 1000] + max-accumulate into g_max_prov_score_per_power
+    # C: g_MaxProvinceScore[own_power * 0x40 + prov] (per-power slot, not cross-power max)
     for prov, score in scores.items():
         normalized = int(score * 1000 / local_max)
         scores[prov] = normalized
-        if normalized > state.g_max_province_score[prov]:
-            state.g_max_province_score[prov] = float(normalized)
+        if normalized > state.g_max_prov_score_per_power[own_power, prov]:
+            state.g_max_prov_score_per_power[own_power, prov] = normalized
 
-    # Pass 3 — army dithering: armies below global max get score = max − current
-    # C: PackScoreU64(g_MaxProvinceScore[prov] − current) — deterministic, not random
+    # Pass 3 — army dithering: armies below per-power max get score = max − current
+    # C: PackScoreU64(g_MaxProvinceScore[own_power * 0x40 + prov] − current)
     for prov, normalized in scores.items():
         if state.get_unit_type(prov) == 'A':
-            if normalized < state.g_max_province_score[prov]:
-                scores[prov] = int(state.g_max_province_score[prov]) - normalized
+            if normalized < state.g_max_prov_score_per_power[own_power, prov]:
+                scores[prov] = int(state.g_max_prov_score_per_power[own_power, prov]) - normalized
 
     # Write back into g_candidate_scores for own power
     for prov, val in scores.items():

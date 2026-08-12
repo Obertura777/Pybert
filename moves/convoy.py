@@ -31,6 +31,7 @@ from ._constants import (
     _F_CONVOY_LEG0,
     _F_CONVOY_LEG1,
     _F_CONVOY_LEG2,
+    _F_SECONDARY,
     _F_SOURCE_PROV,
     _ORDER_MTO,
     _ORDER_CVY,
@@ -85,10 +86,10 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
       g_winter_score_a[prov]               max harmonic weight (base 7.0)
       g_winter_score_b[prov]               max harmonic weight (base 8.0)
 
-    Requires state.g_build_candidate_list (set of target province IDs) to be
+    Requires state.g_build_candidate_list (dict keyed by province ID) to be
     populated before calling.  Falls back to all occupied/SC provinces if unset.
     """
-    build_candidates: set = state.g_build_candidate_list
+    build_candidates = state.g_build_candidate_list  # dict — `in` tests keys
     if not build_candidates:
         # Fallback: provinces that have any unit or are supply centres
         build_candidates = {
@@ -186,18 +187,22 @@ def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
                         in_reach.add(adj)
                         reach_candidates.append((adj, fc_coast, fc_wave))
 
-        # Sub-pass D: 10-hop convoy chain completion pass.
-        # local_1a8 counts from 0..MAX_CONVOY_CHAIN_DEPTH (< 0xb in original).
+        # Sub-pass D: nested multi-depth convoy-chain completion pass.
+        # C iterates armyReachList at each depth 0..10; any land-adjacent province
+        # not yet visited is added at depth+1 regardless of whether it is a build
+        # candidate.  This enables transit through intermediate non-scoring provinces
+        # so genuine multi-hop chains are discovered.  The earlier `adj in
+        # build_candidates` guard was the bug: it cut off expansion at depth 1
+        # (only immediately adjacent build candidates were ever added), making the
+        # loop a de-facto single pass.
         local_1a8 = 0
         while local_1a8 < _MAX_CONVOY_CHAIN_DEPTH:
             for cur_prov, cur_coast, wave in [e for e in reach_candidates if e[2] == local_1a8]:
-                # Fixed 2026-04-20 (audit #2): army-type adjacency filter.
                 for adj in _filtered_adj(state, cur_prov, 'A'):
-                    if adj in build_candidates and adj not in army_reach:
+                    if adj not in in_reach:
                         army_reach.add(adj)
-                        if adj not in in_reach:
-                            in_reach.add(adj)
-                            reach_candidates.append((adj, 'A',wave + 1))
+                        in_reach.add(adj)
+                        reach_candidates.append((adj, 'A', wave + 1))
             local_1a8 += 1
 
         # Commit convoy reach counts for all discovered destinations
@@ -215,8 +220,7 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
 
     For each FLT-adjacent province adj:
       if g_army_adj_count[adj] > 0:
-        C: access >= 0 AND (access > 0 OR g_ProvTargetFlag != 0)
-           → simplifies to: access > 0 OR g_prov_target_flag != 0
+        C: (-1 < access) AND (access > 0 OR g_ProvTargetFlag != 0)
         mark g_province_score_trial[adj] = 1
     """
     if fleet_prov in state.g_convoy_fleet_registered:
@@ -224,9 +228,13 @@ def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int
     state.g_convoy_fleet_registered.add(fleet_prov)
     for adj in state.fleet_adj_matrix.get(fleet_prov, []):
         if state.g_army_adj_count[adj] > 0:
-            access = int(state.g_province_access_flag[power_idx, adj])
+            # C (RegisterConvoyFleet.c:32-33): DAT_005ee8ec is the HI word of
+            # the same int64 whose LO word is g_ProvTargetFlag (DAT_005ee8e8),
+            # i.e. g_target_flag2 — NOT g_province_access_flag.  score_provinces
+            # writes -1 there for flanked provinces, which must be excluded.
+            access = int(state.g_target_flag2[power_idx, adj])
             target = int(state.g_prov_target_flag[power_idx, adj])
-            if access > 0 or target != 0:
+            if access > -1 and (access > 0 or target != 0):
                 state.g_province_score_trial[adj] = 1
 
 
@@ -355,6 +363,19 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
     return result
 
 
+def score_convoy_fleet(state: InnerGameState, prov: int, score: int) -> None:
+    """Port of ScoreConvoyFleet (FUN_00419790).
+
+    BST insert into g_convoy_fleet_candidates keyed by score.  The C code
+    traverses an MSVC std::map RB-tree to find the insertion point
+    (lower-bound walk), then calls FUN_00413ba0 (RB-tree node alloc + link)
+    and writes the returned node's two data fields into the caller's buffer.
+    In Python the sorted list + bisect.insort is the exact equivalent.
+    """
+    import bisect
+    bisect.insort(state.g_convoy_fleet_candidates, (score, prov))
+
+
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int, coast: int = 0) -> None:
     """
     Port of FUN_0044b760 = BuildConvoyOrders.
@@ -372,10 +393,12 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
             "populate_convoy_routes() was likely not called for power %d. "
             "Convoy orders will be skipped.", power_idx)
 
+    # ClearConvoyState() — no-op in C (Source/utils/clear.c:2-6); acknowledged.
+
     fleet_count, route = _get_convoy_route(state, src_prov, dst_prov)
     if fleet_count <= 0:
         return
-    
+
     # Army setup (CTO)
     state.g_order_table[src_prov, _F_ORDER_TYPE] = _ORDER_CTO
     state.g_order_table[src_prov, _F_DEST_PROV] = dst_prov
@@ -390,29 +413,56 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
         
     state.g_convoy_dst_to_src[dst_prov] = src_prov
 
-    # Mark the army's SOURCE province as having an incoming move.
-    # C: (&g_ProvinceBaseScore)[(int)army_province * 0x1e] = 1;
-    # Uses army_province (src_prov), NOT the destination.
-    # Fixed 2026-04-23 (audit finding MOV-1): was incorrectly dst_prov.
-    state.g_order_table[src_prov, _F_INCOMING_MOVE] = 1.0
+    # Mark the DESTINATION province as having an incoming move.
+    # C: (&g_ProvinceBaseScore)[(int)army_province * 0x1e] = 1; — the Ghidra
+    # local named `army_province` is param_3, which BuildConvoyOrders passes to
+    # BuildOrder_CTO(this, src_province, dst_province, ...) as dst_province.
+    # Corroborated by DispatchSingleOrder.c (CTO branch) and BuildOrder_MTO.c,
+    # which both mark the destination.
+    # Fixed 2026-08-12: the 2026-04-23 "MOV-1 fix" moved this to src_prov,
+    # inverting the C behaviour.
+    state.g_order_table[dst_prov, _F_INCOMING_MOVE] = 1.0
 
-    # Army inherits score from OrderedSet (via get_candidate_score)
+    # Army inherits score from OrderedSet (via get_candidate_score), stored
+    # against the destination (C: g_ConvoyChainScore[army_province * 0x1e]).
     score = state.get_candidate_score(power_idx, dst_prov, 0)
-    state.g_convoy_chain_score[src_prov] = score
-    state.g_order_score_hi[src_prov] = score
-    
+    state.g_convoy_chain_score[dst_prov] = score
+    state.g_order_score_hi[dst_prov] = score
+
+
     # Fleet setup (CVY)
     for fleet_i in route:
-        max_score = state.g_max_province_score[fleet_i]
+        # C: g_ConvoyChainScore[fleet] = g_MaxProvinceScore[power*0x100+fleet]
+        # — the per-power array, not the 1-D cross-power maximum.
+        max_score = float(state.g_max_prov_score_per_power[power_idx, fleet_i])
         state.g_convoy_chain_score[fleet_i] = max_score
         state.g_order_score_hi[fleet_i] = max_score
-        
+
         state.g_order_table[fleet_i, _F_ORDER_TYPE] = _ORDER_CVY
+        # C: (&DAT_00baeda4)[fleet * 0x1e] = param_2 — column 1 holds the
+        # convoyed army's province; the CVY serializer reads _F_SECONDARY.
+        state.g_order_table[fleet_i, _F_SECONDARY] = src_prov
         state.g_order_table[fleet_i, _F_SOURCE_PROV] = src_prov
         state.g_order_table[fleet_i, _F_DEST_PROV] = dst_prov
         state.g_order_table[fleet_i, _F_ORDER_ASGN] = 1
-        
+        # C: (&g_ProvinceBaseScore)[fleet * 0x1e] = 1 — each convoying fleet
+        # gets the same incoming-move flag as the army.
+        state.g_order_table[fleet_i, _F_INCOMING_MOVE] = 1
+
         register_convoy_fleet(state, power_idx, fleet_i)
-        assign_support_order(state, power_idx, src_prov, dst_prov, coast, flag=1)
+
+    # 4-iteration MoveCandidate rescoring loop (BuildConvoyOrders.c:97-134).
+    # Each pass scans g_convoy_fleet_candidates from the front for the first
+    # candidate whose province matches one of the convoy legs; if found it is
+    # removed (MoveCandidate = BST erase).  The loop runs exactly 4 times
+    # regardless of whether a match is found each pass.
+    leg_provs = set(route)
+    for _ in range(4):
+        for i, (_score, cand_prov) in enumerate(state.g_convoy_fleet_candidates):
+            if cand_prov in leg_provs:
+                state.g_convoy_fleet_candidates.pop(i)
+                break
+
+    assign_support_order(state, power_idx, src_prov, dst_prov, coast, flag=1)
 
 

@@ -38,6 +38,7 @@ _F_CONVOY_LEG0   = _constants._F_CONVOY_LEG0
 _F_CONVOY_LEG1   = _constants._F_CONVOY_LEG1
 _F_CONVOY_LEG2   = _constants._F_CONVOY_LEG2
 _F_SOURCE_PROV   = _constants._F_SOURCE_PROV
+_F_SECONDARY     = _constants._F_SECONDARY
 _ORDER_CVY       = _constants._ORDER_CVY
 _ORDER_CTO       = _constants._ORDER_CTO
 
@@ -85,11 +86,14 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     state.g_candidate_bfs[POWER_ENG, 0, army_dst] = 42.0  # army inherits this
 
     for fp in fleet_provs:
-        state.g_max_province_score[fp] = 10.0 + fp  # distinct per fleet
+        # C seeds each convoying fleet from the PER-POWER max-province score
+        # (g_MaxProvinceScore[power*0x100 + fleet]), not the 1-D cross-power
+        # array — BuildConvoyOrders.c:57.
+        state.g_max_prov_score_per_power[POWER_ENG, fp] = 10.0 + fp
 
     # register_convoy_fleet needs these:
     state.g_army_adj_count = np.zeros(256, dtype=np.int32)
-    state.g_province_access_flag = np.zeros((7, 256), dtype=np.int32)
+    state.g_target_flag2 = np.zeros((7, 256), dtype=np.int64)
     state.g_province_score_trial = np.zeros(256, dtype=np.int32)
     state.g_convoy_fleet_registered = set()
 
@@ -146,6 +150,12 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[NTH, _F_SOURCE_PROV] == LON
 
+    def test_fleet_secondary_is_convoyed_army(self, state):
+        # C: (&DAT_00baeda4)[fleet * 0x1e] = param_2 — column 1 carries the
+        # convoyed army's province, and the CVY serializer reads it.
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+        assert state.g_order_table[NTH, _F_SECONDARY] == LON
+
     def test_fleet_dest_prov(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[NTH, _F_DEST_PROV] == STP
@@ -155,13 +165,15 @@ class TestSingleFleetConvoy:
         assert state.g_order_table[NTH, _F_ORDER_ASGN] == 1
 
     def test_army_score_propagated(self, state):
+        # C: g_ConvoyChainScore[army_province * 0x1e] where the Ghidra local
+        # `army_province` is param_3 = the DESTINATION, not the source.
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_convoy_chain_score[LON] == 42.0
-        assert state.g_order_score_hi[LON] == 42.0
+        assert state.g_convoy_chain_score[STP] == 42.0
+        assert state.g_order_score_hi[STP] == 42.0
 
     def test_fleet_score_from_max_province(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        expected = 10.0 + NTH  # g_max_province_score[NTH]
+        expected = 10.0 + NTH  # g_max_prov_score_per_power[ENG, NTH]
         assert state.g_convoy_chain_score[NTH] == expected
         assert state.g_order_score_hi[NTH] == expected
 
@@ -245,8 +257,16 @@ class TestThreeFleetConvoy:
             assert state.g_convoy_chain_score[fp] == 10.0 + fp
 
     def test_army_score(self, state):
+        # Stored against the destination — see test_army_score_propagated.
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_convoy_chain_score[LON] == 42.0
+        assert state.g_convoy_chain_score[STP] == 42.0
+
+    def test_incoming_move_marks_destination(self, state):
+        # C: (&g_ProvinceBaseScore)[army_province * 0x1e] = 1 with
+        # army_province = param_3 = destination (BuildConvoyOrders.c:36),
+        # matching DispatchSingleOrder.c's CTO branch and BuildOrder_MTO.c.
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+        assert state.g_order_table[STP, _F_INCOMING_MOVE] == 1.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════

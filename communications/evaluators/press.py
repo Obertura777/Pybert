@@ -65,11 +65,15 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
 
     if first_is_and:
         # ── AND path ─────────────────────────────────────────────────────
-        # Count XDO sub-proposals among order_cands.
-        xdo_count = sum(
-            1 for c in order_cands
-            if (c.get('tokens') or [''])[0] in (_XDO, 'XDO')
-        )
+        # C first loop (lines 82-95): count XDO clauses, stripping NOT first.
+        # NOT XDO(...) counts as an XDO clause for the CAL_VALUE gate.
+        def _is_xdo_toks(toks):
+            t = toks
+            while t and (t[0] == _NOT or str(t[0]).upper() == 'NOT'):
+                t = t[1:]
+            return bool(t) and (t[0] == _XDO or str(t[0]).upper() == 'XDO')
+
+        xdo_count = sum(1 for c in order_cands if _is_xdo_toks(c.get('tokens', [])))
 
         result_ok = True
 
@@ -80,18 +84,28 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
             if cal_verdict != _YES:
                 result_ok = False
 
-        if result_ok:
-            for cand in order_cands:
-                tok = cand.get('tokens', [])
-                r = _eval_single_xdo(state, tok, _from_pow)
-                if r == _YES:
-                    # C: FUN_00419300(&DAT_00bb65d4, apvStack_2c, local_6c)
-                    state.g_accepted_proposals.append(tok)
-                else:
-                    result_ok = False
+        # C: second loop runs unconditionally after CAL_VALUE (bVar10 set but
+        # loop not aborted). Track pre-call length so failure cleanup is scoped
+        # to entries added during this call only (mirrors the DAT_00bb65d8
+        # scratch-walk that removes only the current call's entries).
+        _prior_len = len(state.g_accepted_proposals)
+
+        for cand in order_cands:
+            tok = cand.get('tokens', [])
+            # C second loop (lines 138-158): skip _eval_single_xdo for XDO
+            # clauses when xdo_count >= 2 — CAL_VALUE already covered them.
+            # Non-XDO clauses (PCE/DMZ/ALY/etc.) are always evaluated.
+            if xdo_count >= 2 and _is_xdo_toks(tok):
+                continue
+            r = _eval_single_xdo(state, tok, _from_pow)
+            if r == _YES:
+                # C: FUN_00419300(&DAT_00bb65d4, apvStack_2c, local_6c)
+                state.g_accepted_proposals.append(tok)
+            else:
+                result_ok = False
 
         if not result_ok:
-            state.g_accepted_proposals.clear()  # C: cleanup loop on failure
+            del state.g_accepted_proposals[_prior_len:]
             _log.debug("evaluate_press: AND proposal rejected")
             return _REJ
 

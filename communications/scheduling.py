@@ -7,7 +7,6 @@ the 2026-04 structural refactor; behaviour preserved verbatim.
 Contents:
 
 - dispatch_scheduled_press   — main dispatch loop (port of FUN_004424e0)
-- _send_ally_press_by_power  — schedule a THN(<power>) entry (FUN_00421570)
 - _fun_004117d0              — g_pos_analysis_list order-match scanner
 - _press_gate_check          — thin alias used by ScheduledPressDispatch
 - _press_list_count          — per-power press-history size
@@ -28,6 +27,7 @@ import time as _time
 from ..state import InnerGameState
 from ..dispatch.validator import validate_and_dispatch_order
 from .tokens import _TOK_ALY, _TOK_DMZ, _TOK_PCE, _TOK_VSS, _TOK_XDO
+from .evaluators._common import _POWER_NAMES as _PN
 
 
 def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
@@ -91,15 +91,21 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
             # C: SendDM(param_1, node+6) — send the press message.
             _send(data)
 
-            # C: GetSubList(node+6, local_38, 2) → power bytes from position
-            # 2+ in the token sequence.  In Python, the enqueued SND entry
-            # stores the target power as 'target_power' (single int).
+            # C: GetSubList(node+6, local_38, 2) → all power bytes from position
+            # 2+ in the token sequence (local_2c in RESPOND, local_c8 in deceit).
+            # Deceit path stores 'target_power' (single int, sender only).
+            # Normal path stores 'target_powers' (list: sender + non-own proposal powers).
             target = entry.get('target_power')
             if target is not None:
                 cumulative_snd_powers.append(int(target))
+            for _t in entry.get('target_powers', []):
+                _ti = int(_t)
+                if _ti not in cumulative_snd_powers:
+                    cumulative_snd_powers.append(_ti)
 
             # C: for i in 0..len(local_58): SendAllyPressByPower(local_58[i])
             # Uses the cumulative list (all SND recipients so far).
+            from .senders import send_ally_press_by_power as _send_ally_press_by_power
             for pwr in cumulative_snd_powers:
                 _send_ally_press_by_power(state, pwr)
 
@@ -111,65 +117,6 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
         # entry consumed — do NOT add to remaining
 
     state.g_master_order_list = remaining
-
-
-def _send_ally_press_by_power(state: InnerGameState, power: int) -> None:
-    """
-    Port of SendAllyPressByPower (FUN_00421570).
-
-    Schedules a THN press DM for the given power with a randomised delay
-    (or immediate dispatch when g_press_instant is set).
-
-    C flow:
-      1. FUN_00465870(local_34) — init token list (→ absorbed).
-      2. local_48[0] = power | 0x4100 — build DAIDE power token.
-         FUN_00466ed0(&THN, local_44, local_48) — wrap as THN(<power>) sequence.
-         AppendList(local_34, ...) / FreeList(local_44) — absorbed.
-      3. FUN_00418db0(power) — PrepareAllyPressEntry: mark sender's press-entry pending.
-      4. Compute target elapsed time:
-           g_press_instant == 0 (randomised):
-             random_delay = (rand() / 23) % 15          # 0–14 units
-             target = current_elapsed + random_delay + 7
-             if g_move_time_limit_sec >= 1 and target > g_move_time_limit_sec - 20:
-                 target = g_move_time_limit_sec - 20        # cap 20 s before deadline
-           g_press_instant != 0 (immediate):
-             target = current_elapsed                    # fire on next dispatch poll
-      5. FUN_00465f60(local_1c, local_34) — copy token list (→ absorbed).
-         FUN_00419c30(&g_ScheduledPressQueue, ..., &target) — enqueue THN entry.
-
-    Python: token-list mechanics absorbed; schedules
-    {'press_type': 'THN', 'data': [power], 'scheduled_time': target}
-    into g_master_order_list (DAT_00bb65bc/c0 — same C++ list object).
-    """
-    import random as _random
-
-    # Cross-slice call: ``_prepare_ally_press_entry`` lives in ``.senders`` and
-    # ``senders`` already imports from this module — a module-level import here
-    # would create a real circular import.  Deferred import at call time is
-    # safe because both submodules are fully loaded by then.
-    from .senders import _prepare_ally_press_entry
-
-    _prepare_ally_press_entry(state, power)
-
-    turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
-    elapsed = _time.time() - turn_start
-
-    if not int(getattr(state, 'g_press_instant', 0)):
-        # C: uVar4 = (rand() / 0x17) % 0xf  →  0–14 integer
-        random_delay = (_random.randint(0, 0x7fff) // 23) % 15
-        target = elapsed + random_delay + 7
-        move_limit = int(getattr(state, 'g_move_time_limit_sec', 0))
-        if move_limit >= 1 and target > move_limit - 20:
-            target = float(move_limit - 20)
-    else:
-        # C: lVar1 = now - g_TurnStartTime  →  current elapsed (send immediately)
-        target = elapsed
-
-    state.g_master_order_list.append({
-        'scheduled_time': target,
-        'press_type':     'THN',
-        'data':           [power],
-    })
 
 
 def _fun_004117d0(state: InnerGameState, param_1: int) -> bool:
@@ -388,9 +335,11 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
     #    FUN_00466540(local_64, apuStack_1c, local_68)   → [own_tok, target_tok]
     #    FUN_00466f80(&PCE, &puStack_5c, ppuVar6)        → PCE ( own target )
     #    FUN_00466f80(&PRP, apuStack_4c, ppuVar6)        → PRP ( PCE ( own target ) )
-    _send(f"PRP ( PCE ( {own} {power} ) )")
-
-    return True
+    # Route through propose() for proposal-tree dedup and game-state validation.
+    from .senders import propose as _propose
+    own_tok  = _PN[own]  if 0 <= own  < len(_PN) else str(own)
+    pow_tok  = _PN[power] if 0 <= power < len(_PN) else str(power)
+    return _propose(state, f"PRP ( PCE ( {own_tok} {pow_tok} ) )", [power], send_fn=_send)
 
 
 def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
@@ -500,7 +449,18 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
     #    auStack_a8 = [power]  (recipient list)
     #    auStack_b8 = PRP(...)  (press content)
     #    PROPOSE(this)
-    _send(f"PRP ( ALY ( {own} {power} ) VSS ( {mutual_enemy} ) )")
+    # Route through propose() for proposal-tree dedup and game-state validation.
+    from .senders import propose as _propose
+    sent = _propose(
+        state,
+        f"PRP ( ALY ( {_PN[own] if 0 <= own < len(_PN) else own} "
+        f"{_PN[power] if 0 <= power < len(_PN) else power} ) "
+        f"VSS ( {_PN[mutual_enemy] if 0 <= mutual_enemy < len(_PN) else mutual_enemy} ) )",
+        [power],
+        send_fn=_send,
+    )
+    if not sent:
+        return False
 
     # Mark g_ally_matrix[power*21 + mutual_enemy] = 0xfffffffc = -4 (cooling-off)
     # C: (&g_ally_matrix)[(int)(puVar6 + iVar2)] = 0xfffffffc
@@ -514,28 +474,18 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     Port of FUN_00433510(this, param_1) — param_1 = sender power index.
 
     Searches g_broadcast_list for already-sent own proposals (type_flag==1,
-    sent==True, count>0) whose current board state no longer matches the
+    sent==True, history_flag>0) whose board state no longer matches the
     expected order (GameBoard_GetPowerRec check) and which have not yet been
     submitted as an XDO proposal (g_xdo_proposal_list dedup).
 
-    For each such candidate, computes per-power score deltas (iVar5 = own
-    gain, iVar8 = sender gain) via two paths:
-      • count >= 1 AND alt_scores valid (not −1000000): use alt_scores.
-      • otherwise (LAB_004337b0 fallback): node.scores[p] − node.baseline[p].
+    Scores each candidate via score_vector[own] and score_vector[power]
+    (C: node[0x12+power] − baseline[power] delta pair).  Accumulates all
+    candidates that strictly improve the running best total (score_own + score_sender
+    > best_score) with score_own > 0 and score_sender > −800.
 
-    Accumulates ALL candidates that strictly improve the running best total
-    (iVar5 + iVar8 > best_score) with iVar5 > 0 and iVar8 > −800, mirroring
-    the C loop which appends to local_3c/local_4c on every new maximum.
-
-    After iteration, if any candidates were found:
-      • Logs each accumulated PRP(XDO) proposal (PROPOSE macro equivalent).
-      • Registers all proposed order sequences in g_xdo_proposal_list
-        (FUN_00419300 equivalent) so the same compound key is not re-sent.
-
-    Dedup granularity: the compound order-sequence key used by FUN_00410980/FUN_00419300
-    is mirrored here as a tuple of (province, order_type, target_dest), which
-    distinguishes different order types at the same province without requiring
-    full token serialization. Matches C's full-key-sequence dedup behaviour.
+    After iteration: sends each accumulated PRP(XDO) via send_fn (PROPOSE macro)
+    and registers the token-sequence dedup key in g_xdo_proposal_list
+    (FUN_00419300 equivalent) to prevent re-sending the same proposal.
 
     Unchecked callees: FUN_00410980, FUN_00419300,
                        FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
@@ -544,6 +494,9 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    _send = send_fn if send_fn is not None else (
+        lambda msg: _log.debug("_execute_xdo: PROPOSE %s", msg)
+    )
 
     own: int = getattr(state, 'albert_power_idx', 0)
     best_score: int = -20000          # local_a4
@@ -552,100 +505,69 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     accumulated_dedup_keys: list = []
     accumulated_prp: list = []
 
-    # g_xdo_proposal_list — set of compound order-seq keys (province, order_type, target_dest)
-    # already submitted as XDO proposals. Mirrors C's FUN_00410980/FUN_00419300 key lookup.
+    # g_xdo_proposal_list — set of token-tuple keys already submitted as XDO
+    # proposals.  Mirrors C's FUN_00410980/FUN_00419300 full-key-sequence lookup.
     # DAT_00bb6df4 / DAT_00bb6df8 sentinel.
     xdo_sent: set = getattr(state, 'g_xdo_proposal_list', set())
 
     for node in getattr(state, 'g_broadcast_list', []):
-        # Gate 1: type_flag == 1  (node[7] == 1)
+        # Gate 1: type_flag == 1  (node[7] == 1) — self-generated proposals only
         if node.get('type_flag', 0) != 1:
             continue
 
-        # Gate 2: count > 0  ((int)node[0x27] > 0)
-        count: int = int(node.get('count', 0))
-        if count <= 0:
+        # Gate 2: history_flag > 0  (C: (int)node[0x27] > 0)
+        # node[0x27] = AllianceRecord+0x9c = history_flag in the Python model.
+        # Earlier port read 'count' (nonexistent field) → gate always failed.
+        if node.get('history_flag', 0) <= 0:
             continue
 
         # Gate 3: sent_flag == 1  (*(char*)(node+6) == '\x01')
         if not node.get('sent', False):
             continue
 
-        # GameBoard_GetPowerRec check: puVar4[1] != local_50.
-        # Skip when the board's current order for *power* still matches the
-        # proposal's expected order (already satisfied on the board).
-        province = node.get('province')
-        if province is None:
+        # Retrieve the XDO token sequence from order_candidates.
+        # C node stores the token list inline; Python mirrors it as
+        # order_candidates[0]['tokens'] (set by emit_xdo_proposals_to_broadcast).
+        candidates = node.get('order_candidates', [])
+        if not candidates:
             continue
-        board_order = node.get('board_orders', {}).get(power)
+        tokens: list = candidates[0].get('tokens', [])
+        if not tokens:
+            continue
+
+        # GameBoard_GetPowerRec check: skip when board already satisfies order.
+        # C: puVar4[1] != local_50 → board order for *power* changed since proposal.
+        # When 'order_match' is absent (no board-state snapshot in entry), the
+        # check is conservatively skipped so the proposal is always evaluated.
+        board_order = getattr(state, 'g_board_orders', {}).get(power)
         expected    = node.get('order_match')
-        if board_order is not None and board_order == expected:
+        if board_order is not None and expected is not None and board_order == expected:
             continue
 
-        # FUN_00410980: check if compound order-seq key already submitted (not-found → process).
-        # Build compound dedup key: (province, order_type, target_dest) to distinguish
-        # different order types targeting the same province (mirrors C's full token-seq key).
-        order_seq = node.get('proposal_seq', [])
-        order_type = ''
-        target_dest = ''
-        if isinstance(order_seq, dict):
-            order_type = order_seq.get('type', '')
-            target_dest = order_seq.get('target_dest', order_seq.get('target', ''))
-        elif isinstance(order_seq, (list, tuple)) and order_seq:
-            order_type = str(order_seq[0]) if order_seq else ''
-
-        dedup_key = (province, order_type, target_dest)
-        # C: if (puVar4[1] == iVar5) → "not found in g_xdo_proposal_list → evaluate".
+        # FUN_00410980: dedup against g_xdo_proposal_list using full token tuple.
+        dedup_key = tuple(tokens)
         if dedup_key in xdo_sent:
             continue
 
-        # Trust baseline lookup (FUN_0040fa80 + FUN_004109f0 at node+0x8c).
-        # Always executed here since count > 0 was already verified (the inner
-        # redundant check at C line 149 is always true at this point).
-        baseline: dict = node.get('baseline', {})   # power → int
+        # Score computation from score_vector (C: node[power+0x12] − baseline[power]).
+        # Python uses legitimacy_gate scores stored per-power in score_vector.
+        score_vector: list = node.get('score_vector', [0] * 7)
+        score_own:    int  = score_vector[own]   if own   < len(score_vector) else 0
+        score_sender: int  = score_vector[power] if power < len(score_vector) else 0
 
-        # Score computation — two paths (mirror of LAB_004337b0 / else branch):
-        #   C else branch (count >= 1): try alternative scores from current node
-        #     at offset +0x38 + power*4 (FUN_0040fa80(&local_ac) + ...).
-        #     FUN_0040dfe0 checks validity of the baseline iterator; if it or
-        #     either alt score is −1000000, fall through to LAB_004337b0.
-        #   C LAB_004337b0 (direct): node[power+0x12] − baseline[power].
-        score_own: int
-        score_sender: int
-        if count >= 1:
-            alt: dict = node.get('alt_scores', {})
-            a_own    = alt.get(own,   -1000000)
-            a_sender = alt.get(power, -1000000)
-            # FUN_0040dfe0 validity gate + sentinel checks (−1000000 == invalid).
-            if a_own != -1000000 and a_sender != -1000000:
-                score_own    = a_own
-                score_sender = a_sender
-            else:
-                # LAB_004337b0 fallback
-                scores       = node.get('scores', {})
-                score_own    = scores.get(own,   0) - baseline.get(own,   0)
-                score_sender = scores.get(power, 0) - baseline.get(power, 0)
-        else:
-            # LAB_004337b0: direct delta (dead path here since count>0 checked
-            # above, but kept for structural fidelity with the decompile).
-            scores       = node.get('scores', {})
-            score_own    = scores.get(own,   0) - baseline.get(own,   0)
-            score_sender = scores.get(power, 0) - baseline.get(power, 0)
+        # FUN_00422a90 (commit=False) gate — skip invalid orders.
+        order_seq_dict = candidates[0].get('order_seq')
+        if order_seq_dict is not None:
+            if validate_and_dispatch_order(state, own, order_seq_dict, commit=False) != 0:
+                continue
 
-        # FUN_00422a90(this, order_seq) == 0: press-send gate (validity only).
-        if isinstance(order_seq, dict) and validate_and_dispatch_order(state, own, order_seq, commit=False) != 0:
-            continue
         # Accumulate whenever this beats the running best combined score.
         total: int = score_own + score_sender
         if score_own > 0 and score_sender > -800 and total > best_score:
             best_score = total
             accumulated_dedup_keys.append(dedup_key)
-            # Build PRP(XDO) note — power token: (power & 0xFF) | 0x4100
-            power_token = (power & 0xFF) | 0x4100
             accumulated_prp.append({
-                'power_token': power_token,
-                'order_seq':   order_seq,
-                'province':    province,
+                'tokens':      tokens,
                 'score_own':   score_own,
                 'score_sender': score_sender,
             })
@@ -654,21 +576,22 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
         return  # bVar1 == false
 
     # bVar1 == true: send all accumulated PRP(XDO) proposals (PROPOSE macro).
-    # C: local_b4[0] = (byte)param_1 | 0x4100
-    #    FUN_00465f30/AppendList/FUN_00465f60 wrap the token + proposals
-    #    PROPOSE(local_9c)
-    #    FUN_00419300 registers in g_xdo_proposal_list
-    power_token = (power & 0xFF) | 0x4100
-    for prp in accumulated_prp:
+    # C: PROPOSE(local_9c) → build PRP ( XDO ( … ) ) and dispatch.
+    #    FUN_00419300 then registers the key in g_xdo_proposal_list.
+    # Route through propose() for proposal-tree dedup and game-state validation.
+    from .senders import propose as _propose
+    sent_keys: list = []
+    for prp, dedup_key in zip(accumulated_prp, accumulated_dedup_keys):
+        msg = f"PRP ( {' '.join(str(t) for t in prp['tokens'])} )"
         _log.debug(
-            "_execute_xdo: PRP(XDO) power_token=0x%04x province=%s "
-            "score_own=%d score_sender=%d seq=%s",
-            prp['power_token'], prp['province'],
-            prp['score_own'], prp['score_sender'], prp['order_seq'],
+            "_execute_xdo: PRP(XDO) score_own=%d score_sender=%d",
+            prp['score_own'], prp['score_sender'],
         )
+        if _propose(state, msg, [power], send_fn=_send):
+            sent_keys.append(dedup_key)
 
-    # FUN_00419300: register proposed compound keys in g_xdo_proposal_list.
-    for dedup_key in accumulated_dedup_keys:
+    # FUN_00419300: register proposed token-tuple keys in g_xdo_proposal_list.
+    for dedup_key in sent_keys:
         xdo_sent.add(dedup_key)
     state.g_xdo_proposal_list = xdo_sent
 
@@ -684,7 +607,7 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
       1. Gate: FUN_004117d0(power) → skip if non-zero.
       2. If history > 9: PCE list check + optional renegotiation (FUN_00438b30).
       3. Bidirectional trust gate (own→sender AND sender→own); override via
-         g_TrustOverride (DAT_00baed68).
+         g_press_flag (DAT_00baed68).
       4. If history > 9: ALY+VSS → FUN_004325a0 (sets action_taken).
       5. If history < 20 → return.
       6. If not action_taken AND near_end_game < 3.0: DMZ check → ProposeDMZ.
@@ -719,7 +642,7 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
     if state.g_history_counter > 9:
         pce_result = _find_press_token(state, power, _TOK_PCE)  # FUN_004108a0(..., &PCE)
         if _press_token_found(pce_result, state, power):        # found_node != _Myhead
-            if _renegotiate_pce(state, power):                  # FUN_00438b30
+            if _renegotiate_pce(state, power, send_fn=send_fn):  # FUN_00438b30
                 return
 
     # 3. Bidirectional trust gate.
@@ -734,7 +657,7 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
     def _trust_below_3(hi: int, lo: int) -> bool:
         return hi < 0 or (hi < 1 and lo < 3)
 
-    trust_override = (getattr(state, 'g_TrustOverride', 0) == 1)  # DAT_00baed68
+    trust_override = (getattr(state, 'g_press_flag', 0) == 1)  # DAT_00baed68
 
     if _trust_below_3(thi_os, tlo_os):
         # own→sender trust < 3: allow only if override flag set
@@ -765,7 +688,7 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
             #   DAT_00baed68 == 0  OR  g_diplomacy_state_b[power] > 1
             dipl_b = int(getattr(state, 'g_diplomacy_state_b', [0] * 8)[power])  # DAT_004d5484[power]
             dipl_a = int(getattr(state, 'g_diplomacy_state_a', [0] * 8)[power])  # DAT_004d5480[power]
-            dipl_ok = not trust_override or (dipl_b > 0 and (dipl_b > 1 or dipl_a > 1))
+            dipl_ok = not trust_override or (dipl_b >= 0 and (dipl_b > 0 or dipl_a > 1))
             if dipl_ok:
                 action_taken = bool(propose_dmz(state, power, send_fn=send_fn))  # FUN_00432960
 
@@ -798,4 +721,4 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
         return
     if thi_so < 1 and tlo_so == 0:
         return
-    _execute_xdo(state, power)                                   # FUN_00433510
+    _execute_xdo(state, power, send_fn=send_fn)                   # FUN_00433510

@@ -250,11 +250,20 @@ def _parse_xdo_body_to_order(xdo_tokens: list) -> "tuple[int, dict] | None":
         return power_idx, order
 
     if tag == 'CTO':
-        # CTO dest VIA ( prov+ )  — destination is the next token.
+        # CTO dest VIA ( prov+ )  — destination is the next token,
+        # followed by the ordered intermediate fleet chain.
         if cmd_idx + 1 >= len(body):
             return None
         dest, _ = _parse_destination(body[cmd_idx + 1])
         order['target_dest'] = dest
+        # Parse VIA clause: body[cmd_idx+2] = 'VIA', body[cmd_idx+3] = [fleet, ...]
+        rest = body[cmd_idx + 2:]
+        if (len(rest) >= 2
+                and isinstance(rest[0], str) and rest[0].upper() == 'VIA'
+                and isinstance(rest[1], list)):
+            convoy_legs = [tok.upper() for tok in rest[1] if isinstance(tok, str)]
+            if convoy_legs:
+                order['convoy_legs'] = convoy_legs
         return power_idx, order
 
     if tag == 'CVY':

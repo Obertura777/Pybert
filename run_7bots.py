@@ -5,6 +5,7 @@ Usage:
     cd ~/Downloads/work/Pybert
     uv run run_7bots.py --host diplomacy-api.feng-gu.com --port 443 --deadline 0
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,6 +29,7 @@ if _PARENT not in sys.path:
 
 # Force the package to be imported so relative imports inside it work.
 import importlib
+
 _pkg_mod = importlib.import_module(_PKG)
 
 import diplomacy.client.connection as _conn_mod
@@ -41,12 +43,11 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-# Enable scoring debug output for Germany diagnostics
-logging.getLogger("pybert.scoring_dbg").setLevel(logging.DEBUG)
 # Keep SUB order output and DIAG visible (package name is "Pybert")
 logging.getLogger("Pybert.bot.client._press").setLevel(logging.INFO)
 logging.getLogger("Pybert.bot.client._orders").setLevel(logging.INFO)
 logging.getLogger("Pybert.bot.client._lifecycle").setLevel(logging.INFO)
+logging.getLogger("Pybert.monte_carlo.trial").setLevel(logging.INFO)
 log = logging.getLogger("run_7bots")
 log.setLevel(logging.INFO)
 
@@ -60,6 +61,17 @@ _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logging.getLogger().addHandler(_fh)  # attach to root so it captures everything
 
+# python-diplomacy uses tornado @gen.coroutine, which creates an inner asyncio
+# Task for the generator runner. When that task fails (e.g. send timeout), the
+# exception propagates to the outer Future we watch, but asyncio also flags the
+# inner Task as "never retrieved". Filter it from console output — the real
+# errors are already logged at DEBUG via our done_callback.
+class _TornadoFutureFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Future exception was never retrieved" not in record.getMessage()
+
+logging.getLogger("asyncio").addFilter(_TornadoFutureFilter())
+
 
 async def _connect_ssl(hostname: str, port: int) -> Connection:
     """Like diplomacy.client.connection.connect, but with use_ssl=True."""
@@ -71,6 +83,7 @@ async def _connect_ssl(hostname: str, port: int) -> Connection:
 def _patch_connect_for_ssl():
     """Monkey-patch diplomacy's connect() so every caller (including
     AlbertClient._lifecycle) transparently uses WSS."""
+
     async def connect_with_ssl(hostname, port):
         conn = Connection(hostname, port, use_ssl=True)
         await conn._connect("Connecting (SSL) …")
@@ -122,7 +135,7 @@ async def _pause_and_save(game, game_id: str, pause_phase: str) -> None:
         _mark(f"Debug log saved to {log_file} ({log_file.stat().st_size} bytes)")
 
 
-async def main(host: str, port: int, deadline: int, pause_phase: str) -> None:
+async def main(host: str, port: int, deadline: int, pause_phase: str, press: bool) -> None:
     use_ssl = port == 443
     if use_ssl:
         _patch_connect_for_ssl()
@@ -132,19 +145,21 @@ async def main(host: str, port: int, deadline: int, pause_phase: str) -> None:
         connection = await _connect_ssl(host, port)
     else:
         from diplomacy.client.connection import connect
+
         connection = await connect(host, port)
 
     admin_channel = await connection.authenticate(
         username="admin_observer", password="password"
     )
 
+    rules = ["POWER_CHOICE"] if press else ["NO_PRESS", "POWER_CHOICE"]
     game = await admin_channel.create_game(
         n_controls=7,
         deadline=deadline,
-        rules=["NO_PRESS", "POWER_CHOICE"],
+        rules=rules,
     )
     game_id = game.game_id
-    log.info("Created game %s  (deadline=%ds, NO_PRESS)", game_id, deadline)
+    log.info("Created game %s  (deadline=%ds, press=%s)", game_id, deadline, press)
 
     # ── 2. Watch the admin/omniscient game for the pause phase ──────────
     # Belt-and-suspenders: register the GameProcessed callback AND poll
@@ -165,7 +180,7 @@ async def main(host: str, port: int, deadline: int, pause_phase: str) -> None:
     async def _phase_watcher() -> None:
         last_seen = ""
         while not pause_event.is_set():
-            cur = (getattr(game, "current_short_phase", "") or "")
+            cur = getattr(game, "current_short_phase", "") or ""
             if cur != last_seen:
                 _mark(f"phase poll: current={cur!r} target={pause_phase!r}")
                 last_seen = cur
@@ -195,7 +210,8 @@ async def main(host: str, port: int, deadline: int, pause_phase: str) -> None:
             password="password",
             game_id=game_id,
         )
-        client.state.g_minimal_press_mode = 1  # no press
+        if not press:
+            client.state.g_minimal_press_mode = 1
         clients.append(client)
         tasks.append(asyncio.create_task(client.play(), name=power))
         log.info("Queued %s", power)
@@ -257,14 +273,30 @@ async def main(host: str, port: int, deadline: int, pause_phase: str) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--host", default="diplomacy-api.feng-gu.com")
-    p.add_argument("--port", type=int, default=443)
-    p.add_argument("--deadline", type=int, default=0,
-                   help="Seconds per phase (0 = wait for all orders). "
-                        "Must be 0 when running 7 bots in one process, "
-                        "since each bot blocks the event loop during MC.")
-    p.add_argument("--pause-phase", default="W1902A",
-                   help="Short phase name (e.g. 'W1902A') at which to pause "
-                        "the game and dump its state to games/. Default: W1902A.")
+    # diplomacy-api.feng-gu.com
+    p.add_argument("--host", default="localhost")
+    # 443
+    p.add_argument("--port", type=int, default=8433)
+    p.add_argument(
+        "--deadline",
+        type=int,
+        default=0,
+        help="Seconds per phase (0 = wait for all orders). "
+        "Must be 0 when running 7 bots in one process, "
+        "since each bot blocks the event loop during MC.",
+    )
+    p.add_argument(
+        "--press",
+        action="store_true",
+        default=False,
+        help="Enable press (messaging) for all bots. "
+        "Without this flag the game is created with NO_PRESS.",
+    )
+    p.add_argument(
+        "--pause-phase",
+        default="W1902A",
+        help="Short phase name (e.g. 'W1902A') at which to pause "
+        "the game and dump its state to games/. Default: W1902A.",
+    )
     args = p.parse_args()
-    asyncio.run(main(args.host, args.port, args.deadline, args.pause_phase))
+    asyncio.run(main(args.host, args.port, args.deadline, args.pause_phase, args.press))

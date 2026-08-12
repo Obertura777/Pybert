@@ -295,48 +295,68 @@ def register_received_press(
     """
     Port of RegisterReceivedPress = FUN_00431310.
 
-    Creates g_broadcast_list entries for an incoming FRM press proposal so that
-    BuildAndSendSUB can process them via RECEIVE_PROPOSAL → EvaluatePress → RESPOND.
+    addr: ``0x00431310``
+    C signature (Ghidra): ``undefined * FUN_00431310(undefined1 param_1,
+        undefined1 param_2, undefined1 param_3, undefined1 param_4,
+        undefined2 param_5, undefined1 param_6..9, int **param_11,
+        undefined1 param_12)``
 
-    C parameters:
-      param_1..4  (list)  = press content token list (XDO/PRP body)
-      param_5     (ushort) = from-power token (0x4100 | power_idx)
-      param_6..9  (list)  = to-power token list
-      param_11    (BST*)  = order-candidates map (heap-allocated, freed at end)
-      param_12    (byte)  = flag
+    Creates two g_broadcast_list entries for an incoming FRM press proposal
+    (bilateral validation: pass-1 "received" entry + pass-2 "confirmed"
+    entry) so that BuildAndSendSUB can process them via
+    RECEIVE_PROPOSAL → EvaluatePress → RESPOND.
 
-    C flow:
-      1. Build local power-set map from from-power + to-powers.
-      2. Build SUB token prefix; copy content, from-power, to-powers into locals.
-      3. FUN_00426140 — alliance-partner gate → legitimacy_gate().
-            Returns min per-order score; used by CAL_VALUE for demotion.
-            register_received_press always enqueues (gate effect is via CAL_VALUE).
-      4. local_134 = __time64(NULL) — capture current wall-clock time.
-      5. Two-pass split of param_11 by type_flag:
-           Pass 1: type_flag==0 → local_1e4; call BuildHostilityRecord + SendAlliancePress.
-           Pass 2: re-iterate, same split; watermark = size before pass-1 insert.
-      6. DAT_00baed60 = final g_broadcast_list size (watermark).
+    C flow (verified against Source/communications/register_received_press.c):
+      1. Build local power-set map (local_1c8) from from-power + to-powers
+         via StdMap_FindOrInsert — absorbed as Python validation.
+      2. Build SUB token prefix (local_14c); copy content/from/to into
+         scratch lists (local_12c, local_118) — all freed at end; absorbed.
+      3. FUN_00426140(local_1e8) → local_1fc: legitimacy gate over the
+         candidate set.  Returns a non-null pointer when score > 0.
+         When non-null: local_1d4[0]=1 (history_flag) and
+         local_1cc=DAT_004c6bbc (int_8 / trial-cap token).
+         When null: both stay 0.  Gate effect is via CAL_VALUE score
+         branching — the function always enqueues regardless.
+      4. local_134 = __time64(NULL) — wall-clock capture.
+      5. Two-pass split of param_11 (order-candidates BST) by type_flag:
+           type_flag==0 → local_1e4 (sub-B / external set)
+           type_flag==1 → local_f0  (sub-A / own set; built but NOT passed
+                          to SendAlliancePress; only sub-B is sent)
+         Pass 1: local_150 = 0xffffffff (no watermark).
+                 BuildHostilityRecord + SendAlliancePress(local_1e4).
+         Cleanup: both sets cleared.
+         Pass 2: re-iterate; local_13c = param_12 (flag byte);
+                 local_150 = local_1f8 (watermark = size before pass-1 insert).
+                 BuildHostilityRecord + SendAlliancePress(local_1e4).
+      6. DAT_00baed60 = puVar4: set to broadcast list size read during the
+         second iterator loop body (= size_after, captured before pass-2's
+         SendAlliancePress inserts its entry).
 
-    Python compression:
-      - param_11 (BST of order candidates) is replaced by _parse_xdo_candidates()
-        applied to the press content string.
-      - BuildHostilityRecord absorbed (fields embedded in entry dict).
-      - Two C passes produce two BroadcastList entries; both have received_flag=True.
-      - received_flag is set explicitly here (in C it is set by FUN_0042e450, the
-        MSVC RB-tree node allocator inside SendAlliancePress).
-
-    The BroadcastList entry layout matches what RESPOND expects as press_list:
-      sublist1 = [from_power_tok]
-      sublist2 = to_power_toks
-      sublist3 = press_content  (XDO/PRP tokens; used by receive_proposal + respond)
+    Python mapping:
+      param_11 (BST)     → _parse_xdo_candidates() applied to press_content
+      BuildHostilityRecord → fields embedded in each entry dict
+      local_1d4[0]=1     → history_flag = 1 iff gate_score != 0
+      local_1cc          → int_8 = g_press_proposals_cap iff gate_score != 0
+      sub-A (local_f0)   → extracted but discarded (consistent with C:
+                           only sub-B goes to SendAlliancePress)
+      score_vector[p]    → per-power legitimacy_gate score (richer than C's
+                           single-score replicated for all slots; deviation
+                           is intentional — CAL_VALUE delta uses own_power
+                           slot only, which is correct either way)
+      DAT_00baed60       → state.g_broadcast_list_watermark = size_after
 
     Callees (C):
       FUN_00422960   AllianceRecord constructor      → absorbed
-      FUN_00426140   alliance-partner gate           → legitimacy_gate() (implemented)
-      BuildHostilityRecord                           → absorbed into entry dict
-      SendAlliancePress                              → send_alliance_press()
-      DestroyAllianceRecord                          → absorbed
-      FUN_0041abc0   BST destructor for param_11    → absorbed (_free / Python GC)
+      StdMap_FindOrInsert  power-set map insert      → absorbed
+      FUN_00465f60   token-list copy                 → absorbed
+      FUN_00466f80   prefix+content list builder     → absorbed
+      FUN_00426140   alliance-partner gate           → legitimacy_gate()
+      FUN_00410cf0   linked-list sentinel init       → absorbed
+      FUN_00419300   std::set<TokenSeq> insert       → absorbed
+      BuildHostilityRecord  copy-constructor         → absorbed into entry dict
+      SendAlliancePress     RB-tree insert           → send_alliance_press()
+      DestroyAllianceRecord destructor               → absorbed
+      FUN_0041abc0   BST destructor for param_11     → absorbed (GC)
     """
     import time as _time
     import logging as _logging
@@ -345,21 +365,20 @@ def register_received_press(
     sched_time = int(_time.time())  # C: local_134 = __time64(NULL)
 
     # Parse order candidates from press content (replaces the BST param_11).
+    # _parse_xdo_candidates always returns type_flag==0; the filter below is
+    # defensive but also mirrors the C type_flag==0 → sub-B split.
     content_str = ' '.join(str(t) for t in press_content)
     order_candidates = _parse_xdo_candidates(content_str)
-    # type_flag==0 = external/received candidates (both passes send these)
     external_cands = [c for c in order_candidates if c.get('type_flag', 0) == 0]
 
-    # C line 103: local_1fc = FUN_00426140(local_1e8) — per-order min score
-    # over the candidate set. Ported as legitimacy_gate(): flag_bit gate,
-    # own-power re-score, clamp window [-89999, -80000] → 100000.
-    # C also unconditionally enqueues after; gate effect is via CAL_VALUE.
-    # Canonical Python name is albert_power_idx; g_albert_power is the
-    # C-faithful mirror (DAT_00624124) kept in sync by bot client.
+    # C line 103: local_1fc = FUN_00426140(local_1e8)
+    # Returns a non-null pointer (score != 0) or null (score == 0).
+    # Drives local_1d4[0] (history_flag) and local_1cc (int_8) in both passes.
     own_power_idx = getattr(
         state, 'albert_power_idx',
         getattr(state, 'g_albert_power', 0),
     )
+    gate_score = 0
     try:
         gate_score = legitimacy_gate(
             state, int(own_power_idx),
@@ -370,47 +389,47 @@ def register_received_press(
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("register_received_press: legitimacy_gate raised %s; proceeding", exc)
 
+    # C: local_1d4[0] = 1 and local_1cc = DAT_004c6bbc only when local_1fc != NULL.
+    # history_flag maps to local_1d4[0]; int_8 maps to local_1cc.
+    # CAL_VALUE's diff-form branch requires history_flag >= 1.
+    history_flag = 1 if gate_score != 0 else 0
+    int_8 = int(getattr(state, 'g_press_proposals_cap', 30)) if gate_score != 0 else 0
+
     # C: local_1f8 = DAT_00bb65f4  (g_broadcast_list size before first insert)
     size_before = len(state.g_broadcast_list)
 
-    # Compute per-power score vector — Python stand-in for the int[≥7] at
-    # AllianceRecord +0x48 that BuildHostilityRecord populates in C. For
-    # each power index, re-score the candidate set through legitimacy_gate
-    # with that power's perspective; the min per-order score is the same
-    # quantity C stores in score[+0x48 + 4*p]. When the gate fails or a
-    # power index is absent, we record 0 (neutral).
+    # Per-power score vector (Python extension beyond C's single replicated score).
+    # C: auStack_1a4[slot] = local_1fc for all active-power slots (same value).
+    # Python: per-power legitimacy_gate gives _cal_value a richer baseline; the
+    # own_power_idx slot — which is what CAL_VALUE reads for delta scoring — is
+    # always correct, so the behavioural effect is identical.
     score_vec = [0] * 7
     for pwr in range(7):
         try:
-            s = legitimacy_gate(
+            score_vec[pwr] = int(legitimacy_gate(
                 state, pwr,
                 [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
                  for c in external_cands],
-            )
-            # legitimacy_gate returns clamp-window-corrected min; clip to
-            # int range the C side would see at +0x48 (undefined4, but
-            # CAL_VALUE only reads signed deltas from it).
-            score_vec[pwr] = int(s)
+            ))
         except (KeyError, IndexError, TypeError, ValueError):
             score_vec[pwr] = 0
 
-    # ── Pass 1: type_flag==0 entries, watermark=None ──────────────────────
+    # ── Pass 1: external candidates, watermark = sentinel ────────────────
+    # C: local_150 = 0xffffffff (no watermark); key = local_e4[0] = DAT_00bb65f4
     entry1: dict = {
-        'received_flag':   True,          # set by FUN_0042e450 in C
-        'type_flag':       0,             # external / received
-        'trial_count':     0,             # incremented by BuildAndSendSUB outer loop
-        'sched_time':      sched_time,    # node[0x2e/0x2f] passed to RESPOND
-        'watermark':       None,          # local_150 = 0xffffffff first pass
-        'from_power_tok':  from_power_tok,
-        'sublist1':        [from_power_tok],
-        'sublist2':        list(to_power_toks),
-        'sublist3':        list(press_content),
+        'received_flag':    True,          # set by FUN_0042e450 (RB-tree insert)
+        'type_flag':        0,             # external / received (sub-B)
+        'trial_count':      0,
+        'sched_time':       sched_time,
+        'watermark':        None,          # local_150 = 0xffffffff
+        'history_flag':     history_flag,  # local_1d4[0]
+        'int_8':            int_8,         # local_1cc = DAT_004c6bbc when gate passes
+        'from_power_tok':   from_power_tok,
+        'sublist1':         [from_power_tok],
+        'sublist2':         list(to_power_toks),
+        'sublist3':         list(press_content),
         'order_candidates': list(external_cands),
-        'score_vector':    list(score_vec),
-        # C: history flag at +0x9c; CAL_VALUE requires >= 1 for diff form.
-        # register_received_press produces fresh current-turn records, so
-        # history_flag=1 mirrors the "record is populated and queryable" state.
-        'history_flag':    1,
+        'score_vector':     list(score_vec),
     }
     send_alliance_press(state, key=size_before, entry_data=entry1)
     _log.debug(
@@ -419,16 +438,21 @@ def register_received_press(
     )
 
     # ── Pass 2: same candidates, watermark = size before pass-1 ──────────
-    # C: local_150 = local_1f8; local_e4[0] = DAT_00bb65f4 (updated size)
+    # C: local_150 = local_1f8 (= size before pass-1 insert);
+    #    local_e4[0] = DAT_00bb65f4 (updated size = size_after);
+    #    local_13c = param_12 (flag byte set before second iterator loop).
     size_after = len(state.g_broadcast_list)
     entry2: dict = dict(entry1)
-    entry2['watermark'] = size_before   # local_150 = local_1f8
-    entry2['flag'] = flag               # local_13c = param_12
-    entry2['order_candidates'] = list(external_cands)  # doubled in C; same here
+    entry2['watermark']        = size_before   # local_150 = local_1f8
+    entry2['flag']             = flag           # local_13c = param_12
+    entry2['order_candidates'] = list(external_cands)
     send_alliance_press(state, key=size_after, entry_data=entry2)
 
-    # C: DAT_00baed60 = DAT_00bb65f4  (final g_broadcast_list size watermark)
-    state.g_broadcast_list_watermark = len(state.g_broadcast_list)
+    # C: DAT_00baed60 = puVar4 where puVar4 = DAT_00bb65f4 read during the
+    # SECOND iterator loop (before pass-2's SendAlliancePress) = size_after.
+    # Consumers check this as a boolean (> 0 means real press arrived).
+    state.g_broadcast_list_watermark = size_after
     _log.debug(
-        "register_received_press: watermark=%d", state.g_broadcast_list_watermark
+        "register_received_press: watermark=%d (size_before=%d)",
+        state.g_broadcast_list_watermark, size_before,
     )

@@ -28,7 +28,7 @@ from ..parsers import _extract_top_paren_groups, _split_top_level_groups
 from .frm import process_frm_message
 from .now_parser import parse_now
 from .hlo import hlo_dispatch
-from .not_handlers import handle_not_ccd, handle_not_tme, handle_not_unknown
+from .not_handlers import handle_not_ccd, handle_not_tme, handle_not_xdo, handle_not_unknown
 from .yes_handlers import (
     handle_yes_nme, handle_yes_obs, handle_yes_iam, handle_yes_not,
     handle_yes_gof, handle_yes_tme, handle_yes_drw, handle_yes_snd,
@@ -62,7 +62,8 @@ def not_dispatcher(state: InnerGameState, message: str):
     NOT messages have the form:
       NOT ( CCD ( ... ) )  — power reconnected / CCD cancelled
       NOT ( TME ( ... ) )  — time extension rejected
-      NOT ( ... )          — unknown variant (fallback)
+      NOT ( XDO ( ... ) )  — order cancellation (vtable +0xc0 / NOT_XDO)
+      NOT ( ... )          — unknown variant (fallback; logs warning)
 
     Args:
         state: InnerGameState
@@ -86,6 +87,9 @@ def not_dispatcher(state: InnerGameState, message: str):
 
     elif variant_type == 'TME':
         handle_not_tme(state, message, variant_group)
+
+    elif variant_type == 'XDO':
+        handle_not_xdo(state, message, variant_group)
 
     else:
         handle_not_unknown(state, message, variant_group)

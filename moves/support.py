@@ -18,10 +18,17 @@ Module-level deps: ``..state.InnerGameState``.
 from ..state import InnerGameState
 from ._constants import (
     _F_ORDER_TYPE,
+    _F_SECONDARY,
     _F_DEST_PROV,
+    _F_CONVOY_LO,
+    _F_CONVOY_HI,
     _F_INCOMING_MOVE,
+    _F_SUP_CHAIN_CONFLICT,
+    _F_SOURCE_PROV,
     _F_ORDER_ASGN,
     _ORDER_MTO,
+    _ORDER_SUP_HLD,
+    _ORDER_SUP_MTO,
     _ORDER_CTO,
     _ORDER_CVY,
 )
@@ -55,15 +62,6 @@ def build_support_opportunities(state: InnerGameState):
 
     num_powers = 7
 
-    # Gate 3: OrderedSet node value == g_MaxProvinceScore[q + power*0x100] (int64 equality).
-    # C stores per-power per-province max in g_MaxProvinceScore (stride 0x100 per power);
-    # Python equivalent is g_max_prov_score_per_power[power, q].  The 1-D
-    # g_max_province_score[q] is a cross-power max and is the wrong comparand.
-    # AMY provinces are always zeroed in the C ordered set (<=, not <), so their
-    # node value is 0 while g_MaxProvinceScore is nonzero — Gate 3 always fails for AMY.
-    has_final = hasattr(state, 'final_score_set')
-    has_prov_max = hasattr(state, 'g_max_prov_score_per_power')
-
     for power in range(num_powers):
         # Walk units owned by this power (C: unit_list where unit[0x18] == power)
         for p, info in list(state.unit_info.items()):
@@ -78,12 +76,11 @@ def build_support_opportunities(state: InnerGameState):
                 # Gate 2: q is in this power's SC-ownership region
                 if int(state.g_sc_ownership[power, q]) != 1:
                     continue
-                # Gate 3: ordered-set node value == g_MaxProvinceScore[q + power*0x100]
-                if has_final and has_prov_max:
-                    fs = float(state.final_score_set[power, q])
-                    mx = float(state.g_max_prov_score_per_power[power, q])
-                    if fs != mx:
-                        continue
+                # Gate 3: ordered-set node value == g_MaxProvinceScore[power, q].
+                # C checks lo+hi int64 fields (lines 110-111); hi-word is always 0
+                # for non-negative scores, so this reduces to a single float compare.
+                if float(state.final_score_set[power, q]) != float(state.g_max_prov_score_per_power[power, q]):
+                    continue
 
                 # --- second adjacency: r = potential supporter province -----
                 for r in state.get_adjacent_provinces(q):
@@ -104,6 +101,11 @@ def build_support_opportunities(state: InnerGameState):
                             'supporter_prov':  r,   # W position (r)
                             # coast tokens omitted (Python adj matrix is coast-agnostic)
                         })
+
+    # C stores entries in a BST keyed on score (ScoreSupportOpp.c).  Consumers
+    # iterate in BST in-order (ascending) but the first match per supporter wins
+    # in trial.py — so descending sort gives highest-scored opportunity priority.
+    state.g_support_opportunities_set.sort(key=lambda e: e['score'], reverse=True)
 
 
 def assign_support_order(
@@ -160,18 +162,37 @@ def assign_support_order(
     # combined condition simplifies to: reach_eq_0 OR bVar16.
     go_to_score = reach_eq_0 or bVar16
 
-    # ── Section 2 — Occupancy check (C lines 66-84) ──────────────────────
-    # C: *(char *)(iVar4 + 3 + param_2 * 0x24) — province record byte at
-    # offset 3.  '\0' = empty/no special → fall through to LAB_00441475.
-    # Non-'\0': unit-type/power-index check.  '\x01' sub-case skips score
-    # when unit power matches param_1.  Python approximation: if src has a
-    # non-own unit AND dst has an own unit, skip to LAB_0044150f.
+    # ── Section 2 — Occupancy check (C lines 66-104) ──────────────────────
+    # Province record: byte at offset 3 = occupancy (0=empty); ushort at
+    # offset 0x20 = (hi='A' if Army)(lo=power_idx).
+    #
+    # C decision tree for src_prov:
+    #   - empty (byte==0)            → LAB_00441475  (score)
+    #   - own army (hi=='A', lo==pow) → LAB_00441475  (score)
+    #   - else (non-own OR own fleet) → check dst_prov:
+    #       - dst empty              → fall-through to LAB_0044150f (skip score)
+    #       - dst army (byte=='\x01') AND own → LAB_0044150f (skip score)
+    #       - dst army non-own, or fleet     → LAB_00441475  (score)
+    #
+    # Previous port missed two cases: (a) src non-own + dst empty was kept
+    # go_to_score=True instead of False; (b) own fleet at dst incorrectly
+    # skipped score — C only special-cases '\x01' (army), not fleet.
     if go_to_score:
         src_unit = state.unit_info.get(src_prov)
-        if src_unit is not None and src_unit['power'] != power_idx:
-            dst_unit = state.unit_info.get(dst_prov)
-            if dst_unit is not None and dst_unit['power'] == power_idx:
-                go_to_score = False  # goto LAB_0044150f
+        if src_unit is not None:
+            src_is_own_army = (src_unit['power'] == power_idx
+                               and src_unit.get('type') == 'A')
+            if not src_is_own_army:
+                # src has non-own unit or own fleet
+                dst_unit = state.unit_info.get(dst_prov)
+                if dst_unit is None:
+                    # dst empty → fall through to LAB_0044150f
+                    go_to_score = False
+                elif (dst_unit.get('type') == 'A'
+                      and dst_unit['power'] == power_idx):
+                    # dst has own army → LAB_0044150f
+                    go_to_score = False
+                # dst non-own or fleet → LAB_00441475 (go_to_score stays True)
 
     # ── LAB_00441475 — Score threshold and SUP assignment ──────────────────
     if go_to_score:
@@ -197,13 +218,13 @@ def assign_support_order(
     if (int(state.g_support_demand[dst_prov]) == 1
             and state.g_build_order_pending[power_idx, dst_prov] == 0):
 
-        # g_threat_level (DAT_0058f8e8) = threat level at dst for this power
+        # g_own_reach_score (DAT_0058f8e8)[(dst+pow*0x40)*2] — own unit reach count at dst
         # g_sc_ownership[pow,dst] gates the two branches (C line 114 / 116):
-        #   branch 1: threat > 1 (>=2) AND dst NOT own-SC
-        #   branch 2: threat > 2 (>=3) AND dst IS own-SC
+        #   branch 1: reach > 1 (>=2) AND dst NOT own-SC
+        #   branch 2: reach > 2 (>=3) AND dst IS own-SC
         # Both branches also require DAT_00520cec == 0 (hi-word of pressure;
         # always true for non-negative int32 values → elided)
-        threat = int(state.g_threat_level[power_idx, dst_prov])
+        threat = int(state.g_own_reach_score[power_idx, dst_prov])
         own_sc_at_dst = int(state.g_sc_ownership[power_idx, dst_prov])
 
         if threat != -1 and (
@@ -265,7 +286,7 @@ def assign_support_order(
             for a in state.adj_matrix.get(dst_prov, []):
                 if a != src_prov:
                     state.g_proximity_score[w_power, a] += 1
-                if a == src_prov and int(state.g_threat_level[w_power, src_prov]) == 1:
+                if a == src_prov and int(state.g_coverage_flag[w_power, src_prov]) == 1:
                     state.g_proximity_score[w_power, src_prov] += 2
 
 
@@ -373,6 +394,15 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                                     'src_prov':     own_prov,
                                     'dst_prov':     dest,
                                 })
+                                # C line 239: FUN_00465f30(local_e0, &SUB) — bare
+                                # SUB token queued for broadcast (receiver HUHs it;
+                                # purpose is the g_xdo_press_sent flag + history record).
+                                state.g_xdo_press_proposals.append({
+                                    'type':       'SUB_HANDSHAKE',
+                                    'key':        key,
+                                    'to_power':   u2_info['power'],
+                                    'from_power': power_idx,
+                                })
                         state.g_xdo_press_sent[power_idx, u2_info['power']] = 1
         else:
             # 2+ threats — outer loop over all powers as threatening-power candidates
@@ -479,3 +509,288 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                         })
 
 
+def build_order_sup_mto(
+    state: InnerGameState,
+    power_idx: int,
+    supporter: int,
+    mover: int,
+    target: int,
+) -> None:
+    """Port of BuildOrder_SUP_MTO (Source/moves/BuildOrder_SUP_MTO.c).
+
+    Commits a SUP_MTO order for *supporter* covering *mover*'s attack on
+    *target*, then runs three side-effect passes:
+
+      1. Order-table setup (C L26-44): writes order type, mover/target
+         provinces, score fields, and registers the convoy fleet.
+      2. Trust-tier gate (C L45-59): when the mover belongs to a different
+         power, classifies the relationship into one of three tiers:
+           A (trust == 0)  → g_support_trust_adj = 30
+           B (trust 1-4)   → g_support_trust_adj = 10
+           C (trust >= 5)  → g_support_trust_adj = -10
+         and sets g_convoy_active_flag[target] = 1.
+      3. Chain-robustness scan (C L62-196): threat gate (g_threat_level vs
+         g_enemy_reach_score) → per-qualifying-unit adjacency walk tracking
+         b1/b2/b3/b7 → chain_ok determination.
+         Outcome: bump target's _F_INCOMING_MOVE (chain ok, with optional
+         2-point g_proximity_score boost when b3 fires) or
+         _F_SUP_CHAIN_CONFLICT (chain cut).
+
+    Parameters mirror the C: supporter=param_2, mover=param_3, target=param_4.
+    """
+    # Guard: unit already carries an order
+    if int(state.g_order_table[supporter, _F_ORDER_TYPE]) != 0:
+        return
+
+    # ── Order-table setup (C L26-44) ──────────────────────────────────────
+    state.g_order_table[supporter, _F_ORDER_TYPE]    = float(_ORDER_SUP_MTO)
+    state.g_order_table[supporter, _F_SECONDARY]     = float(mover)
+    state.g_order_table[supporter, _F_DEST_PROV]     = float(target)
+    state.g_order_table[supporter, _F_INCOMING_MOVE] = 1.0
+
+    score_lo = float(state.final_score_set[power_idx, supporter])
+    state.g_convoy_chain_score[supporter]            = score_lo
+    state.g_order_table[supporter, _F_CONVOY_LO]     = score_lo
+    state.g_order_table[supporter, _F_CONVOY_HI]     = 0.0
+    state.g_order_score_hi[supporter]                = 0.0
+
+    if state.unit_info.get(supporter, {}).get('type') == 'A':
+        state.g_order_table[supporter, 24] = 0.0
+        state.g_order_table[supporter, 25] = 0.0
+
+    from .convoy import register_convoy_fleet  # deferred: convoy.py imports support.py
+    register_convoy_fleet(state, power_idx, supporter)
+
+    # ── Trust-tier gate (C L45-59) ────────────────────────────────────────
+    # Fires when the mover belongs to an ally rather than power_idx itself.
+    # DAT_00633f14 = g_support_trust_adj; g_ConvoyActiveFlag[target] = 1.
+    mover_power = state.unit_info.get(mover, {}).get('power', power_idx)
+    if mover_power != power_idx:
+        trust_lo = float(state.g_ally_trust_score[power_idx, mover_power])
+        trust_hi = int(state.g_ally_trust_score_hi[power_idx, mover_power])
+        if trust_lo == 0.0 and trust_hi == 0:
+            state.g_support_trust_adj = 30          # tier A: zero trust
+        elif trust_hi < 1 and (trust_hi < 0 or trust_lo < 5):
+            state.g_support_trust_adj = 10          # tier B: low trust (1-4)
+        else:
+            state.g_support_trust_adj = -10         # tier C: established (>=5)
+        state.g_convoy_active_flag[target] = 1
+
+    # ── Chain-robustness scan (C L62-196) ────────────────────────────────
+    # Threat gate (C L63-64): DAT_005460e8 = g_threat_level vs g_enemy_reach_score.
+    threat = int(state.g_threat_level[power_idx, supporter])
+    er     = int(state.g_enemy_reach_score[power_idx, supporter])
+    # Unlike BuildOrder_SUP_HLD.c:57, BuildOrder_SUP_MTO.c:62 has no
+    # "threat == 0 → success" short-circuit: it runs the chain scan whenever
+    # threat equals enemy-reach, and 0 == 0 is the common case.  The
+    # short-circuit was copied over from the SUP_HLD port; removed 2026-08-12.
+    if threat != er:
+        state.g_order_table[target, _F_SUP_CHAIN_CONFLICT] += 1.0
+        return
+
+    chain_ok = True   # bVar15
+    b3       = False  # threat-delta flag; value from last qualifying unit (C semantics)
+
+    for this_prov, this_unit in state.unit_info.items():
+        # Unit gate: enemy_presence (DAT_004f6ce8) OR established_ally_flag (DAT_0050bce8)
+        ep_flag = int(state.g_enemy_presence[power_idx, this_prov]) == 1
+        ea_flag = int(state.g_established_ally_flag[power_idx, this_prov]) == 1
+        if not (ep_flag or ea_flag):
+            continue
+
+        # C resets bVar1..bVar7 at LAB_00440fce for each qualifying unit.
+        b1 = False   # some adj == supporter
+        b2 = False   # some adj == target OR this_prov == target
+        b3 = False   # adj==mover AND this_prov==target AND g_threat_level delta==1
+        b7 = False   # sister-supporter on own SC covering same target
+
+        unit_type = this_unit.get('type', 'A')
+        adjs = [p for p in state.adj_matrix.get(this_prov, [])
+                if state.can_reach_by_type(this_prov, p, unit_type)]
+
+        for adj_prov in adjs:
+            # bVar1 (C L117-119)
+            if adj_prov == supporter:
+                b1 = True
+            # bVar2 (C L120-125): adj==target OR unit-is-at-target
+            if adj_prov == target or this_prov == target:
+                b2 = True
+            # bVar3 (C L129-136): adj==mover, unit-at-target, threat-delta==1
+            if adj_prov == mover and this_prov == target:
+                unit_power = this_unit.get('power', 0)
+                t_sc   = int(state.g_threat_level[unit_power, mover])
+                base_sc = int(state.g_order_table[target, _F_INCOMING_MOVE])
+                if t_sc - base_sc == 1:
+                    b3 = True
+            # bVar7 (C L141-167): sister-supporter on own SC with SUP_MTO→target
+            if (adj_prov != supporter
+                    and adj_prov != target
+                    and this_prov != target
+                    and int(state.g_sc_ownership[power_idx, adj_prov]) == 1
+                    and int(state.g_order_table[adj_prov, _F_ORDER_TYPE]) == _ORDER_SUP_MTO
+                    and int(state.g_order_table[adj_prov, _F_DEST_PROV]) == target
+                    and int(state.g_order_table[adj_prov, _F_SOURCE_PROV]) == 1):
+                b7 = True
+
+        # Post-check for b7 (C L172-183): discard unless supporter's field-16 == 1;
+        # if field-16 == 2 AND b1 AND b2 → skip this unit's conflict check entirely.
+        if b7:
+            sup_f16 = int(state.g_order_table[supporter, _F_SOURCE_PROV])
+            if sup_f16 != 1:
+                if sup_f16 == 2 and b1 and b2:
+                    continue
+                b7 = False
+
+        if b1 and not b2 and not b7:
+            chain_ok = False
+
+    # ── Outcome bump (C L198-220) ─────────────────────────────────────────
+    if chain_ok:
+        state.g_order_table[target, _F_INCOMING_MOVE] += 1.0
+        # bVar3 proximity boost (C L202-207): enemy at target exerts exactly
+        # one net threat on mover → add 2 to g_proximity_score[target_power, mover].
+        if b3:
+            target_unit = state.unit_info.get(target)
+            if target_unit is not None:
+                t_power = target_unit.get('power', 0)
+                state.g_proximity_score[t_power, mover] += 2
+    else:
+        state.g_order_table[target, _F_SUP_CHAIN_CONFLICT] += 1.0
+
+
+def build_order_sup_hld(
+    state: InnerGameState,
+    power_idx: int,
+    src_prov: int,
+    dst_prov: int,
+) -> None:
+    """Port of BuildOrder_SUP_HLD (Source/moves/BuildOrder_SUP_HLD.c).
+
+    Registers a hold-support order (type 3) for the unit at *src_prov*
+    covering the unit at *dst_prov*, then runs three passes absent from the
+    older assign_support_order path:
+
+      1. Order-table setup (C L27-38): writes type=SUP_HLD, dest=dst_prov,
+         score fields, clears coast fields for armies, calls RegisterConvoyFleet.
+
+      2. Trust-tier gate (C L39-53): fires when dst unit belongs to an ally.
+         Classifies the trust relationship into A/B/C and writes
+         g_support_trust_adj (DAT_00633f14) + g_convoy_active_flag[dst_prov].
+           A (trust == 0)  → g_support_trust_adj = 30
+           B (trust 1-4)   → g_support_trust_adj = 10
+           C (trust ≥ 5)   → g_support_trust_adj = −10
+
+      3. Chain-robustness scan (C L55-188): threat gate (g_threat_level vs
+         g_enemy_reach_score) then a per-qualifying-unit adjacency walk.
+         For each unit where g_enemy_presence or g_established_ally_flag
+         is 1 at (power_idx, unit.prov), walks the type-filtered adjacency
+         list tracking:
+           bVar2 — some adj == src_prov
+           bVar3 — some adj == dst_prov
+           bVar8 — an adjacent own-SC province has a confirmed SUP_HLD to dst
+         If bVar2 AND NOT bVar3 AND NOT bVar8: abort flag fires.
+
+    Outcome:
+      Normal  → state.g_order_table[dst_prov, _F_INCOMING_MOVE] += 1
+      Aborted → state.g_order_table[dst_prov, _F_SUP_CHAIN_CONFLICT] += 1
+    """
+    if int(state.g_order_table[src_prov, _F_ORDER_TYPE]) != 0:
+        return
+
+    # ── Order-table setup (C L27-38) ─────────────────────────────────────
+    state.g_order_table[src_prov, _F_ORDER_TYPE]    = float(_ORDER_SUP_HLD)
+    state.g_order_table[src_prov, _F_DEST_PROV]     = float(dst_prov)
+    state.g_order_table[src_prov, _F_INCOMING_MOVE] = 1.0
+
+    score_lo = float(state.final_score_set[power_idx, src_prov])
+    state.g_convoy_chain_score[src_prov]         = score_lo
+    state.g_order_table[src_prov, _F_CONVOY_LO]  = score_lo
+    state.g_order_table[src_prov, _F_CONVOY_HI]  = 0.0
+    state.g_order_score_hi[src_prov]             = 0.0
+
+    if state.unit_info.get(src_prov, {}).get('type') == 'A':
+        state.g_order_table[src_prov, 24] = 0.0
+        state.g_order_table[src_prov, 25] = 0.0
+
+    from .convoy import register_convoy_fleet
+    register_convoy_fleet(state, power_idx, src_prov)
+
+    # ── Trust-tier gate (C L39-53) ────────────────────────────────────────
+    # Fires when the unit being supported belongs to a different power.
+    dst_unit = state.unit_info.get(dst_prov)
+    if dst_unit is not None and dst_unit.get('power', power_idx) != power_idx:
+        dst_power = dst_unit['power']
+        trust_lo  = float(state.g_ally_trust_score[power_idx, dst_power])
+        trust_hi  = int(state.g_ally_trust_score_hi[power_idx, dst_power])
+        if trust_lo == 0.0 and trust_hi == 0:
+            state.g_support_trust_adj = 30      # tier A: no trust
+        elif trust_hi < 1 and (trust_hi < 0 or trust_lo < 5):
+            state.g_support_trust_adj = 10      # tier B: low trust (1–4)
+        else:
+            state.g_support_trust_adj = -10     # tier C: established (≥5)
+        state.g_convoy_active_flag[dst_prov] = 1
+
+    # ── Chain-robustness scan (C L55-188) ────────────────────────────────
+    # DAT_005460e8 = g_threat_level (max enemy reach per power/prov).
+    threat = int(state.g_threat_level[power_idx, src_prov])
+    if threat == 0:
+        # C: threat == 0 → skip unit walk, proceed directly to success bump.
+        state.g_order_table[dst_prov, _F_INCOMING_MOVE] += 1.0
+        return
+
+    er = int(state.g_enemy_reach_score[power_idx, src_prov])
+    if threat != er:
+        state.g_order_table[dst_prov, _F_SUP_CHAIN_CONFLICT] += 1.0
+        return
+
+    chain_ok = True   # bVar13
+
+    for this_prov, this_unit in state.unit_info.items():
+        # Gate: enemy_presence (DAT_004f6ce8) OR established_ally_flag (DAT_0050bce8)
+        ep_flag = int(state.g_enemy_presence[power_idx, this_prov]) == 1
+        ea_flag = int(state.g_established_ally_flag[power_idx, this_prov]) == 1
+        if not (ep_flag or ea_flag):
+            continue
+
+        unit_type = this_unit.get('type', 'A')
+        adjs = [p for p in state.adj_matrix.get(this_prov, [])
+                if state.can_reach_by_type(this_prov, p, unit_type)]
+
+        bVar2 = False   # some adj == src_prov
+        bVar3 = False   # some adj == dst_prov
+        bVar8 = False   # flanking own SUP_HLD to dst confirmed
+
+        for adj_prov in adjs:
+            if adj_prov == src_prov:
+                bVar2 = True
+            if adj_prov == dst_prov:
+                bVar3 = True
+            # C L127-155: flanking support check — own SC province with
+            # confirmed SUP_HLD pointing at dst_prov and field-16 == 1.
+            if (adj_prov != src_prov
+                    and adj_prov != dst_prov
+                    and int(state.g_sc_ownership[power_idx, adj_prov]) == 1
+                    and int(state.g_order_table[adj_prov, _F_ORDER_TYPE]) == _ORDER_SUP_HLD
+                    and int(state.g_order_table[adj_prov, _F_DEST_PROV]) == dst_prov
+                    and int(state.g_order_table[adj_prov, _F_SOURCE_PROV]) == 1):
+                bVar8 = True
+
+        # C L158-171: bVar8 re-evaluated against src's field-16 slot value.
+        if bVar8:
+            src_f16 = int(state.g_order_table[src_prov, _F_SOURCE_PROV])
+            if src_f16 == 1:
+                pass    # bVar8 confirmed
+            elif src_f16 == 2 and bVar2 and bVar3:
+                continue  # goto next unit without testing abort
+            else:
+                bVar8 = False
+        else:
+            bVar8 = False
+
+        if bVar2 and not bVar3 and not bVar8:
+            chain_ok = False
+
+    if chain_ok:
+        state.g_order_table[dst_prov, _F_INCOMING_MOVE] += 1.0
+    else:
+        state.g_order_table[dst_prov, _F_SUP_CHAIN_CONFLICT] += 1.0

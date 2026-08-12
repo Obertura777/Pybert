@@ -142,14 +142,19 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
         if not not_all_accepted:
             # All powers accepted — restore trust from DiplomacyState snapshot
             _log.debug("ALL powers have accepted PCE: return to original plan")
-            # C: BuildAllianceMsg(&DAT_00bbf638, &pvStack_38, 0x65)
+            # C lines 143-169: CString copy-on-write branch on pvStack_4c —
+            # if (ref_count < 0 || head != sentinel) allocate new buffer else addref.
+            # Pure string-management; absorbed as no-op in Python.
             build_alliance_msg(state, 0x65)
 
-            # C: puVar11 = &g_ally_trust_score + uVar4*0x2a; copies DAT_004d5480/4 into it
-            if dipl_a_arr is not None and dipl_b_arr is not None:
-                for i in range(num_powers):
-                    state.g_ally_trust_score[own_power, i]    = int(dipl_a_arr[i])
-                    state.g_ally_trust_score_hi[own_power, i] = int(dipl_b_arr[i])
+            # C lines 170-178: restore g_AllyTrustScore[own_power, *] from
+            # DAT_004d5480/4 snapshot.  No null-guard in C (BSS globals are
+            # always accessible, zero-initialised if never written to).
+            for i in range(num_powers):
+                a = int(dipl_a_arr[i]) if dipl_a_arr is not None else 0
+                b = int(dipl_b_arr[i]) if dipl_b_arr is not None else 0
+                state.g_ally_trust_score[own_power, i]    = a
+                state.g_ally_trust_score_hi[own_power, i] = b
             changed = True
 
     # ── If changed: ComputeOrderDipFlags (FUN_004113d0) ─────────────────────
@@ -336,47 +341,39 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
 
           BRANCH A — piVar4 == own_power:
             Walk g_dmz_order_list (DAT_00bb65e4, sentinel DAT_00bb65e0).
-            For each record rec:
-              if rec.owner_power == own_power: skip  (*(pCVar8+0xc) == piStack_88)
+            For each record rec where rec.owner_power != own_power:
               iVar10 = rec.owner_power
-              iStack_34 = DAT_00bb6f2c[iVar10*3]  (province-tree record for that power)
-              call GameBoard_GetPowerRec(DAT_00bb6f28+iVar10*0xc, aiStack_30, province_k)
-                → check record validity (non-null, non-sentinel)
-              if puVar7[1] == iStack_34:   (province k belongs to this power's territory)
-                cStack_b1 = '\x01'         (DMZ accepted for this province/power)
-                StdMap_FindOrInsert(owner_power_base, apvStack_18, province_k)
-                  → g_active_dmz_map[province_k] = rec.owner_power  (record the DMZ)
+              iStack_34 = DAT_00bb6f2c[iVar10*3]   (_Myhead sentinel of g_ally_promise_list[iVar10])
+              puVar7 = GameBoard_GetPowerRec(DAT_00bb6f28+iVar10*0xc, buf, &province_k)
+              if puVar7[1] == iStack_34:  ← province NOT YET in g_ally_promise_list[rec_owner]
+                StdMap_FindOrInsert(…)    ← insert province_k into g_ally_promise_list[rec_owner]
+                cStack_b1 = '\x01'
 
           BRANCH B — piVar4 != own_power:
-            iVar10 = DAT_00bb702c[piVar4*3]  (this power's province-tree record)
-            puVar11 = DAT_00bb7028 + piVar4*0xc  (power-record base address)
-            GameBoard_GetPowerRec(puVar11, aiStack_28, province_k)
-            if puVar7[1] == iVar10:   (province k is in this power's territory)
+            iVar10 = DAT_00bb702c[piVar4*3]   (_Myhead sentinel of g_ally_counter_list[piVar4])
+            puVar11 = DAT_00bb7028 + piVar4*0xc
+            puVar7 = GameBoard_GetPowerRec(puVar11, buf, &province_k)
+            if puVar7[1] == iVar10:  ← province NOT YET in g_ally_counter_list[outer_power]
+              StdMap_FindOrInsert(puVar11, …) ← insert province_k into g_ally_counter_list[outer_power]
               cStack_b1 = '\x01'
-              StdMap_FindOrInsert(puVar11, &pvStack_64, province_k)
-                → g_active_dmz_map[province_k] = piVar4
             Walk g_active_dmz_list (DAT_00bb7134, sentinel DAT_00bb7130):
-              For each rec:
-                if rec[3] == piVar4 (outer power)
-                   AND rec[4] != piVar9 (different province than current):
-                  FUN_00412280(DAT_00bb7130, aiStack_20, (int)puVar11, rec)
-                    → remove this stale DMZ entry  (erase from g_active_dmz_list)
+              For each rec where rec[3]==piVar4 AND rec[4]==piVar9:
+                FUN_00412280(…) → erase from g_active_dmz_list
 
       If cStack_b1 == '\x01':
-        FUN_0046b050(...)  (serialize DMZ token list to string — absorbed as log)
         SEND_LOG("Recalculating: Because we have applied a DMZ: (%s)")
         BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
 
       Returns cStack_b1  (True if any change, False otherwise)
 
     Global mapping:
-      own_power       ← state.albert_power_idx
-      g_dmz_order_list  ← state.g_dmz_order_list   list[dict]:
-                          each entry: {'owner_power': int, 'provinces': set, 'active': bool}
-      g_active_dmz_map  ← state.g_active_dmz_map    dict: {province: power} — accepted DMZ entries
-      g_active_dmz_list ← state.g_active_dmz_list   list[dict]:
-                          each entry: {'power': int, 'province': int} — active agreements
-      g_sc_owner       ← state.g_sc_owner[province]  — province SC owner index
+      own_power           ← state.albert_power_idx
+      g_dmz_order_list    ← state.g_dmz_order_list     list[dict{owner_power,…}]
+      g_ally_promise_list ← state.g_ally_promise_list  dict[power → list[{'dest_prov': int}]]
+                            DAT_00bb6f28/2c — inserted here (BRANCH A), erased by _remove_dmz
+      g_ally_counter_list ← state.g_ally_counter_list  dict[power → list[{'dest_prov': int}]]
+                            DAT_00bb7028/2c — inserted here (BRANCH B), erased by _remove_dmz
+      g_active_dmz_list   ← state.g_active_dmz_list    list[dict{power,province}]
     """
     # Cross-slice call: helpers still in package __init__.py.  Deferred import
     # at call time avoids a circular import during package initialisation.
@@ -423,17 +420,23 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
     # cStack_b1 — return value / changed flag
     changed = False
 
-    # Lazy-init the two DMZ state dicts if not present on state
+    # Lazy-init DMZ state lists if not present on state
     if not hasattr(state, 'g_dmz_order_list'):
         state.g_dmz_order_list = []   # DAT_00bb65e0/e4: list[dict{owner_power,provinces}]
-    if not hasattr(state, 'g_active_dmz_map'):
-        state.g_active_dmz_map = {}   # DAT_00bb6f28/*: {province: power}
     if not hasattr(state, 'g_active_dmz_list'):
         state.g_active_dmz_list = []  # DAT_00bb7130/34: list[dict{power, province}]
 
     g_dmz_order_list: list = state.g_dmz_order_list
-    g_active_dmz_map: dict = state.g_active_dmz_map
     g_active_dmz_list: list = state.g_active_dmz_list
+    # BRANCH A writes: DAT_00bb6f28[rec_owner*0xc] → g_ally_promise_list[rec_owner]
+    # BRANCH B writes: DAT_00bb7028[outer_power*0xc] → g_ally_counter_list[outer_power]
+    # Same structures read/erased by _remove_dmz and probed by _eval_not_dmz.
+    g_promise: dict = getattr(state, 'g_ally_promise_list', None) or {}
+    if not hasattr(state, 'g_ally_promise_list') or state.g_ally_promise_list is None:
+        state.g_ally_promise_list = g_promise
+    g_counter: dict = getattr(state, 'g_ally_counter_list', None) or {}
+    if not hasattr(state, 'g_ally_counter_list') or state.g_ally_counter_list is None:
+        state.g_ally_counter_list = g_counter
 
     # ── Outer double loop: powers i, j ────────────────────────────────────────
     # C: if (0 < (int)uVar3) { do { ... } while (iStack_90 < (int)uVar3); }
@@ -454,39 +457,36 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
                 if outer_power == own_power:
                     # ── BRANCH A: own power is in the DMZ pair ────────────────
                     # C lines 97–140: walk g_dmz_order_list (DAT_00bb65e4 .. sentinel DAT_00bb65e0)
-                    # For each rec:
-                    #   if rec.owner_power == own_power: skip
-                    #   iVar10 = rec.owner_power
-                    #   puVar7 = GameBoard_GetPowerRec(base+owner*0xc, buf, &province)
-                    #   if puVar7[1] == iStack_34: → StdMap_FindOrInsert + changed
+                    # For each rec where rec.owner_power != own_power:
+                    #   iStack_34 = DAT_00bb6f2c[rec_owner*3]  (_Myhead of g_ally_promise_list[rec_owner])
+                    #   puVar7 = GameBoard_GetPowerRec(DAT_00bb6f28+rec_owner*0xc, buf, &province)
+                    #   if puVar7[1] == iStack_34:  ← province NOT YET in g_ally_promise_list[rec_owner]
+                    #     StdMap_FindOrInsert(...)   ← insert province
+                    #     cStack_b1 = '\x01'
                     for rec in list(g_dmz_order_list):
                         rec_owner = int(rec.get('owner_power', -1))
-                        # C: if (*(int*)(pCVar8+0xc) != piStack_88) → process; else next
                         if rec_owner == own_power:
-                            # skip: the decompile skips when owner == own_power
-                            # (outer block only runs the body when rec_owner != piStack_88)
                             continue
-                        # GameBoard_GetPowerRec check:
-                        # "does province k fall within rec_owner's territory?"
-                        # In Python: check g_sc_owner for this province.
-                        sc_owner = int(state.g_sc_owner[province]) if province < len(state.g_sc_owner) else -1
-                        if sc_owner == rec_owner:
-                            # puVar7[1] == iStack_34 → accept: cStack_b1 = '\x01'
+                        prom_list = g_promise.setdefault(rec_owner, [])
+                        already = any(e.get('dest_prov') == province for e in prom_list)
+                        if not already:
+                            # puVar7[1] == iStack_34: province absent → insert
+                            prom_list.append({'dest_prov': province})
                             changed = True
-                            # StdMap_FindOrInsert: register the accepted DMZ for this province
-                            # absorb as: g_active_dmz_map[province] = rec_owner
-                            g_active_dmz_map[province] = rec_owner
 
                 else:
                     # ── BRANCH B: non-own outer power ─────────────────────────
                     # C lines 143–185:
-                    # puVar11 = &DAT_00bb7028 + piVar4*0xc  (outer_power's base)
-                    # GameBoard_GetPowerRec check → province k in outer_power's territory?
-                    sc_owner = int(state.g_sc_owner[province]) if province < len(state.g_sc_owner) else -1
-                    if sc_owner == outer_power:
-                        # cStack_b1 = '\x01'; StdMap_FindOrInsert → accept DMZ
+                    #   iVar10 = DAT_00bb702c[piVar4*3]  (_Myhead of g_ally_counter_list[outer_power])
+                    #   puVar11 = DAT_00bb7028 + piVar4*0xc
+                    #   puVar7 = GameBoard_GetPowerRec(puVar11, buf, &province)
+                    #   if puVar7[1] == iVar10:  ← province NOT YET in g_ally_counter_list[outer_power]
+                    #     cStack_b1 = '\x01'; StdMap_FindOrInsert → insert
+                    cnt_list = g_counter.setdefault(outer_power, [])
+                    already = any(e.get('dest_prov') == province for e in cnt_list)
+                    if not already:
+                        cnt_list.append({'dest_prov': province})
                         changed = True
-                        g_active_dmz_map[province] = outer_power
 
                     # ── Walk g_active_dmz_list: remove matching entry ───────────
                     # C lines 153–184:
@@ -603,167 +603,140 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
                        FUN_004193f0 (DAT_00bb68f8 path),
                        FUN_00419300 (XDO proposal registration).
     """
-    # Cross-slice call: helpers still in package __init__.py.  Deferred import
-    # at call time avoids a circular import during package initialisation.
     from ..alliance import build_alliance_msg
     from ..alliance import _ordered_token_seq_insert
+    from ._common import _pow_idx
+    from ..parsers import _split_top_level_groups
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # ── Parse token stream ────────────────────────────────────────────────────
-    # Expected layout after CAL_MOVE: ['XDO', sender_power, order_cmd, dest_prov, ...]
-    # Mirrors C layer: GetSubList(press, 1) → local_40 = XDO inner content.
-    # De-serialised here from the flat token list.
     if len(tokens) < 2:
-        return True   # always returns 1 per decompile; just no-op if malformed
+        return True
 
-    # ──  Step 3: sender power = element 0 (byte) of sublist 0 ────────────────
-    # C: GetSubList(local_40, pvStack_6c, 0) + GetListElement(puVar9, uStack_92, 0)
-    #    bVar3 = *pbVar10  (byte)
-    try:
-        sender_power: int = int(tokens[1]) & 0xFF    # bVar3
-    except (IndexError, ValueError):
-        sender_power = 0
+    # ── Step 2: parse XDO body ────────────────────────────────────────────────
+    # C: GetSubList(&stack4, 1) → local_40 = XDO inner content.
+    # tokens = ['XDO', '(', body_tokens..., ')']
+    # _split_top_level_groups(tokens) → ['XDO', [inner_tokens...]]
+    outer = _split_top_level_groups(tokens)
+    if len(outer) < 2 or not isinstance(outer[1], list):
+        return True
+    # local_40: top-level items within the XDO body paren group.
+    body: list = _split_top_level_groups(outer[1])
+    if not body or not isinstance(body[0], list):
+        return True
 
-    # uVar11 = FUN_00465930(local_40) = count of token slots in local_40
-    # In our flat layout the effective "count" is the number of non-keyword tokens.
-    payload = tokens[1:]     # local_40 equivalent
-    uVar11  = len(payload)   # C: FUN_00465930
+    # ── Step 3: bVar3 = sender power (element 0 of sublist 0) ────────────────
+    # C: GetSubList(local_40, 0) + GetListElement(0) → low byte = power index
+    unit_triple: list = body[0]   # e.g. ['ENG', 'AMY', 'LON']
+    _pw: "int | None" = _pow_idx(unit_triple[0]) if unit_triple else None
+    sender_power: int = _pw if _pw is not None else 0
+
+    # uVar11 = FUN_00465930(local_40) = number of top-level items (not raw tokens)
+    uVar11: int = len(body)
 
     # FUN_00419300: register XDO proposal for the sender in g_xdo_proposal_by_sender
-    # C: FUN_00419300(&DAT_00bb65f8 + bVar3*0xc, &pvStack_50, local_40)
     _ordered_token_seq_insert(
         state.g_xdo_proposal_by_sender.setdefault(sender_power, []),
-        payload,
+        tokens[1:],
     )
 
-    # ── Step 4: destination/scope province = element 2 of sublist 0 ──────────
-    # C: GetSubList(local_40, pvStack_6c, 0) + GetListElement(puVar9, uStack_92, 2)
-    #    pvStack_80 = (void*)(uint)*pbVar10
-    try:
-        dest_prov: int = int(tokens[3]) & 0xFF       # pvStack_80
-    except (IndexError, ValueError):
-        dest_prov = 0
+    # ── Step 4: pvStack_80 = element 2 of sublist 0 (source province) ─────────
+    # C: GetSubList(local_40, 0) + GetListElement(2) → low byte = province code
+    src_prov: str = unit_triple[2] if len(unit_triple) > 2 else ''
 
-    # DAT_00bb6bf8 + sender*0xc: per-sender destination map
     if not hasattr(state, 'g_xdo_dest_by_sender'):
         state.g_xdo_dest_by_sender = {}
-    state.g_xdo_dest_by_sender.setdefault(sender_power, {})[dest_prov] = dest_prov
+    state.g_xdo_dest_by_sender.setdefault(sender_power, {})[src_prov] = src_prov
 
-    # DAT_00bb713c: global destination map
     if not hasattr(state, 'g_xdo_global_dest_map'):
         state.g_xdo_global_dest_map = {}
-    state.g_xdo_global_dest_map[dest_prov] = dest_prov
+    state.g_xdo_global_dest_map[src_prov] = src_prov
 
-    # ── Step 5: order command = element 0 of sublist 1 ───────────────────────
-    # C: GetSubList(local_40, pvStack_6c, 1) + GetListElement(puVar9, uStack_92, 0)
-    #    sVar4 = *psVar12  (short — MTO/CTO/SUP etc.)
-    try:
-        order_cmd: str = str(tokens[2])   # sVar4
-    except IndexError:
-        order_cmd = ''
+    # ── Step 5: sVar4 = order command (element 0 of sublist 1) ───────────────
+    # C: GetSubList(local_40, 1) + GetListElement(0) → short = command token
+    order_cmd: str = str(body[1]).upper() if len(body) > 1 and isinstance(body[1], str) else ''
 
-    # Candidate list provided by the caller via FUN_00405090 / in_stack_00000018.
-    # Absorbed into state.g_xdo_candidate_list.
+    # Candidate list from FUN_00405090 / in_stack_00000018 (set by caller in gof.py).
     candidate_list: list = getattr(state, 'g_xdo_candidate_list', [])
 
     if order_cmd in ('MTO', 'CTO'):
-        # ── Step 6a: MTO / CTO branch ─────────────────────────────────────────
-        # C: GetSubList(local_40, pvStack_6c, 2) + GetListElement(0)
-        #    ppiStack_7c = destination province
-        try:
-            mto_dest: int = int(tokens[4]) & 0xFF     # ppiStack_7c
-        except (IndexError, ValueError):
-            mto_dest = dest_prov
+        # ── Step 6a: MTO / CTO ────────────────────────────────────────────────
+        # C: GetSubList(local_40, 2) + GetListElement(0) → ppiStack_7c = dest prov
+        dest_item = body[2] if len(body) > 2 else None
+        if isinstance(dest_item, list):
+            mto_dest: str = dest_item[0] if dest_item else ''
+        else:
+            mto_dest = str(dest_item) if dest_item is not None else ''
 
-        # Loop over in_stack_00000018 (candidate entries from caller):
-        #   ScoreSupportOpp(&DAT_00bb67f8 + entry.power * 0xc, buf, (mto_dest, dest_prov))
+        # C loop: ScoreSupportOpp(&DAT_00bb67f8 + entry_power*0xc, buf, &pvStack_88)
+        # pvStack_88 = pvStack_80 = src_prov  →  key = src_prov
         for entry in candidate_list:
             entry_power: int = int(entry.get('power', entry.get('node_power', 0)))
-            _score_support_opp(
-                state,
-                base_offset='DAT_00bb67f8',
-                power=entry_power,
-                args=(mto_dest, dest_prov),
-            )
+            _score_support_opp(state, 'DAT_00bb67f8', entry_power, (src_prov, mto_dest))
 
     elif order_cmd == 'SUP':
-        # ── Step 6b: SUP branch ───────────────────────────────────────────────
-        # local_2c = GetSubList(local_40, 2)  (the supported-unit sub-token group)
-        # sublist-1 element 0 → supported unit identity (unused)
-        # sublist-2 element 0 → ppiVar14 = supported power
-        try:
-            sup_power: int = int(tokens[4]) & 0xFF    # ppiVar14
-        except (IndexError, ValueError):
-            sup_power = 0
+        # ── Step 6b: SUP ──────────────────────────────────────────────────────
+        # local_2c = GetSubList(local_40, 2) = supported unit sub-token content
+        sup_unit: list = body[2] if len(body) > 2 and isinstance(body[2], list) else []
+        # e.g. sup_unit = ['FRA', 'AMY', 'PAR']
 
-        # GetSubList(local_40, pvStack_50, 2) + GetSubList(puVar9, pvStack_6c, 0)
-        # GetListElement(0) → bVar3 re-read = province of supported unit (piStack_b0)
-        try:
-            sup_unit_prov: int = int(tokens[3]) & 0xFF   # bVar3 re-read
-        except (IndexError, ValueError):
-            sup_unit_prov = 0
+        # bVar3 re-read: element 0 of sub-list 0 of local_2c = power of supported unit
+        # C: GetSubList(local_2c, 0) + GetListElement(0) → FRA power byte
+        _sp: "int | None" = _pow_idx(sup_unit[0]) if sup_unit else None
+        sup_power_idx: int = _sp if _sp is not None else 0
 
-        # StdMap_FindOrInsert(DAT_00bb713c, ..., ppiStack_7c = ppiVar14)
-        state.g_xdo_global_dest_map[sup_power] = sup_power
+        # ppiVar14: element 0 of sub-list 2 of local_2c = province of supported unit
+        # C: GetSubList(local_2c, 2) + GetListElement(0) → PAR province byte
+        sup_unit_prov: str = sup_unit[2] if len(sup_unit) > 2 else ''
+
+        # StdMap_FindOrInsert(DAT_00bb713c, ..., ppiStack_7c = ppiVar14 = sup_unit_prov)
+        state.g_xdo_global_dest_map[sup_unit_prov] = sup_unit_prov
 
         if uVar11 == 5:
-            # SUP MTO (5-element XDO: XDO sender cmd sup_power dest_prov)
-            # ppiVar16 = element 4 of local_40 = final MTO destination
-            try:
-                ppiVar16: int = int(tokens[5]) & 0xFF
-            except (IndexError, ValueError):
-                ppiVar16 = 0
+            # SUP MTO: body[3] = 'MTO', body[4] = MTO destination
+            # ppiVar16 = element 0 of sublist 4 of local_40
+            dest_item = body[4] if len(body) > 4 else None
+            if isinstance(dest_item, list):
+                ppiVar16: str = dest_item[0] if dest_item else ''
+            else:
+                ppiVar16 = str(dest_item) if dest_item is not None else ''
 
-            # ScoreSupportOpp(DAT_00bb69f8 + sup_unit_prov*0xc, buf, (sup_power, ppiVar16))
+            # ScoreSupportOpp(&DAT_00bb69f8 + bVar3_reread*0xc, buf, &ppiStack_90)
+            # ppiStack_90 = ppiVar14 = sup_unit_prov  →  key = sup_unit_prov
             _score_support_opp(
-                state,
-                base_offset='DAT_00bb69f8',
-                power=sup_unit_prov,
-                args=(sup_power, ppiVar16),
+                state, 'DAT_00bb69f8', sup_power_idx, (sup_unit_prov, ppiVar16)
             )
 
-            # Loop over in_stack_00000018:
-            #   FUN_004193f0(&DAT_00bb68f8 + entry.power*0xc, buf, (dest_prov, dest_prov))
+            # C loop: FUN_004193f0(&DAT_00bb68f8 + entry_power*0xc, buf, &pvStack_50)
+            # pvStack_50 = pvStack_80 = src_prov  →  key = src_prov
             for entry in candidate_list:
                 entry_power = int(entry.get('power', entry.get('node_power', 0)))
-                _score_sup_attacker(
-                    state,
-                    base_offset='DAT_00bb68f8',
-                    power=entry_power,
-                    args=(dest_prov, dest_prov),
-                )
+                _score_sup_attacker(state, 'DAT_00bb68f8', entry_power, (src_prov, src_prov))
         else:
-            # SUP HLD
-            # StdMap_FindOrInsert(DAT_00bb6af8 + sup_unit_prov*0xc, ..., ppiStack_7c = sup_power)
+            # SUP HLD: StdMap_FindOrInsert(DAT_00bb6af8 + bVar3_reread*0xc, ..., ppiStack_7c)
+            # table index = bVar3_reread = sup_power_idx; key = ppiStack_7c = sup_unit_prov
             if not hasattr(state, 'g_xdo_sup_hld_map'):
                 state.g_xdo_sup_hld_map = {}
-            state.g_xdo_sup_hld_map.setdefault(sup_unit_prov, {})[sup_power] = sup_power
+            state.g_xdo_sup_hld_map.setdefault(sup_power_idx, {})[sup_unit_prov] = sup_unit_prov
 
-            # Loop over in_stack_00000018:
-            #   FUN_004193f0(&DAT_00bb68f8 + entry.power*0xc, buf, (dest_prov, dest_prov))
+            # C loop: FUN_004193f0(&DAT_00bb68f8 + entry_power*0xc, buf, &pvStack_50)
+            # pvStack_50 = pvStack_80 = src_prov  →  key = src_prov
             for entry in candidate_list:
                 entry_power = int(entry.get('power', entry.get('node_power', 0)))
-                _score_sup_attacker(
-                    state,
-                    base_offset='DAT_00bb68f8',
-                    power=entry_power,
-                    args=(dest_prov, dest_prov),
-                )
+                _score_sup_attacker(state, 'DAT_00bb68f8', entry_power, (src_prov, src_prov))
 
     # ── Step 7: log + BuildAllianceMsg ───────────────────────────────────────
-    _log.debug("Recalculating: Because we have applied a XDO: (%s)", ' '.join(str(t) for t in tokens[1:]))
-    # C: BuildAllianceMsg(&DAT_00bbf638, ..., 0x66)
+    _log.debug(
+        "Recalculating: Because we have applied a XDO: (%s)",
+        ' '.join(str(t) for t in tokens[1:]),
+    )
     build_alliance_msg(state, 0x66)
 
     # ── Step 8: clear candidate list (in_stack_00000018 freed by caller) ─────
-    # C: SerializeOrders(local_78, ...) — clears local sentinel set (no-op)
-    # C: SerializeOrders(&stack0x14, ...) + _free(in_stack_00000018)
     if hasattr(state, 'g_xdo_candidate_list'):
         state.g_xdo_candidate_list = []
 
-    # Always returns '\x01' (True) per decompile line 265.
     return True
 
 
@@ -816,7 +789,7 @@ def _score_support_opp(
         setattr(state, attr, {})
     table: dict = getattr(state, attr)
     sub: dict = table.setdefault(power, {})
-    key: int = int(args[0])
+    key = args[0]  # province name (str) in Python port; int in C
     was_inserted: bool = key not in sub
     if was_inserted:
         sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)
@@ -859,7 +832,7 @@ def _score_sup_attacker(
         setattr(state, attr, {})
     table: dict = getattr(state, attr)
     sub: dict = table.setdefault(power, {})
-    key: int = int(args[0])
+    key = args[0]  # province name (str) in Python port; int in C
     was_inserted: bool = key not in sub
     if was_inserted:
         sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)

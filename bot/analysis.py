@@ -185,17 +185,37 @@ def _move_analysis(state: InnerGameState) -> None:
                         bcd0[a, b] += 1
 
     # --- Pre-ratio trust reset -----------------------------------------------
-    # Other powers' inter-trust: if not strongly allied (trust<3) → set to 1 (suspicious)
-    for a in range(num_powers):
-        if a == own_power:
-            continue
-        for b in range(num_powers):
-            if a != b and trust[a, b] < 3:
-                trust[a, b] = 1
+    # C gate (MOVE_ANALYSIS.c:402-403): only runs when g_DeceitLevel==1,
+    # DAT_00baed68==0, and current season==FAL.
+    # Other powers' inter-trust: if not strongly allied (trust<5) → set to 1.
+    # C: int64(Hi,Lo) < 5  ⟺  Hi<0  OR  (Hi==0 AND (uint)Lo<5).
+    # Hi reset is mandatory when resetting Lo — C always writes Hi=0 alongside Lo=1.
+    # NO_PRESS guard: in NO_PRESS mode, no diplomatic agreements exist, so
+    # setting trust=1 for all pairs would block cross-border moves via the
+    # trust gate for the rest of the game (analysis.py:224 can raise it to 5
+    # for mutual non-aggression, but pairs with no contact stay at 1).
+    # Skip the pre-ratio reset in NO_PRESS so trust stays at 0 (free movement).
+    _no_press_mode = getattr(state, 'g_minimal_press_mode', 0) == 1
+    if (state.g_deceit_level == 1
+            and state.g_press_flag == 0
+            and state.g_season == 'FAL'
+            and not _no_press_mode):
+        for a in range(num_powers):
+            if a == own_power:
+                continue
+            for b in range(num_powers):
+                if a == b:
+                    continue
+                _hi = int(state.g_ally_trust_score_hi[a, b])
+                if _hi < 0 or (_hi == 0 and trust[a, b] < 5):
+                    trust[a, b] = 1
+                    state.g_ally_trust_score_hi[a, b] = 0
 
     # --- Phase 3 — ratio-based trust updates (all (a,b) pairs) ---------------
     # ratio_ab = bcd0[a][b] / b5e8[a][b]: fraction of b's pressure that is aggressive toward a
     # High ratio_ab → b is hostile to a → trust[a][b] decreases
+    # NO_PRESS: skip trust modifications — trust values would block cross-border
+    # moves via the Phase 2 trust gate even with no diplomatic agreements.
     for a in range(num_powers):
         for b in range(num_powers):
             if a == b:
@@ -205,6 +225,9 @@ def _move_analysis(state: InnerGameState) -> None:
 
             if ratio_ab < 0:
                 continue  # no pressure from b toward a; skip
+
+            if _no_press_mode:
+                continue  # skip trust modifications in NO_PRESS
 
             if ratio_ab == 0.0:
                 # b not aggressive → increment trust; if mutually non-aggressive: allies
@@ -221,8 +244,11 @@ def _move_analysis(state: InnerGameState) -> None:
                     "Seems (%d) and (%d) have bounced and still may have a viable alliance",
                     a, b)
             elif ratio_ab >= 0.55:
-                if trust[a, b] < 5:
+                # C: int64(Hi,Lo) < 5 gate (MOVE_ANALYSIS.c:555-559); Hi must be reset too.
+                _hi = int(state.g_ally_trust_score_hi[a, b])
+                if _hi < 0 or (_hi == 0 and trust[a, b] < 5):
                     trust[a, b] = 1  # high aggression → hostile
+                    state.g_ally_trust_score_hi[a, b] = 0
             else:  # 0 < ratio_ab < 0.55
                 trust[a, b] += 1
                 if ratio_ba == 0.0:
@@ -251,7 +277,10 @@ def _move_analysis(state: InnerGameState) -> None:
         if 0 <= slot < num_powers and trust[own_power, slot] < 2:
             setattr(state, attr, -1)
 
-    # Compact: shift valid slots to front (left-pack)
+    # DIVERGENCE (MOVE_ANALYSIS.c:670-688): C does a partial one-level shift — when
+    # slot0 and slot1 are both -1 and only slot2 is valid, C yields [-1, slot2, -1],
+    # leaving slot0==-1 and silently skipping the best-ally check below.
+    # Intentional fix: full left-pack so any surviving ally always surfaces into slot0.
     slots = [getattr(state, f'g_best_ally_slot{i}', -1) for i in range(3)]
     valid = [s for s in slots if s >= 0]
     while len(valid) < 3:
@@ -381,19 +410,18 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     # C (GenerateAndSubmitOrders.c:482): send DRW when any of four flags is set:
     #   DAT_00baed29 | DAT_00baed2a | DAT_00baed2b | DAT_00baed30
     # Mapping:
-    #   DAT_00baed29 — unknown (possibly external draw-request signal); left in
-    #                  g_draw_flags pass-through bucket.
+    #   DAT_00baed29 — g_draw_flag_baed29   (setter not found in decompiled sources).
     #   DAT_00baed2a — g_request_draw_flag   (set by CAL_BOARD phase 4a: big lead).
-    #   DAT_00baed2b — g_DrawVoteFlag      (result of ComputeDrawVote → draw_vote).
+    #   DAT_00baed2b — g_DrawVoteFlag        (result of ComputeDrawVote → draw_vote).
     #   DAT_00baed30 — g_static_map_flag     (set when the map hasn't moved in many turns).
+    unknown_flag  = int(getattr(state, 'g_draw_flag_baed29', 0)) == 1
     request_draw  = int(getattr(state, 'g_request_draw_flag', 0)) == 1
     static_map    = int(getattr(state, 'g_static_map_flag',  0)) == 1
-    extra_draw_flags = getattr(state, 'g_draw_flags', [])
-    if draw_vote or request_draw or static_map or any(extra_draw_flags):
+    if draw_vote or unknown_flag or request_draw or static_map:
         logger.info(
             "Draw vote: will accept DRW proposals (voting YES) "
-            "[draw_vote=%s, request_draw=%s, static_map=%s]",
-            draw_vote, request_draw, static_map,
+            "[draw_vote=%s, unknown_flag=%s, request_draw=%s, static_map=%s]",
+            draw_vote, unknown_flag, request_draw, static_map,
         )
         state.g_draw_sent = 1
     else:
@@ -484,7 +512,12 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
             continue
 
         n_allies: int = int(cand.get('n_allies', 0))
-        penalty: int = 100 if n_allies == 0 else 50
+        if n_allies == 0:
+            penalty: int = 100
+        elif n_allies == 1:
+            penalty = 50
+        else:
+            penalty = 0  # C: 0xFFFFFFCE + 0x32 overflows to 0
         trial_scores_c = cand.get('trial_scores', [])
         final_dim_c: int = cand.get('final_dim_score', 0)
 

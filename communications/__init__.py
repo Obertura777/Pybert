@@ -44,7 +44,6 @@ from .parsers import (
 )
 from .scheduling import (
     dispatch_scheduled_press,
-    _send_ally_press_by_power,
     _fun_004117d0,
     _press_gate_check,
     _press_list_count,
@@ -56,10 +55,12 @@ from .scheduling import (
     _execute_then_action,
 )
 from .senders import (
+    send_ally_press_by_power as _send_ally_press_by_power,
     send_alliance_press,
     emit_xdo_proposals_to_broadcast,
     score_order_candidates_from_broadcast,
     propose_dmz,
+    propose,
     _update_relation_history,
     friendly,
     _friendly_peace_signal_check,

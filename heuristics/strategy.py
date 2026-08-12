@@ -261,9 +261,9 @@ def post_process_orders(state: InnerGameState) -> None:
     # Pass 2 — update from order history list
     for rec in getattr(state, 'g_order_hist_list', []):
         power    = int(rec.get('power', -1))
-        src_prov = int(rec.get('src_prov', -1))
-        dst_prov = int(rec.get('dst_prov', -1))
-        flag_a   = int(rec.get('flag_a', 0))   # support survived
+        src_prov = int(rec.get('src_province', -1))
+        dst_prov = int(rec.get('dst_province', -1))
+        flag_a   = int(rec.get('flag_a', 0))   # support order
         flag_b   = int(rec.get('flag_b', 0))   # mover bounced / support cut
         flag_c   = int(rec.get('flag_c', 0))   # full conflict / dislodgement
 
@@ -344,29 +344,40 @@ def generate_self_proposals(state: InnerGameState, own_power: int,
                 adj_list = [a for a in raw_adj if a not in state.water_provinces]
             elif unit_type in ('F', 'FLT'):
                 adj_list = list(state.fleet_adj_matrix.get(prov, []))
+                if not adj_list:
+                    _coast = info.get('coast', '')
+                    if _coast:
+                        adj_list = list(
+                            getattr(state, 'fleet_coast_adj', {}).get(
+                                (prov, '/' + _coast.upper()), []))
             else:
                 adj_list = list(state.get_adjacent_provinces(prov))
 
             for adj in adj_list:
-                # Primary: g_candidate_scores (BFS heat — matches C serialization)
-                score = float(state.g_candidate_scores[power, adj])
+                # Primary: final_score_set (normalized strategic value from
+                # score_order_candidates_all_powers).  Using the same scores
+                # that drive the MC trial gives more faithful enemy predictions
+                # than the raw BFS heat + giant SC bonus, which overwrote the
+                # BFS signal and caused every enemy to always target the nearest
+                # unowned SC regardless of actual strategic context.
+                score = float(state.final_score_set[power, adj])
 
-                # SC bonus for unowned supply centers
-                if adj in sc_set:
-                    adj_owner = int(state.g_sc_owner[adj])
-                    if adj_owner < 0:
-                        score += 500.0
-                    elif adj_owner != power:
-                        score += 300.0
-
-                # Tiebreaker: cross-power influence
-                score += float(state.g_max_province_score[adj]) * 0.1
-
-                # Fallback: heat movement score
+                # Fallback when final_score_set is zero (province outside BFS
+                # coverage): revert to BFS heat + SC bonus so we always have
+                # some non-zero ranking to work with.
                 if score == 0.0:
-                    score += float(state.g_heat_movement[power, adj]) * 0.01
+                    score = float(state.g_candidate_scores[power, adj])
+                    if adj in sc_set:
+                        adj_owner = int(state.g_sc_owner[adj])
+                        if adj_owner < 0:
+                            score += 500.0
+                        elif adj_owner != power:
+                            score += 300.0
+                    score += float(state.g_max_province_score[adj]) * 0.1
                     if score == 0.0:
-                        score = 0.001
+                        score += float(state.g_heat_movement[power, adj]) * 0.01
+                        if score == 0.0:
+                            score = 0.001
 
                 candidates.append((score, adj))
 
@@ -469,11 +480,11 @@ def compute_press(state: InnerGameState, own_power: int = 0) -> None:  # noqa: A
             adj_info = state.unit_info.get(adj)
             if adj_info is None:
                 continue
-            # C condition: province is occupied AND (unit is NOT an army,
-            # OR unit has power-token 0x14).  The 0x14 token is the "unknown
-            # power" sentinel — effectively "any occupied non-army province".
+            # C: uVar1 = province_struct[adj].unit_word (high byte = type, low byte = power)
+            # condition: type != 'A'  OR  power == 0x14 (unknown-power sentinel)
             adj_type = adj_info.get('type', '')
-            if adj_type != 'A':
+            adj_pow  = adj_info.get('power', -1)
+            if adj_type != 'A' or adj_pow == 0x14:
                 if state.g_press_matrix[power, adj] == 0:
                     state.g_press_matrix[power, adj] = 1
                     state.g_press_count[power] += 1

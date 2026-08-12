@@ -38,6 +38,7 @@ def _init_position_for_orders(state: InnerGameState) -> None:
 
     # Step 1 — Clear per-power order candidate lists
     state.g_candidate_record_list.clear()
+    state.__dict__.pop('_candidate_key_map', None)
 
     # Step 2 — Initialize g_sc_owner to -1 (unoccupied) for all provinces.
     # C: DAT_00ba2f70[prov] = 0xffffffff initialised at lines 148-155.
@@ -150,10 +151,9 @@ def _init_scoring_state(state: InnerGameState) -> None:
       4. Zero the 14 per-power×province arrays that GenerateOrders.c clears in
          the block immediately after InitScoringState (lines 102–130).
 
-    The internal ratio tables (DAT_00624810 / DAT_006239e8) computed in the C
-    version are not persisted: no downstream code reads them outside this function.
-
-    Output: state.g_target_sc_cnt — [7] int32 projected SC count per power.
+    Output:
+      state.g_target_sc_cnt — [7] int32 projected SC count per power.
+      state.g_urgency_ratio — [7,7] float64 ratio-of-ratios table (DAT_006239e8).
     """
     num_powers = 7
 
@@ -211,6 +211,40 @@ def _init_scoring_state(state: InnerGameState) -> None:
                     state.g_target_sc_cnt[outer] += 1
                     state.g_target_sc_cnt[inner] -= 1
 
+    # ── Step 3a: DAT_00624810 — avg urgency ratio per power pair ──────────────
+    # For each (outer, inner) pair: gather build_urgency[outer,p]/build_urgency[inner,p]
+    # over provinces p where inner has an army and build_urgency[inner,p] > 0, then
+    # average.  C uses a sorted-insert path (FUN_0041a180) and divides by count;
+    # simple mean is equivalent.
+    g_urgency_avg = np.zeros((num_powers, num_powers), dtype=np.float64)
+    for outer in range(num_powers):
+        for inner in range(num_powers):
+            if outer == inner:
+                continue
+            ratios = []
+            for prov in valid_provs:
+                unit = state.unit_info.get(prov)
+                if unit is None or unit.get('power') != inner:
+                    continue
+                if unit.get('type', 'A') not in ('A', 'AMY'):
+                    continue
+                u_inner = build_urgency[inner, prov]
+                if u_inner <= 0.0:
+                    continue
+                ratios.append(build_urgency[outer, prov] / u_inner)
+            if ratios:
+                g_urgency_avg[outer, inner] = float(np.mean(ratios))
+
+    # ── Step 3b: DAT_006239e8 — ratio-of-ratios (InitScoringState.c:306–333) ─
+    # g_urgency_ratio[outer, inner] = g_urgency_avg[outer, inner] / g_urgency_avg[inner, outer]
+    # Default 10.0 when denominator <= 0 (C: 0x41200000 = 10.0f).
+    state.g_urgency_ratio.fill(10.0)
+    for outer in range(num_powers):
+        for inner in range(num_powers):
+            denom = g_urgency_avg[inner, outer]
+            if denom > 0.0:
+                state.g_urgency_ratio[outer, inner] = g_urgency_avg[outer, inner] / denom
+
     # ── Step 4: Zero 14 per-power×province arrays (GenerateOrders.c:102–130) ─
     # Seven int64/float64 C arrays, each stored as a lo+hi int32 pair; Python
     # keeps dual views (float64 and int64) for several of these addresses.
@@ -227,6 +261,11 @@ def _init_scoring_state(state: InnerGameState) -> None:
     state.g_target_flag2.fill(0)             # DAT_005ee8ec hi partner
     state.g_target_flag.fill(0)              # g_TargetFlag
     state.g_attack_count2.fill(0)            # DAT_005e40ec hi partner
+
+    # GenerateOrders.c:133–135: zero g_GlobalProvinceScore (lo+hi int32 words per
+    # province) immediately after the per-power×province zeroing block above.
+    # Python stores it as float64; fill(0) matches the C zero-init.
+    state.g_global_province_score.fill(0.0)
 
 
 def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | None':
@@ -338,7 +377,10 @@ def _build_movement_order_token(state: 'InnerGameState', prov: int) -> 'str | No
         #         FUN_0045ffa0(target) → target_tok
         #         FUN_0045ffa0(self)   → unit_tok
         #         FUN_00466480(unit_tok, SUP=DAT_004c7688); FUN_00466330(+target_tok); AppendList
-        target_prov = int(state.g_order_table[prov, _F_SECONDARY])
+        # C's param_2[7] is the staging node's +0x2c slot; the g_order_table
+        # column carrying the supported unit for SUP_HLD is col 2
+        # (BuildOrder_SUP_HLD.c:28 writes DAT_00baeda8, and never col 1).
+        target_prov = int(state.g_order_table[prov, _F_DEST_PROV])
         target_tok  = _target_unit_tok(target_prov)
         if target_tok is None:
             return None
@@ -738,10 +780,12 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
         seq['target_coast'] = dest_coast
 
     elif order_type == _ORDER_SUP_HLD:
-        sec_data = state.unit_info.get(sec_id)
-        if sec_data:
-            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
-            seq['target_unit'] = f"{sec_chr} {sec_name}"
+        # SUP_HLD stores the supported unit in _F_DEST_PROV (col 2), not
+        # _F_SECONDARY — see BuildOrder_SUP_HLD.c:28.
+        sup_data = state.unit_info.get(dest_id)
+        if sup_data:
+            sup_chr = 'A' if sup_data['type'] in ('A', 'AMY') else 'F'
+            seq['target_unit'] = f"{sup_chr} {dest_name}"
 
     elif order_type == _ORDER_CVY:
         seq['target_dest'] = dest_name

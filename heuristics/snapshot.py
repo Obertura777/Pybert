@@ -5,10 +5,13 @@ Port of SnapshotProvinceState (Source/bot/SnapshotProvinceState.c).
 Called once per turn boundary, before order-generation heuristics run.
 Writes:
   g_ally_designation_b/a/c    — per-province army-owner designation slots
+  g_assault_flag               — per-province assault designation (4th slot)
+  g_peace_zone                 — per-province peace-zone flag (reset to 0)
+  g_defense_zone               — per-province defense-zone flag (reset to 0)
   g_target_flag                — (7, 256) reachability/coordination flags
-Then copies a season snapshot:
-  SPR/FAL → g_spr_desig_b/a/c, g_AttackMap
-  SUM/AUT → g_sum_desig_b/a/c
+Then copies a season snapshot (lo + hi words):
+  SPR/FAL → g_spr_desig_b/a/c (+_hi), g_AttackMap
+  SUM/AUT → g_sum_desig_b/a/c (+_hi)
 """
 
 import numpy as np
@@ -47,6 +50,10 @@ def snapshot_province_state(state: InnerGameState) -> None:
     state.g_ally_designation_a_hi.fill(-1)
     state.g_ally_designation_c.fill(-1)
     state.g_ally_designation_c_hi.fill(-1)
+    state.g_assault_flag.fill(-1)
+    state.g_assault_flag_hi.fill(-1)
+    state.g_peace_zone.fill(0)
+    state.g_defense_zone.fill(0)
 
     # ── Phase 2: designation_b + initial designation_c from unit table ────────
     # C: loops over province struct array; for each province with a unit:
@@ -180,9 +187,6 @@ def snapshot_province_state(state: InnerGameState) -> None:
 
     # ── Phase 5: Alliance sharing proposals ──────────────────────────────────
     # C:442-714  Only when g_deceit_level < 2 and best ally is under attack.
-    # C uses three passes over aiStack_418; simplified here: Pass 1 only marks
-    # empty adjacent provinces (C also marks occupied ones then Pass 2 upgrades
-    # them; net effect is identical).
     # C: DAT_00baed45 == '\x01'  ↔  state.g_ally_under_attack == 1
     if state.g_deceit_level < 2 and getattr(state, 'g_ally_under_attack', 0) == 1:
         reach = np.full(_NUM_PROVINCES, -1, dtype=np.int32)
@@ -235,13 +239,21 @@ def snapshot_province_state(state: InnerGameState) -> None:
     # ── Phase 6: Season snapshot ──────────────────────────────────────────────
     season = state.g_season
     if season in ('SPR', 'FAL'):
+        # C lines 718-726: copy designation lo+hi to SPR/FAL snapshot slots.
         state.g_spr_desig_b[:] = state.g_ally_designation_b
+        state.g_spr_desig_b_hi[:] = state.g_ally_designation_b_hi
         state.g_spr_desig_a[:] = state.g_ally_designation_a
+        state.g_spr_desig_a_hi[:] = state.g_ally_designation_a_hi
         state.g_spr_desig_c[:] = state.g_ally_designation_c
+        state.g_spr_desig_c_hi[:] = state.g_ally_designation_c_hi
         # g_AttackMap mirrors g_target_flag for all powers at movement-phase end.
         state.g_AttackMap[:] = state.g_target_flag
     elif season in ('SUM', 'AUT'):
+        # C lines 744-750: copy designation lo+hi to SUM/AUT snapshot slots.
         state.g_sum_desig_b[:] = state.g_ally_designation_b
+        state.g_sum_desig_b_hi[:] = state.g_ally_designation_b_hi
         state.g_sum_desig_a[:] = state.g_ally_designation_a
+        state.g_sum_desig_a_hi[:] = state.g_ally_designation_a_hi
         state.g_sum_desig_c[:] = state.g_ally_designation_c
+        state.g_sum_desig_c_hi[:] = state.g_ally_designation_c_hi
         # SUM/AUT: no target-flag snapshot (C omits this copy for retreat seasons)

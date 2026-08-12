@@ -26,11 +26,22 @@ import random
 import numpy as np
 
 from ..state import InnerGameState
-from ..communications import friendly, _TOK_PCE
-from ..communications.scheduling import _send_ally_press_by_power
-from ..heuristics import cal_board, compute_influence_matrix, compute_alliance_score
+from ..communications import friendly, _TOK_PCE, build_alliance_msg
+from ..communications.senders import send_ally_press_by_power as _send_ally_press_by_power
+from ..heuristics import cal_board, compute_influence_matrix
 
 logger = logging.getLogger(__name__)
+
+
+def _rand_stride() -> int:
+    """C stride: first rand() picks loop count (4..23), remaining calls burned;
+    only the last result (mod 100) is returned.  Not bitwise-reproducible vs MSVC
+    rand() (different PRNG), but preserves the 5..24-call advance per invocation."""
+    n = random.randrange(20)
+    val = 0
+    for _ in range(n + 4):
+        val = random.randrange(100)
+    return val
 
 
 def _stab_enemy_slot_remove(slots, target):
@@ -242,11 +253,13 @@ def _stabbed(state: InnerGameState) -> None:
         if prov_id >= 256:
             continue
         desig_a = int(state.g_ally_designation_a[prov_id])
+        desig_a_hi = int(state.g_ally_designation_a_hi[prov_id])
         desig_b = int(state.g_ally_designation_b[prov_id])
+        desig_b_hi = int(state.g_ally_designation_b_hi[prov_id])
         for row in range(num_powers):
             if row == col:
                 continue
-            if desig_a == row or desig_b == row:
+            if (desig_a_hi >= 0 and desig_a == row) or (desig_b_hi >= 0 and desig_b == row):
                 stab_unit[row, col] = True
 
     # ── Phase 2: submitted-order stab check (Albert+0x248c/90) ───────────────
@@ -406,21 +419,21 @@ def _deviate_move(state: InnerGameState) -> None:
             # AdjacencyList_FilterByUnitType on src_prov → adjacent attack sources.
             # For each adj: if adj designated to p AND dst_prov designated to p
             #               → g_peace_signal[p, other] = 1.
-            # C uses g_ally_designation_a/B/C (004d0e10/1610/1e10); Python uses the
-            # available designation arrays as an approximation.
+            # C reads SPR/FAL snapshots: 004d0e10=g_spr_desig_b, 004d1610=g_spr_desig_a,
+            # 004d1e10=g_spr_desig_c.
             if 0 <= dst_prov < 256:
                 for adj in state.adj_matrix.get(src_prov, []):
                     if adj >= 256:
                         continue
                     adj_in_p = (
-                        int(state.g_ally_designation_a[adj]) == p or
-                        int(state.g_ally_designation_b[adj]) == p or
-                        int(state.g_ally_designation_c[adj]) == p
+                        int(state.g_spr_desig_a[adj]) == p or
+                        int(state.g_spr_desig_b[adj]) == p or
+                        int(state.g_spr_desig_c[adj]) == p
                     )
                     dst_in_p = (
-                        int(state.g_ally_designation_a[dst_prov]) == p or
-                        int(state.g_ally_designation_b[dst_prov]) == p or
-                        int(state.g_ally_designation_c[dst_prov]) == p
+                        int(state.g_spr_desig_a[dst_prov]) == p or
+                        int(state.g_spr_desig_b[dst_prov]) == p or
+                        int(state.g_spr_desig_c[dst_prov]) == p
                     )
                     if adj_in_p and dst_in_p:
                         state.g_peace_signal[p, other] = 1
@@ -430,14 +443,11 @@ def _deviate_move(state: InnerGameState) -> None:
             order_type = int(rec.get('order_type', -1))
             sup_src    = int(rec.get('sup_src', -1))
             sup_dst    = int(rec.get('sup_dst', -1))
-            endgame_flag = int(rec.get('endgame_flag', 0))
-
-            # End-game override: g_near_end_game_factor >= 4.0 AND sc_count[other] > 2
-            # node+0x6b endgame_flag: if set AND in endgame path → treat as stab without trust
+            # End-game override (C LAB_0043aeb9): curr_sc_cnt[uStack_1c0=victim p] > 2.
+            # rec+0x6b is a separate flag for the cStack_1a1 relation-score path, not this gate.
             endgame_override = (
                 state.g_near_end_game_factor >= 4.0 and
-                int(state.sc_count[other]) > 2 and
-                endgame_flag == 1
+                int(state.sc_count[p]) > 2
             )
 
             # Determine if this record constitutes a deviation into power p's territory
@@ -525,8 +535,8 @@ def _deviate_move(state: InnerGameState) -> None:
             if not (0 <= attacker < num_powers) or attacker == p:
                 continue
 
-            # Gate: trust[attacker + p*21] > 0  (C: g_ally_trust_score_hi check)
-            if int(state.g_ally_trust_score[attacker, p]) <= 0:
+            # Gate: trust[attacker + p*21] > 0  → NumPy [p, attacker] (p=victim row, attacker=col)
+            if int(state.g_ally_trust_score[p, attacker]) <= 0:
                 continue
 
             order_type = int(rec.get('order_type', -1))
@@ -546,10 +556,12 @@ def _deviate_move(state: InnerGameState) -> None:
                 continue  # dest not in p's designated ally territory
 
             # Reverse-trust check determines stab vs neutral (C: lines 260-274)
+            # Inner re-check uses same index as outer gate (attacker + p*21 = [p, attacker]);
+            # neutral path is dead code after the outer gate, but model it for completeness.
             trust_pa = int(state.g_ally_trust_score[p, attacker])
             if trust_pa <= 0:
-                # Both directions ≤ 0 → neutral attack
-                state.g_neutral_flag[attacker, p] = 1
+                # neutral_flag[p, attacker] = DAT_0062b7b0[attacker + p*21]
+                state.g_neutral_flag[p, attacker] = 1
                 if p == own_power:
                     logger.info("We have been attacked by (%d) during the retreat phase", attacker)
             else:
@@ -600,15 +612,25 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
         for j in range(num_powers):
             state.g_ally_matrix[attacker, j] = 0
 
-        # g_enemy_slot: REMOVAL-based management (C lines 1263-1321).
-        # When attacker == slot[k]: remove attacker, shift remaining slots left.
-        # This is distinct from STABBED's push-front insertion.
+        # g_enemy_slot: REMOVAL-based management (C lines 1253-1321).
+        # slot[0] removal left-shifts remaining entries (C lines 1263-1275).
+        # slot[1] / slot[2] removal just clears that slot (C blocks B/D,
+        # lines 1290-1296 and 1307-1313). All three checks run as sequential
+        # ifs (not elif) matching the C structure.
         slots = list(getattr(state, 'g_enemy_slot', np.array([-1, -1, -1])))
-        if attacker in slots:
-            idx = slots.index(attacker)
-            slots.pop(idx)
-            slots.append(-1)
-        state.g_enemy_slot = slots[:3]
+        if slots[0] >= 0 and attacker == slots[0]:
+            slots[0] = -1
+            if slots[1] >= 0:
+                slots[0] = slots[1]
+                slots[1] = -1
+                if slots[2] >= 0:
+                    slots[1] = slots[2]
+                    slots[2] = -1
+        if slots[1] >= 0 and attacker == slots[1]:
+            slots[1] = -1
+        if slots[2] >= 0 and attacker == slots[2]:
+            slots[2] = -1
+        state.g_enemy_slot = np.array(slots[:3], dtype=np.int32)
 
         # g_opening_sticky_mode (C lines 1254-1261)
         if getattr(state, 'g_opening_sticky_mode', 0) == 1:
@@ -620,6 +642,21 @@ def _apply_deviate_stab(state, attacker, p, own_power, num_powers, season,
         # g_ally_matrix + uStack_1c0 * 0x15 where uStack_1c0 = p the victim)
         for j in range(num_powers):
             state.g_ally_matrix[p, j] = 0
+
+        # g_enemy_slot cascade: if we attacked the slot0 enemy, remove it and left-shift
+        # the queue (C lines 1283-1289). uVar17=old slot1, uVar8=old slot2 saved before
+        # the condition; side effects inside the condition do the shift.
+        slots = list(map(int, state.g_enemy_slot))
+        if slots[0] >= 0 and p == slots[0]:
+            old_slot1, old_slot2 = slots[1], slots[2]
+            slots[0] = -1
+            if old_slot1 >= 0:
+                slots[1] = -1
+                slots[0] = old_slot1
+                if old_slot2 >= 0:
+                    slots[2] = -1
+                    slots[1] = old_slot2
+            state.g_enemy_slot = np.array(slots, dtype=np.int32)
 
 
 def _friendly(state: InnerGameState) -> None:
@@ -652,15 +689,18 @@ def _hostility(state: InnerGameState) -> None:
     # C: outer gate = g_EnemyDesired==0; inner gate = press_off (DAT_00baed68==0).
     # Threshold = (g_deceit_level + 3) * 15  → ~60 % year-1, ~75 % year-2.
     # C fires multiple rand calls but only the final value is used.
-    if enemy_desired == 0 and not press_on:
-        threshold = (state.g_deceit_level + 3) * 15
-        if random.randrange(100) < threshold:
-            state.g_stabbed_flag = 1
-            enemy_desired = 1
-            logger.debug(
-                "HOSTILITY: enemy now desired (DeceitLevel=%d, threshold=%d)",
-                state.g_deceit_level, threshold,
-            )
+    if enemy_desired == 0:
+        build_alliance_msg(state, 0x1e)
+        if not press_on:
+            threshold = (state.g_deceit_level + 3) * 15
+            if _rand_stride() < threshold:
+                state.g_stabbed_flag = 1
+                enemy_desired = 1
+                build_alliance_msg(state, 0x1e)
+                logger.debug(
+                    "HOSTILITY: enemy now desired (DeceitLevel=%d, threshold=%d)",
+                    state.g_deceit_level, threshold,
+                )
 
     # ── Block 2: CAL_BOARD + mutual-enemy table ───────────────────────────────
     # C gate: press_on OR FAL OR WIN.
@@ -706,6 +746,7 @@ def _hostility(state: InnerGameState) -> None:
                 "HOSTILITY: good mutual enemy with best ally %d → power %d",
                 ally_slot0, state.g_mutual_enemy_table[ally_slot0],
             )
+            build_alliance_msg(state, 0x28)
 
     # ── Block 3: ComputeOrderDipFlags (FUN_004113d0) — always ────────────────
     from ..communications import compute_order_dip_flags
@@ -729,14 +770,18 @@ def _hostility(state: InnerGameState) -> None:
 
             # C (HOSTILITY.c:190-213): log "This is the first turn" and insert
             # message type 0x1f into the alliance BST via BuildAllianceMsg.
-            from ..communications import build_alliance_msg
             build_alliance_msg(state, 0x1f)
 
             # Trust init from g_influence_matrix_b for ALL power pairs (not just own).
             # ≤ 17.0 → nearby (trust 5); > 17.0 → distant (trust 3).
             # C outer loop: uVar7 = 0..num_powers-1; inner: uVar12 = 0..num_powers-1.
             inf_b = state.g_influence_matrix_b
-            prox  = state.g_power_proximity_rank
+            # g_ally_pref_ranking is the Python equivalent of C's flat DAT_00633f18 array
+            # (7 powers × 5 int32s).  HOSTILITY initialises puVar17 = &DAT_00633f20 =
+            # &prox[a*5+2], so: puVar17[-1]=prox[a*5+1], puVar17[0]=prox[a*5+2],
+            # puVar17[1]=prox[a*5+3] ≡ g_ally_pref_ranking[a, 1/2/3].
+            # Index 0 of each row is the sentinel slot zeroed by ComputeInfluenceMatrix.
+            prox  = state.g_ally_pref_ranking
             for a in range(num_powers):
                 for p in range(num_powers):
                     if p == a:
@@ -746,47 +791,39 @@ def _hostility(state: InnerGameState) -> None:
                         5 if float(inf_b[a, p]) <= 17.0 else 3
                     )
 
-                # Random ally selection for this power; only own_power updates slots.
-                # C: puVar17[-1]=prox[base], puVar17[0]=prox[base+1], puVar17[1]=prox[base+2]
+                # Random ally selection: puVar17[-1/0/1] = prox[a,1/2/3].
                 # Trust is set for the PRIMARY target; slots hold the OTHER neighbors.
                 if prox is not None:
-                    base = a * 5
-                    roll = random.randrange(100)
+                    n1, n2, n3 = int(prox[a, 1]), int(prox[a, 2]), int(prox[a, 3])
+                    roll = _rand_stride()
                     if roll < 25:
-                        # Primary trust target = prox[base]; slots = [base+1, base+2]
-                        ally_idx = int(prox[base])
+                        ally_idx = n1
                         state.g_ally_trust_score[a, ally_idx] = 1
                         state.g_ally_trust_score_hi[a, ally_idx] = 0
                         if a == own_power:
-                            state.g_best_ally_slot0 = int(prox[base + 1])
-                            state.g_best_ally_slot1 = int(prox[base + 2])
+                            state.g_best_ally_slot0 = n2
+                            state.g_best_ally_slot1 = n3
                     elif roll < 50:
-                        # Primary trust target = prox[base+1]; slots = [base, base+2]
-                        ally_idx = int(prox[base + 1])
+                        ally_idx = n2
                         state.g_ally_trust_score[a, ally_idx] = 1
                         state.g_ally_trust_score_hi[a, ally_idx] = 0
                         if a == own_power:
-                            state.g_best_ally_slot0 = int(prox[base])
-                            state.g_best_ally_slot1 = int(prox[base + 2])
+                            state.g_best_ally_slot0 = n1
+                            state.g_best_ally_slot1 = n3
                     elif roll < 75:
-                        # Primary trust target = prox[base+2]; slots = [base, base+1]
-                        ally_idx = int(prox[base + 2])
+                        ally_idx = n3
                         state.g_ally_trust_score[a, ally_idx] = 1
                         state.g_ally_trust_score_hi[a, ally_idx] = 0
                         if a == own_power:
-                            state.g_best_ally_slot0 = int(prox[base])
-                            state.g_best_ally_slot1 = int(prox[base + 1])
+                            state.g_best_ally_slot0 = n1
+                            state.g_best_ally_slot1 = n2
                             state.g_triple_front_mode2 = 1
                     else:
-                        # Triple-front: no single primary; all three slots assigned.
                         state.g_triple_front_flag = 1
                         if a == own_power:
-                            state.g_best_ally_slot0 = int(prox[base])
-                            state.g_best_ally_slot1 = int(prox[base + 1])
-                            state.g_best_ally_slot2 = int(prox[base + 2])
-                            for attr in ('g_best_ally_slot0', 'g_best_ally_slot1', 'g_best_ally_slot2'):
-                                if getattr(state, attr) == own_power:
-                                    setattr(state, attr, -1)
+                            state.g_best_ally_slot0 = n1 if n1 != own_power else -1
+                            state.g_best_ally_slot1 = n2 if n2 != own_power else -1
+                            state.g_best_ally_slot2 = n3 if n3 != own_power else -1
 
             # g_history_counter > 0 path: snapshot own-power trust row into
             # g_diplomacy_state_a/B (DAT_004d5480/4), clear low trust, then dispatch press.
@@ -866,6 +903,7 @@ def _hostility(state: InnerGameState) -> None:
                     state.g_ally_trust_score[own_power, p]    = trust_po_lo
                     state.g_ally_trust_score_hi[own_power, p] = trust_po_hi
                     logger.debug("HOSTILITY: changed our minds about attacking power %d", p)
+                    build_alliance_msg(state, 0x3c)
 
             # Peace overture loop.
             # C: g_history_counter==0 path goes directly to LAB_0042f95f; history>0 path
@@ -898,7 +936,7 @@ def _hostility(state: InnerGameState) -> None:
                     continue
                 # Random 15% gate OR peace counter lo-word < 2 (C line 448).
                 peace_lo  = int(state.g_peace_counter[p]) & 0xFFFFFFFF
-                rand_pass = (random.randrange(100) < 15) or (peace_lo < 2)
+                rand_pass = (_rand_stride() < 15) or (peace_lo < 2)
                 if not rand_pass:
                     continue
                 # History or deceit gate: history==0 OR DeceitLevel > 1.
@@ -906,15 +944,19 @@ def _hostility(state: InnerGameState) -> None:
                     continue
 
                 # Form peace: set bilateral trust; reset relation if not already at 50.
+                # NO_PRESS: skip trust assignment (no actual diplomacy → no trust
+                # agreements; trust=1 would block cross-border moves via the trust gate).
                 prev_relation = int(state.g_relation_score[own_power, p])
-                state.g_ally_trust_score[own_power, p]    = 1
-                state.g_ally_trust_score_hi[own_power, p] = 0
-                state.g_ally_trust_score[p, own_power]    = 1
-                state.g_ally_trust_score_hi[p, own_power] = 0
+                if getattr(state, 'g_minimal_press_mode', 0) != 1:
+                    state.g_ally_trust_score[own_power, p]    = 1
+                    state.g_ally_trust_score_hi[own_power, p] = 0
+                    state.g_ally_trust_score[p, own_power]    = 1
+                    state.g_ally_trust_score_hi[p, own_power] = 0
                 if prev_relation != 50:
                     state.g_relation_score[own_power, p] = 0
                     state.g_relation_score[p, own_power] = 0
                 logger.debug("HOSTILITY: attempting peace with power %d", p)
+                build_alliance_msg(state, 0x3d)
 
     # Block 6 — UpdateRelationHistory (HOSTILITY.c:510-512).
     # C: `if ((DAT_00baed68 == '\0') || (3.0 < _g_NearEndGameFactor))`
@@ -932,4 +974,3 @@ def _post_friendly_update(state: InnerGameState) -> None:
     research.md §4241."""
     own_power = getattr(state, 'albert_power_idx', 0)
     compute_influence_matrix(state, own_power)
-    compute_alliance_score(state)

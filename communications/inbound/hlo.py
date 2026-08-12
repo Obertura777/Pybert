@@ -107,6 +107,35 @@ def hlo_dispatch(state: InnerGameState, message: str) -> None:
               _DAIDE_POWERS[power_idx] if power_idx < 7 else '?',
               power_idx, state.g_passcode, variant_tokens)
 
+    # ── SetOwnPower equivalent: build home_centers from MDF data ─────────
+    # C: SetOwnPower (FUN_00460de0) iterates province[p]+0x14 (home-SC power
+    # sets, populated by on-MDF vtable hook) to build inner+0x243c (enemy
+    # home SC map), consumed by ParseNOW winter path.
+    # Python: g_mdf_home_sc was populated by handle_mdf; convert to integer
+    # IDs using prov_to_id (available once synchronize_from_game has run).
+    # If prov_to_id is empty (HLO arrived before synchronize_from_game),
+    # synchronize_from_game will populate home_centers via game.map.homes.
+    mdf_home_sc = getattr(state, 'g_mdf_home_sc', {})
+    prov_to_id  = getattr(state, 'prov_to_id',    {})
+    if mdf_home_sc and prov_to_id:
+        built: dict = {}
+        for pw_name, prov_names in mdf_home_sc.items():
+            if pw_name in _DAIDE_POWERS:
+                pid = _DAIDE_POWERS.index(pw_name)
+                ids = frozenset(prov_to_id[pn] for pn in prov_names if pn in prov_to_id)
+                if ids:
+                    built[pid] = ids
+        if built:
+            state.home_centers = built
+            _log.debug("hlo_dispatch: built home_centers from MDF for %d powers",
+                       len(built))
+    elif mdf_home_sc:
+        _log.debug("hlo_dispatch: g_mdf_home_sc ready but prov_to_id empty; "
+                   "home_centers will be populated by synchronize_from_game")
+    else:
+        _log.warning("hlo_dispatch: g_mdf_home_sc empty — MDF not received before HLO; "
+                     "home_centers not built from DAIDE path")
+
     # ── OnHLO vtable hook (+0xd4) ─────────────────────────────────────────
     # C: (**(code**)(*(int*)this + 0xd4))()
     # The variant list may carry LVL (press level) and MTL (move time limit).

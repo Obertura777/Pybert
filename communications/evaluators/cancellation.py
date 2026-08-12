@@ -68,10 +68,10 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
       uStack_44              → state.albert_power_idx
       g_ally_trust_score       → state.g_ally_trust_score  (2-D array indexed [a, b])
       g_ally_trust_score_hi    → state.g_ally_trust_score_hi
-      DAT_00bb6f2c[p*3]      → state.g_desig_list_a[p]   (list of records, cleared on cancel)
-      DAT_00bb6f30[p*3]      → state.g_desig_count_a[p]  (int count)
-      DAT_00bb702c[p*3]      → state.g_desig_list_b[p]
-      DAT_00bb7030[p*3]      → state.g_desig_count_b[p]
+      DAT_00bb6f28/2c[p]     → state.g_ally_promise_list[p]  (list of records, cleared on cancel)
+      DAT_00bb6f30[p*3]      → len(state.g_ally_promise_list[p])
+      DAT_00bb7028/2c[p]     → state.g_ally_counter_list[p]
+      DAT_00bb7030[p*3]      → len(state.g_ally_counter_list[p])
 
     The C linked-list walk-and-free is absorbed as list.clear().
     """
@@ -122,47 +122,25 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
                 t_hi = 0
                 t_lo = 0
 
-            trust_nonzero = (t_hi > 0) or (t_hi == 0 and t_lo != 0)
-            if trust_nonzero:
+            if t_hi >= 0 and (t_hi > 0 or t_lo != 0):
                 state.g_ally_trust_score[a, b]    = 0
                 state.g_ally_trust_score_hi[a, b] = 0
                 changed = True
 
             # Own-power branch (lines 86-122): a == own
             if a == own:
-                # DAT_00bb6f30[b*3] and DAT_00bb7030[b*3] are count fields.
-                g_desig_count_a = getattr(state, 'g_desig_count_a', {})
-                g_desig_count_b = getattr(state, 'g_desig_count_b', {})
-                cnt_a = int(g_desig_count_a.get(b, 0))
-                cnt_b = int(g_desig_count_b.get(b, 0))
+                # DAT_00bb6f30[b*3]/DAT_00bb7030[b*3]: entry count for promise/counter lists.
+                cnt_a = len(state.g_ally_promise_list.get(b, []))
+                cnt_b = len(state.g_ally_counter_list.get(b, []))
 
                 if cnt_a != 0 or cnt_b != 0:
                     changed = True
 
                 # Walk & free linked list A (DAT_00bb6f2c[b*3]) — lines 90-102.
-                # Absorbed as list.clear(); sentinel reset (list now empty).
-                g_desig_list_a = getattr(state, 'g_desig_list_a', {})
-                if b in g_desig_list_a:
-                    g_desig_list_a[b] = []
-                else:
-                    g_desig_list_a[b] = []
-                state.g_desig_list_a = g_desig_list_a
-
-                # Reset count field A (DAT_00bb6f30[b*3] = 0) — line 100.
-                g_desig_count_a[b] = 0
-                state.g_desig_count_a = g_desig_count_a
+                state.g_ally_promise_list[b] = []
 
                 # Walk & free linked list B (DAT_00bb702c[b*3]) — lines 103-122.
-                g_desig_list_b = getattr(state, 'g_desig_list_b', {})
-                if b in g_desig_list_b:
-                    g_desig_list_b[b] = []
-                else:
-                    g_desig_list_b[b] = []
-                state.g_desig_list_b = g_desig_list_b
-
-                # Reset count field B (DAT_00bb7030[b*3] = 0) — line 120.
-                g_desig_count_b[b] = 0
-                state.g_desig_count_b = g_desig_count_b
+                state.g_ally_counter_list[b] = []
 
     # ── Post-loop: log if changed ─────────────────────────────────────────────
     if changed:
@@ -232,11 +210,11 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
     Python mapping:
       uStack_74            → state.albert_power_idx
       DAT_00bb6f28[p*0xc]  → designation map for p (BRANCH A — own side)
-      DAT_00bb6f2c[p*3]    → g_desig_list_a[p]  (sentinel/head pointer)
-      ppiVar12 != ppiVar2  → province is in g_desig_list_a[p] (non-empty find)
+      DAT_00bb6f2c[p*3]    → state.g_ally_promise_list[p]
+      ppiVar12 != ppiVar2  → entry with dest_prov==province found in promise list
       DAT_00bb7028[p*0xc]  → designation map for p (BRANCH B — sender side)
-      DAT_00bb702c[p*3]    → g_desig_list_b[p]
-      FUN_00402b70         → std::map::insert / _Copy — absorbed as list membership
+      DAT_00bb702c[p*3]    → state.g_ally_counter_list[p]
+      FUN_00402b70         → std::map::erase — absorbed as list pop
 
     FUN_0047a948 (AssertFail) is called when the GameBoard_GetPowerRec
     sanity-check fails (puVar14 == 0 or puVar14 != this); absorbed as
@@ -287,10 +265,6 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
     if n_powers == 0 or n_provs == 0:
         return False
 
-    # Lazy-init designation-list state (same fields used by _cancel_pce).
-    g_desig_list_a: dict = getattr(state, 'g_desig_list_a', {})
-    g_desig_list_b: dict = getattr(state, 'g_desig_list_b', {})
-
     changed: bool = False   # cStack_95
 
     # ── Triple loop ───────────────────────────────────────────────────────────
@@ -310,27 +284,30 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
 
                 if outer_power == own:
                     # ── BRANCH A: outer power is own ──────────────────────────
-                    # C: this = &DAT_00bb6f28 + uVar3 * 0xc  (j_power = uVar3 = uStack_6c)
-                    # GameBoard_GetPowerRec(this, aiStack_14, &province)
-                    # ppiVar2 = &DAT_00bb6f2c[uVar3 * 3]  (DesigListA sentinel)
-                    # if (ppiVar12 != ppiVar2) → found → FUN_00402b70 (erase) → changed
-                    #
-                    # Python absorption: remove province from j_power's designation list.
-                    desig_a: list = g_desig_list_a.get(j_power, [])
-                    if province in desig_a:
-                        # FUN_00402b70 — _stl_tree_erase: remove the found entry.
-                        desig_a.remove(province)
+                    # C: GameBoard_GetPowerRec(&DAT_00bb6f28 + j_power*0xc, ...)
+                    # ppiVar2 = &DAT_00bb6f2c[j_power*3]  (DesigListA sentinel)
+                    # if iterator != sentinel → found → FUN_00402b70 (erase) → changed
+                    desig_a = state.g_ally_promise_list.get(j_power, [])
+                    idx = next(
+                        (i for i, e in enumerate(desig_a) if e.get('dest_prov') == province),
+                        None,
+                    )
+                    if idx is not None:
+                        desig_a.pop(idx)
                         changed = True
 
                 else:
                     # ── BRANCH B: non-own outer power ─────────────────────────
-                    # C: this = &DAT_00bb7028 + uVar13 * 0xc  (outer_power = uVar13)
-                    # GameBoard_GetPowerRec(this, aiStack_1c, &province)
-                    # ppiVar2 = &DAT_00bb702c[uVar13 * 3]  (DesigListB sentinel)
-                    # if (ppiVar12 != ppiVar2) → found → FUN_00402b70 (erase) → changed
-                    desig_b: list = g_desig_list_b.get(outer_power, [])
-                    if province in desig_b:
-                        desig_b.remove(province)
+                    # C: GameBoard_GetPowerRec(&DAT_00bb7028 + outer_power*0xc, ...)
+                    # ppiVar2 = &DAT_00bb702c[outer_power*3]  (DesigListB sentinel)
+                    # if iterator != sentinel → found → FUN_00402b70 (erase) → changed
+                    desig_b = state.g_ally_counter_list.get(outer_power, [])
+                    idx = next(
+                        (i for i, e in enumerate(desig_b) if e.get('dest_prov') == province),
+                        None,
+                    )
+                    if idx is not None:
+                        desig_b.pop(idx)
                         changed = True
 
     # ── Post-loop: log if changed ─────────────────────────────────────────────
