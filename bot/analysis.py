@@ -438,7 +438,8 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
     g_candidate_record_list via a 7-phase pipeline:
 
       Phase 1  Find max score among this power's candidates.
-      Phase 2  Build sorted list (ascending adjusted score; offset = 2500 - max).
+      Phase 2  Build sorted list (DESCENDING adjusted score; offset = 2500 -
+               max).  See the comment at the sort for why descending.
       Phase 3  Pareto-dominance filter across all completed MC-trial dimensions
                (penalty 100 if n_allies==0, else 50).  Pareto-selected
                candidates accumulate an accepted frontier; dominated ones get
@@ -524,7 +525,20 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
         rec for rec in state.g_candidate_record_list
         if rec.get('power_idx', rec.get('power', -1)) == power_idx
     ]
-    power_recs.sort(key=lambda r: int(r.get('score', 0)) + score_offset)
+    # DESCENDING — highest adjusted score first.
+    # FUN_00419fa0 is an MSVC std::_Tree insert: node layout [0]=_Left,
+    # [1]=_Parent, [2]=_Right, [3]=key, +0x19=_Isnil.  Its descent computes
+    #     _Addleft = (node.key < new_key)
+    # with the operands swapped relative to a std::less tree, which is what
+    # comp(new_key, node_key) expands to under std::greater.  So the container
+    # is ordered descending and the walk from begin() sees the BEST candidate
+    # first.  Corrected 2026-08-12: the port sorted ascending, which inverted
+    # Phase 3's dominance direction (each candidate was compared against
+    # WORSE peers instead of better ones), handed Phase 4's probability mass
+    # to the worst candidate instead of the best, and reversed the rank
+    # numbering that Phase 6's min_rank/rank thresholds are calibrated on.
+    power_recs.sort(key=lambda r: int(r.get('score', 0)) + score_offset,
+                    reverse=True)
 
     # ── Phase 3: Pareto-dominance filter ────────────────────────────────
     # accepted_frontier holds the "not yet dominated" prefix of the sorted list.

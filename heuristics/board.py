@@ -323,13 +323,96 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             state.g_ally_trust_score[own_power, local_128] = 0
             if hasattr(trust_hi_mat, '__setitem__'):
                 trust_hi_mat[own_power, local_128] = 0
-            # When local_fc >= 80: additionally zero trust *from* local_128 to all
-            if local_fc >= 80:
-                for p in range(num_powers):
-                    if p != local_128:
-                        state.g_ally_trust_score[local_128, p] = 0
-                        if hasattr(trust_hi_mat, '__setitem__'):
-                            trust_hi_mat[local_128, p] = 0
+            # ── Per-power trust rewrite (decompile 937-1082) ─────────────
+            # Ported 2026-08-12; this whole loop was previously collapsed to
+            # the `local_fc >= 80` trust-zeroing below.  Pointer walks from
+            # the C setup at :938-943, with pdVar15 = inner power:
+            #   piVar20 (+1)      → g_relation_score[own, inner]
+            #   piVar7  (+0x15)   → g_relation_score[inner, own]
+            #   pdStack_118 (+1)  → int64 trust[own, inner]
+            #   local_11c (+0x2a) → int64 trust[inner, local_128]
+            for inner in range(num_powers):
+                # C:946-948 — clear the enemy flag and stamp the near-victory
+                # power into DAT_00b9fdd8[inner].
+                state.g_enemy_flag[inner] = 0
+                if hasattr(state, 'g_near_victory_by_power'):
+                    state.g_near_victory_by_power[inner] = local_128
+
+                if inner == local_128:
+                    continue
+
+                # C:950-952 — "at war with everyone" zeroing.
+                # UNPORTED GATE: the second operand is
+                # g_sc_percent[*piStack_12c], where piStack_12c walks a
+                # 5-int-stride per-power record from DAT_00633f1c (the same
+                # record whose +0 field is g_support_trust_adj / DAT_00633f14).
+                # That field holds a POWER INDEX with no binding in state.py,
+                # so the branch is left inactive rather than guessed at.
+                #
+                # if local_fc > 79 and g_sc_percent[<unbound>] < 75.0:
+                #     g_relation_score[local_128, inner] = 0
+                #     g_ally_trust_score[local_128, inner] = 0
+                #     trust_hi_mat[local_128, inner] = 0
+
+                rel_out = int(state.g_relation_score[own_power, inner])
+                rel_in  = int(state.g_relation_score[inner, own_power])
+                trust_zero = (
+                    int(state.g_ally_trust_score[own_power, inner]) == 0
+                    and int(trust_hi_mat[own_power, inner]) == 0
+                )
+                pct_inner = float(state.g_sc_percent[inner])
+
+                if local_fc < 0x55:          # 85
+                    if local_fc < 0x46 or not trust_zero:      # 70
+                        # C:986-991 — only relax a negative outbound relation,
+                        # and only when we hold no trust and it is not deeply
+                        # negative.
+                        if rel_out > -21 and trust_zero and rel_out < 0:
+                            state.g_relation_score[own_power, inner] = 0
+                    elif local_fc < 0x50:    # 80
+                        if pct_inner >= 65.0:
+                            if rel_out < -10:
+                                state.g_relation_score[own_power, inner] = -10
+                        elif rel_out < 0:
+                            state.g_relation_score[own_power, inner] = 0
+                        if rel_in < -10:
+                            state.g_relation_score[inner, own_power] = -10
+                    elif pct_inner >= 70.0:  # C:1004
+                        if rel_out < 0:
+                            state.g_relation_score[own_power, inner] = 0
+                        if rel_in < 0:
+                            state.g_relation_score[inner, own_power] = 0
+                    else:                    # C:1013-1021
+                        if rel_out < 0x0f:
+                            state.g_relation_score[own_power, inner] = 0x0f
+                        if rel_in < 5:
+                            state.g_relation_score[inner, own_power] = 5
+                        if hasattr(state, 'g_peace_counter'):
+                            state.g_peace_counter[inner] = 0
+                else:
+                    # C:1023-1058 — "trusting every other power 100 percent".
+                    # Blanket-set the inner power's relation COLUMN to 50,
+                    # drop its trust toward the near-victory power, and clear
+                    # that pair's relation/trust entirely.
+                    for k in range(num_powers):
+                        state.g_relation_score[k, inner] = 0x32
+                    state.g_ally_trust_score[inner, local_128] = 0
+                    trust_hi_mat[inner, local_128] = 0
+                    state.g_relation_score[local_128, inner] = 0
+                    state.g_ally_trust_score[local_128, inner] = 0
+                    trust_hi_mat[local_128, inner] = 0
+                    if pct_inner >= 75.0:
+                        if rel_out < 5:
+                            state.g_relation_score[own_power, inner] = 5
+                        if rel_in < 0:
+                            state.g_relation_score[inner, own_power] = 0
+                    else:
+                        state.g_relation_score[own_power, inner] = 0x32
+                        if rel_in < 0x0f:
+                            state.g_relation_score[inner, own_power] = 0x0f
+                    if hasattr(state, 'g_peace_counter'):
+                        state.g_peace_counter[inner] = 0
+
             bVar26 = True  # signal "near-victory enemy selected"
 
     # ── LAB_0042ac27: post-enemy-selection routing ────────────────────────────
