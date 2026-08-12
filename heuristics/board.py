@@ -39,6 +39,16 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
     trust_hi_mat = getattr(state, 'g_ally_trust_score_hi', np.zeros((7, 7), dtype=np.int64))
 
+    # SC counts: CAL_BOARD reads `target_sc_cnt` at all 15 of its SC sites and
+    # `curr_sc_cnt` at exactly one (the opening-ally demotion below).
+    # InitScoringState.c:94 seeds target_sc_cnt from curr_sc_cnt and then
+    # adjusts it ±1 per the urgency comparison, so the two are NOT the same
+    # array — target_sc_cnt is the *projected* count, bound here as
+    # state.g_target_sc_cnt.  GenerateOrders (→ InitScoringState) runs before
+    # HOSTILITY (→ CAL_BOARD) in both GenerateAndSubmitOrders.c:318/479 and
+    # bot/client/_orders.py, so the projection is populated by this point.
+    # Corrected 2026-08-12: every site here previously read state.sc_count.
+
     # ── Phase 1a: per-power quadratic score (Loop A in decompile) ────────────
     # g_power_exp_score[k] = pow(min(sc_k, win_threshold), 2) * 100 + 1
     #
@@ -52,7 +62,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     #     programmer would include a meaningless constant.
     # Fixed 2026-04-20 (audit finding C5).
     for k in range(num_powers):
-        sc = max(0, min(int(state.sc_count[k]), win_threshold))
+        sc = max(0, min(int(state.g_target_sc_cnt[k]), win_threshold))
         state.g_power_exp_score[k] = (sc ** 2) * 100.0 + 1.0
 
     # ── Phase 1b: NearEndGameFactor + g_sc_percent (Loop B in decompile) ──────
@@ -61,7 +71,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     state.g_war_mode_flag = 0
     near_end = 1.0
 
-    own_sc = int(state.sc_count[own_power])
+    own_sc = int(state.g_target_sc_cnt[own_power])
     # g_one_sc_from_win checked before second loop (decompile line 118).
     # NOTE: log-only flag — no C read sites outside the archive-event write here
     # (CAL_BOARD event 0x28 family).  Kept for parity; do not remove.
@@ -73,7 +83,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     lead_sc = -1
     lead_tied = 0
     for k in range(num_powers):
-        sc = int(state.sc_count[k])
+        sc = int(state.g_target_sc_cnt[k])
         pct = sc * 100.0 / win_threshold
         state.g_sc_percent[k] = pct
         if pct > 80.0:
@@ -109,16 +119,27 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     else:
         state.g_lone_lead_power = -1
 
-    # Opening-ally-slot promotion (decompile lines 148-156): if slot 0's
-    # power has been reduced below 2 SCs, promote slot 1 → 0, slot 2 → 1.
+    # Opening-ally-slot promotion (decompile lines 148-156).  The C condition
+    # is a comma-expression:
+    #     if (slot0 >= 0 && curr_sc_cnt[slot0] < 2 && (slot0 = -1, slot1 >= 0))
+    # so slot0 is cleared whenever it drops below 2 SCs, but the promotion
+    # body only runs when slot1 is occupied — and slot2 is only touched from
+    # inside that body.  This is the one site that reads curr_sc_cnt rather
+    # than target_sc_cnt.
+    # Corrected 2026-08-12: the previous version cleared slot2 (and moved it
+    # into slot1) even when slot1 was empty, which C never does.
     try:
         s0 = int(getattr(state, 'g_best_ally_slot0', -1))
         s1 = int(getattr(state, 'g_best_ally_slot1', -1))
         s2 = int(getattr(state, 'g_best_ally_slot2', -1))
         if 0 <= s0 < num_powers and int(state.sc_count[s0]) < 2:
-            state.g_best_ally_slot0 = s1
-            state.g_best_ally_slot1 = s2 if s2 >= 0 else -1
-            state.g_best_ally_slot2 = -1
+            state.g_best_ally_slot0 = -1
+            if s1 >= 0:
+                state.g_best_ally_slot0 = s1
+                state.g_best_ally_slot1 = -1
+                if s2 >= 0:
+                    state.g_best_ally_slot1 = s2
+                    state.g_best_ally_slot2 = -1
     except Exception:
         pass
 
@@ -149,7 +170,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             trust_lo = int(state.g_ally_trust_score[row, col])
             trust_hi = int(trust_hi_mat[row, col])
             influence = float(state.g_influence_matrix[row, col])
-            col_sc = int(state.sc_count[col])
+            col_sc = int(state.g_target_sc_cnt[col])
             if (trust_hi < 1
                     and (trust_hi < 0 or trust_lo < 2)
                     and influence > 0.0
@@ -170,7 +191,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         t_lo = int(state.g_ally_trust_score[own_power, ally])
         if not (t_hi >= 0 and (t_hi > 0 or t_lo > 6)):
             continue
-        if int(state.sc_count[ally]) <= 2:
+        if int(state.g_target_sc_cnt[ally]) <= 2:
             continue
         enemy1 = int(state.g_ally_pref_ranking[ally, 1])
         enemy2 = int(state.g_ally_pref_ranking[ally, 2])
@@ -188,9 +209,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         if (int(state.g_influence_rank_flag[enemy1, own_power]) != 1
                 or int(state.g_influence_rank_flag[enemy2, own_power]) != 1):
             continue
-        sc_ally = int(state.sc_count[ally])
-        sc_e1 = int(state.sc_count[enemy1])
-        sc_e2 = int(state.sc_count[enemy2])
+        sc_ally = int(state.g_target_sc_cnt[ally])
+        sc_e1 = int(state.g_target_sc_cnt[enemy1])
+        sc_e2 = int(state.g_target_sc_cnt[enemy2])
         if not (sc_ally + 1 < sc_e1 + sc_e2 and sc_ally <= own_sc + 1):
             continue
         state.g_ally_distress_flag[ally] = 1
@@ -206,16 +227,40 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     # ── Phase 4: find leading non-own power → local_fc / local_128 ───────────
     # local_fc  = int(g_sc_percent[leading_power]) — int-cast, like C FloatToInt64
     # local_128 = index of the non-own power with the highest SC%
-    # (decompile lines 729-820; tie-breaking omitted — C uses trust/history)
+    # (decompile lines 729-820, local_fc initialised to -1 at line 85)
+    #
+    # C compares the *double* percentage against (double)local_fc — the
+    # already-truncated running max — so a rival at 60.7 % still displaces a
+    # leader recorded as 60.  Comparing int(pct) > local_fc (as this did
+    # before 2026-08-12) silently dropped those updates.
+    #
+    # On an exact tie C runs a fear-based tie-break (decompile lines 736-755).
+    # Collapsing its nested comparisons: the outer pair of int64 trust tests
+    # can only both hold when trust(own, k) == trust(own, leader) in both
+    # words, so the surviving conditions are equal trust, relation(own, k) <=
+    # relation(own, leader), and rank_flag(own, k) < rank_flag(own, leader) —
+    # i.e. switch to the power we fear less.  This matters most in the
+    # opening, where six powers share the same SC%.
     local_fc: int = -1
     local_128: int = own_power  # sentinel (own_power used when no rival found)
     for k in range(num_powers):
         if k == own_power:
             continue
-        pct_int = int(state.g_sc_percent[k])   # FloatToInt64 truncates toward 0
-        if pct_int > local_fc:
-            local_fc = pct_int
+        pct = float(state.g_sc_percent[k])
+        if pct > float(local_fc):
+            local_fc = int(pct)   # FloatToInt64 truncates toward 0
             local_128 = k
+        elif pct == float(local_fc) and local_128 != own_power:
+            k_hi = int(trust_hi_mat[own_power, k])
+            k_lo = int(state.g_ally_trust_score[own_power, k])
+            l_hi = int(trust_hi_mat[own_power, local_128])
+            l_lo = int(state.g_ally_trust_score[own_power, local_128])
+            if (k_hi == l_hi and k_lo == l_lo
+                    and int(state.g_relation_score[own_power, k])
+                        <= int(state.g_relation_score[own_power, local_128])
+                    and int(state.g_influence_rank_flag[own_power, k])
+                        < int(state.g_influence_rank_flag[own_power, local_128])):
+                local_128 = k
 
     own_pct = float(state.g_sc_percent[own_power])
 
@@ -304,7 +349,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             if local_fc > 75 or lead_pct <= own_pct or own_pct > 20.0:
                 if local_fc < 86 and lead_pct > own_pct and own_pct > 20.0:
                     for p in range(num_powers):
-                        if int(state.sc_count[p]) < 2:
+                        if int(state.g_target_sc_cnt[p]) < 2:
                             state.g_enemy_flag[p] = 1
                             state.g_ally_trust_score[own_power, p] = 0
                             if hasattr(trust_hi_mat, '__setitem__'):
@@ -312,7 +357,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             else:
                 # local_fc <= 75 AND leading_pct > own_pct
                 for p in range(num_powers):
-                    sc_p = int(state.sc_count[p])
+                    sc_p = int(state.g_target_sc_cnt[p])
                     infl_own_p = float(state.g_influence_matrix[own_power, p])
                     infl_p_own = float(state.g_influence_matrix[p, own_power])
                     infl_raw_own_p = float(getattr(state, 'g_influence_matrix_raw',
@@ -770,7 +815,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     g_deceit = int(getattr(state, 'g_deceit_level', 0))
     g_infl_raw = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
     for p in range(num_powers):
-        sc_p = int(state.sc_count[p])
+        sc_p = int(state.g_target_sc_cnt[p])
         infl_own_p = float(state.g_influence_matrix[own_power, p])
         infl_p_own = float(state.g_influence_matrix[p, own_power])
         raw_own_p  = float(g_infl_raw[own_power, p])
