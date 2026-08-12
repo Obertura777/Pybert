@@ -342,17 +342,28 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                     continue
 
                 # C:950-952 — "at war with everyone" zeroing.
-                # UNPORTED GATE: the second operand is
-                # g_sc_percent[*piStack_12c], where piStack_12c walks a
-                # 5-int-stride per-power record from DAT_00633f1c (the same
-                # record whose +0 field is g_support_trust_adj / DAT_00633f14).
-                # That field holds a POWER INDEX with no binding in state.py,
-                # so the branch is left inactive rather than guessed at.
-                #
-                # if local_fc > 79 and g_sc_percent[<unbound>] < 75.0:
-                #     g_relation_score[local_128, inner] = 0
-                #     g_ally_trust_score[local_128, inner] = 0
-                #     trust_hi_mat[local_128, inner] = 0
+                # piStack_12c starts at &DAT_00633f1c and walks +5 ints per
+                # inner power.  DAT_00633f18 is the base of a 5-int-per-power
+                # record (confirmed by the unrolled 5x sentinel init at
+                # 0040dbb4-0040dbbf, EDI = 0x633f1c covering f18..f28), and
+                # ComputeInfluenceMatrix.c:238 fills it as the INVERSE of the
+                # influence ranking:
+                #     DAT_006340c0[p*21 + q] = rank      (g_influence_rank_flag)
+                #     DAT_00633f18[p*5 + rank] = q       (rank -> power)
+                # So *piStack_12c = DAT_00633f18[inner*5 + 1] = the power
+                # ranked SECOND by influence from `inner`'s perspective.  That
+                # is derivable from the rank matrix already on state, so no new
+                # array is needed.  Ported 2026-08-12.
+                rank1 = -1
+                for q in range(num_powers):
+                    if int(state.g_influence_rank_flag[inner, q]) == 1:
+                        rank1 = q
+                        break
+                if (local_fc > 0x4f and 0 <= rank1 < num_powers
+                        and float(state.g_sc_percent[rank1]) < 75.0):
+                    state.g_relation_score[local_128, inner] = 0
+                    state.g_ally_trust_score[local_128, inner] = 0
+                    trust_hi_mat[local_128, inner] = 0
 
                 rel_out = int(state.g_relation_score[own_power, inner])
                 rel_in  = int(state.g_relation_score[inner, own_power])
