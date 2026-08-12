@@ -412,19 +412,18 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 return False
             return int(neutral_flag[own_power, p]) != 0
 
-        # Branch 1 (C line 1226): Opening-sticky mode
-        if g_opening_sticky == 1 and g_deceit < 3 and 0 <= g_opening_enemy < num_powers:
-            state.g_enemy_flag[g_opening_enemy] = 1
-            state.g_ally_trust_score[own_power, g_opening_enemy] = 0
-            if hasattr(trust_hi_mat, '__setitem__'):
-                trust_hi_mat[own_power, g_opening_enemy] = 0
-            enemy_selected = True
-
-        # Branch 2 (C line 1256): at war with at least one of top-2?
-        # Guard: not sticky and (trust[#1]==0 OR trust[#2]==0)
+        # Branch precedence (C decompile 1101/1219): the "at war with both
+        # top-2 enemies" test is the OUTER if, and opening-sticky lives in its
+        # else.  Evaluating sticky first — as this did before 2026-08-12 —
+        # inverted that, letting a sticky opening enemy override a live
+        # two-front war.
         at_war_1 = (t_hi_1 == 0 and t_lo_1 == 0)
         at_war_2 = (t_hi_2 == 0 and t_lo_2 == 0)
-        both_zero = at_war_1 and at_war_2 and top_enemy_2 != own_power
+        # C's entry test (decompile 1093-1096) is trust-only; the
+        # top_enemy_2 == own_power case is handled *inside* the branch at
+        # line 1121, not excluded from it.  Requiring it here skipped the
+        # whole branch — and its `enemy_flag[enemy1] = 1` — in that case.
+        both_zero = at_war_1 and at_war_2
 
         if not enemy_selected and both_zero:
             # C line 1105: "We are at war with our top 2 enemies"
@@ -435,18 +434,20 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 # Lines 1125-1196: peace-signal / neutral / random
                 # C: g_peace_counter[enemy]==0 (DAT_004cf4c0/c4, both int32 halves of int64)
                 #    && DAT_0062b7b0[other_enemy]==0  → pick other_enemy
-                n1 = _neutral(top_enemy_1)
+                # C (1126-1128) gates on enemy 2 in BOTH tests:
+                #   g_peace_counter[enemy2] == 0 (int64, both halves)
+                #   AND g_neutral_flag[own, enemy2] == 0
+                # → select enemy 1.  Anything else falls straight through to
+                # the random pick; there is no second "peace signal from
+                # enemy 1 → select enemy 2" arm.
+                # Corrected 2026-08-12: the neutral test read enemy 1, and the
+                # invented second arm diverted cases C sends to the random pick.
                 n2 = _neutral(top_enemy_2)
                 peace_ctr = getattr(state, 'g_peace_counter', None)
-                pc1_zero = peace_ctr is None or peace_ctr[top_enemy_1] == 0
                 pc2_zero = peace_ctr is None or peace_ctr[top_enemy_2] == 0
 
-                if pc2_zero and (not n1):
-                    # "peace signal from enemy 2" → select enemy 1
+                if pc2_zero and (not n2):
                     state.g_enemy_flag[top_enemy_1] = 1
-                elif pc1_zero and (not n2):
-                    # "peace signal from enemy 1" → select enemy 2
-                    state.g_enemy_flag[top_enemy_2] = 1
                 else:
                     # Random weighted selection (C line 1163)
                     # C: FloatToInt64(100, ...) yields influence-ratio-based threshold
@@ -464,6 +465,17 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 # hist_2 > hist_1: "trust him less" → pick enemy1
                 state.g_enemy_flag[top_enemy_1] = 1
                 enemy_selected = True
+
+        # Branch 1 (C line 1226): opening-sticky mode.  Lives in the ELSE of
+        # the two-front-war test above, so it only runs when that did not fire.
+        if not enemy_selected and (
+                g_opening_sticky == 1 and g_deceit < 3
+                and 0 <= g_opening_enemy < num_powers):
+            state.g_enemy_flag[g_opening_enemy] = 1
+            state.g_ally_trust_score[own_power, g_opening_enemy] = 0
+            if hasattr(trust_hi_mat, '__setitem__'):
+                trust_hi_mat[own_power, g_opening_enemy] = 0
+            enemy_selected = True
 
         # Branch 3 (C line 1256-1259): at war with exactly one
         if not enemy_selected and (at_war_1 or at_war_2):
@@ -881,11 +893,16 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         for pow_b in range(num_powers):
             if pow_a_enforced[pow_a]:
                 continue
-            t_hi_b = int(trust_hi_mat[own_power, pow_b])
-            t_lo_b = int(state.g_ally_trust_score[own_power, pow_b])
+            # C (decompile 2355-2363) indexes BOTH the ally-matrix test and the
+            # trust gate with the same pair offset `iVar22 = pow_a*0x15 + pow_b`
+            # — i.e. trust(pow_a, pow_b), the ally's view of pow_b, not ours.
+            # There is also no second `g_ally_matrix[own, pow_b] == 1` clause.
+            # Corrected 2026-08-12.
+            t_hi_b = int(trust_hi_mat[pow_a, pow_b])
+            t_lo_b = int(state.g_ally_trust_score[pow_a, pow_b])
             if (state.g_enemy_flag[pow_b] == 0
+                    and state.g_enemy_flag[pow_a] == 0
                     and int(state.g_ally_matrix[pow_a, pow_b]) == 1
-                    and int(state.g_ally_matrix[own_power, pow_b]) == 1
                     and pow_b != opening_best_ally
                     and t_hi_b < 1 and (t_hi_b < 0 or t_lo_b < 2)):
                 state.g_enemy_flag[pow_b] = 1
