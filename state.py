@@ -788,16 +788,22 @@ class InnerGameState:
         # order_type: 0 or 8 = DSB, 7 = RTO.  Populated before _send_gof is called.
         self.g_retreat_order_list: list = []
 
-        # Albert+0x248c/0x2490 — g_retreat_list: ordered-set of retreat-phase order nodes.
-        # Written by ORD handler when season == SUM or AUT; cleared at retreat-phase start.
+        # g_retreat_list: ordered-set of retreat-phase order nodes.
+        # C address is Albert+0x2498/0x249c — NOT 0x248c/0x2490 as this comment
+        # claimed before 2026-08-12.  Evidence: DEVIATE_MOVE.c:248 walks 0x2498
+        # testing node+0x20 == 7 (RTO) and logs "during the retreat phase",
+        # while both STABBED.c and DEVIATE_MOVE.c walk 0x248c testing 2/4/6
+        # (MTO/SUP_MTO/CTO).  The data held here is correct; only the address
+        # attribution was swapped with g_order_hist_list below.
         # Each entry: {'src_province': int, 'unit_type': int, 'power': int,
         #              'order_type': int (2=MTO,3=SUP-HLD,4=SUP-MTO,6=CTO,7=RTO,8=DSB),
         #              'dst_province': int, 'sup_src': int, 'sup_dst': int, 'endgame_flag': int}
         # In Python, populated from game.order_history at synchronize_from_game time.
         self.g_retreat_list: list = []
 
-        # Albert+0x2498/0x249c — g_order_hist_list: ordered-set of movement-phase order nodes.
-        # Written by ORD handler when season == SPR or FAL; cleared at retreat-phase start.
+        # Albert+0x248c/0x2490 — g_order_hist_list: movement-phase order nodes.
+        # (Address corrected 2026-08-12; see g_retreat_list above.)  This is the
+        # list STABBED and DEVIATE_MOVE Phases 1/3 walk.
         # Same node layout as g_retreat_list.  Populated from game.order_history.
         self.g_order_hist_list: list = []
 

@@ -286,7 +286,12 @@ def _stabbed(state: InnerGameState) -> None:
         return False
 
     stab_order = np.zeros((num_powers, num_powers), dtype=bool)
-    for order in getattr(state, 'g_submitted_order_list', []):
+    # C walks Albert+0x248c/0x2490 — the movement-order history for ALL powers,
+    # the same list DEVIATE_MOVE Phases 1/3 use, with a real order_type at
+    # node+0x20 (STABBED.c:168 tests == 2, :188 tests == 4).
+    # Corrected 2026-08-12: this read g_submitted_order_list, which nothing in
+    # the port ever populates, so the whole phase was dead.
+    for order in getattr(state, 'g_order_hist_list', []):
         col = int(order.get('power', -1))
         if not (0 <= col < num_powers):
             continue
@@ -295,7 +300,7 @@ def _stabbed(state: InnerGameState) -> None:
         # Fixed 2026-04-20 (audit finding C4).
         order_type = int(order.get('order_type', order.get('type_id', 2)))
         if order_type in (2, 6):  # MTO or CTO
-            dest = int(order.get('dst_prov', -1))
+            dest = int(order.get('dst_province', order.get('dst_prov', -1)))
         elif order_type == 4:     # SUP-MTO: use support-target province
             dest = int(order.get('sup_dst', order.get('target_dest',
                        order.get('dst_prov', -1))))
@@ -374,9 +379,9 @@ def _deviate_move(state: InnerGameState) -> None:
 
     Structure (outer loop = all 7 powers as victim perspective):
       Phase 0 – zero init pass (6 arrays, numPowers×numPowers)
-      Phase 1 – retreat-list peace signal (g_retreat_list; LAB_0043a000 → do-loop line 162)
-      Phase 2 – order-history retreat stab detection (g_order_hist_list type-7 records)
-      Phase 3 – movement-order deviation stab (g_retreat_list; LAB_0043a175 line 382)
+      Phase 1 – movement-list peace signal (g_order_hist_list; LAB_0043a000 → line 162)
+      Phase 2 – retreat-phase stab detection (g_retreat_list, type-7/RTO records)
+      Phase 3 – movement-order deviation stab (g_order_hist_list; LAB_0043a175 line 382)
       On stab detected → _apply_deviate_stab consequences
     """
     own_power = getattr(state, 'albert_power_idx', 0)
@@ -393,10 +398,19 @@ def _deviate_move(state: InnerGameState) -> None:
     elif season == 'FAL':
         state.g_coop_score_flag_b.fill(0)
 
-    # Phases 1 & 3 share one do-loop over g_retreat_list (decompile line 162;
-    # Phase 3 continues at LAB_0043a175 line 382; UnitList_Advance at line 1323).
-    # Outer loop is the victim-power loop; inner loop iterates g_retreat_list.
-    retreat_list = getattr(state, 'g_retreat_list', [])
+    # Phases 1 & 3 share one do-loop over the Albert+0x248c/0x2490 list
+    # (decompile line 162; Phase 3 continues at LAB_0043a175 line 382;
+    # UnitList_Advance at line 1323).  Outer loop is the victim-power loop.
+    #
+    # That list holds MOVEMENT orders, not retreats: this walk tests
+    # node+0x20 for 2/6 (MTO/CTO) and STABBED's walk of the same list tests
+    # 2/4 (MTO/SUP_MTO).  The retreat list is Albert+0x2498/0x249c, whose
+    # walk in Phase 2 below tests node+0x20 == 7 (RTO) and whose log strings
+    # say "during the retreat phase".  state.py had the two C addresses
+    # commented onto the wrong attributes, so this phase iterated retreat
+    # records while testing for movement order types — it never matched.
+    # Corrected 2026-08-12.
+    retreat_list = getattr(state, 'g_order_hist_list', [])
     # g_AttackMap (DAT_005d98e8) is a retreat-phase snapshot of g_target_flag
     # (SnapshotProvinceState.c:729-732 copies g_target_flag → g_AttackMap).  The
     # Python port doesn't run SnapshotProvinceState's copy pass, so we use
@@ -459,15 +473,26 @@ def _deviate_move(state: InnerGameState) -> None:
                             int(state.g_ally_designation_b[dst_prov]) == p or
                             int(state.g_ally_designation_c[dst_prov]) == p):
                         deviation = True
-                        # "Unduly pressured" sub-case (C lines ~4858-4860):
-                        # attacker already had an active attack there (AttackMap==2)
-                        # AND own power had a positive score → g_cease_fire, not stab.
-                        if (p == own_power and attack_map is not None and
-                                0 <= other < 7 and 0 <= dst_prov < 256 and
-                                int(attack_map[other, dst_prov]) == 2):
+                        # "Unduly pressured" sub-case (C:521-533): the attacker
+                        # already had an active attack at dst (AttackMap == 2)
+                        # AND the victim also has a non-zero AttackMap there
+                        # → cease-fire, not a stab.
+                        #
+                        # C applies the cease-fire for EVERY victim power; only
+                        # the log line is gated on victim == own_power.  Gating
+                        # the whole sub-case on `p == own_power` (as this did
+                        # before 2026-08-12) turned every other power's mutual
+                        # pressure into a recorded stab.  The victim-side
+                        # AttackMap test was missing entirely.
+                        if (attack_map is not None
+                                and 0 <= other < 7 and 0 <= dst_prov < 256
+                                and int(attack_map[other, dst_prov]) == 2
+                                and int(attack_map[p, dst_prov]) != 0):
                             state.g_cease_fire[p, other] = 1
-                            logger.info(
-                                "We have unduly pressured by (%d) during this turn", other)
+                            if p == own_power:
+                                logger.info(
+                                    "We have unduly pressured by (%d) during this turn",
+                                    other)
                             deviation = False  # cease-fire set; not a stab
 
             elif order_type == 4:  # SUP-MTO
@@ -524,11 +549,15 @@ def _deviate_move(state: InnerGameState) -> None:
                 if p == own_power:
                     logger.info("We have been attacked by (%d) during the turn", other)
 
-    # Phase 2: order-history retreat stab detection (C: Albert+0x2498/0x249c = g_order_hist_list)
+    # Phase 2: retreat-phase stab detection (C: Albert+0x2498/0x249c — the
+    # RETREAT list; decompile line 248 tests node+0x20 == 7 = RTO, and the
+    # log strings at 283/335 say "during the retreat phase").
     # Outer loop uStack_1c0 = victim power p (0..numPowers-1).
-    # Gate: trust[attacker + p*21] > 0.  Order type 7 = retreat order.
+    # Gate: trust[attacker + p*21] > 0.
     # Checks expected_dest against ally designation; determines stab vs neutral.
-    order_hist = getattr(state, 'g_order_hist_list', [])
+    # Corrected 2026-08-12: was reading the movement-order list, so the
+    # order_type == 7 test never matched.
+    order_hist = getattr(state, 'g_retreat_list', [])
     for p in range(num_powers):
         for rec in order_hist:
             attacker = int(rec.get('power', -1))
