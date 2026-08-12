@@ -252,7 +252,8 @@ def _float_to_int64(value: float) -> int:
     return int(value)
 
 
-def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
+def evaluate_alliance_score(state: InnerGameState, own_power: int,
+                            trial_weight: int = 30) -> None:
     """
     Port of EvaluateAllianceScore (FUN_0043bd20).
 
@@ -328,51 +329,67 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int) -> None:
     # fall back to g_own_reach_score + g_enemy_reach_score before first MC run.
     have_mc = (hasattr(state, 'g_mc_province_pressure') and
                state.g_mc_province_pressure.any())
+    # C (EvaluateAllianceScore.c:238-254) applies the near-end-game rule to each
+    # INNER power's contribution individually — the <= 5.0 arm keeps a running
+    # maximum over single inner values, it does not max against their sum.  It
+    # also skips any inner power whose relation with outer is >= 10.
+    # Corrected 2026-08-12: both the relation gate and the max-vs-sum shape.
     for prov in range(num_provinces):
         for outer_power in range(num_powers):
-            combined_threat = 0.0
             for inner_power in range(num_powers):
-                if inner_power != outer_power:
-                    if have_mc:
-                        inner_threat = (float(state.g_mc_province_pressure[inner_power, prov]) +
-                                        float(state.g_mc_fleet_pressure[inner_power, prov]))
-                    else:
-                        inner_threat = (float(state.g_own_reach_score[inner_power, prov]) +
-                                        float(state.g_enemy_reach_score[inner_power, prov]))
-                    combined_threat += inner_threat
+                if inner_power == outer_power:
+                    continue
+                if int(state.g_relation_score[outer_power, inner_power]) >= 10:
+                    continue
+                if have_mc:
+                    inner_threat = (float(state.g_mc_province_pressure[inner_power, prov]) +
+                                    float(state.g_mc_fleet_pressure[inner_power, prov]))
+                else:
+                    inner_threat = (float(state.g_own_reach_score[inner_power, prov]) +
+                                    float(state.g_enemy_reach_score[inner_power, prov]))
 
-            # Apply near-end-game factor logic
-            if near_end_factor <= 5.0:
-                threat_score[outer_power, prov] = max(threat_score[outer_power, prov], combined_threat)
+                if near_end_factor <= 5.0:
+                    if inner_threat > threat_score[outer_power, prov]:
+                        threat_score[outer_power, prov] = inner_threat
+                else:
+                    threat_score[outer_power, prov] += inner_threat
+
+    # --- Phase 3a: empty-province pressure penalty (C:264-289) ---
+    # C runs this over provinces with NO unit (province_record+3 == '\0'; the
+    # '\x01' branch at :290 is the occupied case handled in 3b below), reads
+    # own_power's row only, and accumulates into a single scalar.  It compares
+    # threat_score[own][prov] against the MC province pressure at the same
+    # slot, and gates the band on the caller's trial weight (param_2 —
+    # UpdateAllyOrderScore.c:1069 passes local_b08, the per-candidate weight),
+    # not on the win threshold.
+    # Corrected 2026-08-12: the port iterated occupied provinces, looped every
+    # power instead of own_power, compared against province_visit, and used
+    # win_threshold as the band cutoff.
+    for prov in range(num_provinces):
+        if prov in state.unit_info:
+            continue
+        threat_val = float(threat_score[own_power, prov])
+        pressure = float(state.g_mc_province_pressure[own_power, prov]) \
+            if hasattr(state, 'g_mc_province_pressure') else 0.0
+        if threat_val > 0.0 and pressure > 0.0:
+            if (pressure - threat_val) < float(trial_weight):
+                if threat_val * 3 < pressure * 2:
+                    enemy_penalty[own_power] += 10
+                elif threat_val < pressure:
+                    enemy_penalty[own_power] += 5
+                elif pressure != threat_val:
+                    enemy_penalty[own_power] -= 10
             else:
-                threat_score[outer_power, prov] += combined_threat
+                enemy_penalty[own_power] += 20
 
-    # --- Phase 3: Per-province occupation scoring ---
-    # For provinces with units, apply trust-gated penalties and bonuses
+    # --- Phase 3b: occupied-province scoring ---
     for prov, unit_data in state.unit_info.items():
         unit_power = unit_data.get('power', -1)
         if unit_power < 0:
             continue
 
-        # For the power owning this unit
         for outer_power in range(num_powers):
-            if outer_power == unit_power:
-                # Own unit: compare threat vs local accumulation
-                threat_val = threat_score[outer_power, prov]
-                province_visits = province_visit[outer_power, prov]
-
-                if threat_val > province_visits:
-                    diff = threat_val - province_visits
-                    if diff < win_threshold:
-                        if province_visits * 3 < threat_val * 2:
-                            enemy_penalty[outer_power] += 10
-                        elif province_visits < threat_val:
-                            enemy_penalty[outer_power] += 5
-                        else:
-                            enemy_penalty[outer_power] -= 10
-                    else:
-                        enemy_penalty[outer_power] += 20
-            else:
+            if outer_power != unit_power:
                 # Other power's unit: check trust and threat levels
                 trust_hi = int(state.g_ally_trust_score_hi[outer_power, unit_power]) if hasattr(state, 'g_ally_trust_score_hi') else 0
                 trust_lo = int(state.g_ally_trust_score[outer_power, unit_power]) if hasattr(state, 'g_ally_trust_score') else 0

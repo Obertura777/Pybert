@@ -2318,7 +2318,11 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
 
         # ── Phase (h): EvaluateAllianceScore — called once per candidate ──────
         # C: line 1069 — EvaluateAllianceScore(this, param_1, local_b08).
-        evaluate_alliance_score(state, power)
+        # The third argument is the per-candidate trial weight computed above;
+        # it is the band cutoff in that function's empty-province penalty pass.
+        # Passed explicitly from 2026-08-12 (previously dropped, and the
+        # callee substituted win_threshold).
+        evaluate_alliance_score(state, power, local_b08)
 
         # ── Phase (i): store per-candidate result ─────────────────────────────
         # C: lines 1071–1101 — puVar5[9] = new_score; average with previous if
