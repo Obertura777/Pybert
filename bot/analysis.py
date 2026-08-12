@@ -429,7 +429,8 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
         state.g_draw_sent = 0
 
 
-def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
+def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
+                               flag: int = 0) -> None:
     """FUN_00424850 — RankCandidatesForPower.
 
     Called from BuildAndSendSUB (inner loop) as FUN_00424850(power_idx, '\\0').
@@ -454,7 +455,17 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
       Phase 7  Normalize output_score: redistribute remaining probability
                budget (capped at 90) among non-promoted candidates.
 
-    Only the param_2=='\\0' path is implemented (used by BuildAndSendSUB).
+    ``flag`` is C's param_2.  Both call sites are now covered:
+      flag == 0  — BuildAndSendSUB: threshold = call_count + 1.
+      flag == 1  — UpdateAllyOrderScore's tail call (C: FUN_00424850(param_1,
+                   '\\x01')).  The threshold instead depends on the completed-
+                   trial count (decompile lines 84-99):
+                     n_trials == 0      → call_count + 3000
+                     0 < n_trials < 8   → call_count + 500
+                     n_trials >= 8      → the pre-branch FloatToInt64, whose
+                                          x87 argument is lost in the decompile.
+                   Wired up 2026-08-12; monte_carlo/trial.py previously treated
+                   this tail call as a no-op.
 
     Callees (C++, absorbed into Python list ops / math):
       FUN_00410330  — allocate list/tree node (absorbed into local list)
@@ -478,7 +489,22 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
 
     sc_count_local: int = int(unit_count_arr[power_idx]) + 1   # local_90 init
     alpha: float = (n_trials / (n_trials + 2)) if n_trials >= 0 else 0.0  # local_7c
-    threshold: float = float(int(call_count_arr[power_idx]) + 1)  # local_80 (param_2=='\0' path)
+    # local_80 — the running-average cutoff used by Phase 6.  C computes the
+    # trial-count-dependent value first and only overwrites it with
+    # `call_count + 1` when param_2 == '\0' (decompile lines 84-100).
+    _call_count = int(call_count_arr[power_idx])
+    if flag == 0:
+        threshold: float = float(_call_count + 1)
+    elif n_trials == 0:
+        threshold = float(_call_count + 3000)
+    else:
+        # 0 < n_trials < 8 → (call_count + 500) scaled by
+        # (1 - call_count // (call_count + 500)), which is 1 for any
+        # call_count < 500.  For n_trials >= 8 the C value comes from the
+        # pre-branch FloatToInt64 whose x87 operand the decompile drops; we
+        # continue the < 8 value rather than invent one.
+        _scale = 1 - (_call_count // (_call_count + 500)) if _call_count + 500 else 1
+        threshold = float((_call_count + 500) * _scale)
 
     # ── Phase 1: find max score ──────────────────────────────────────────
     SENTINEL = -(1 << 20)
@@ -538,15 +564,20 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int) -> None:
                 dominated = True
                 break
 
+        # C field 0x51 records `local_ad`, which is set to 1 when a dominating
+        # peer WAS found — so 1 means "dominated", not "on the frontier".
+        # Phase 6 zeroes the weight of 0x51 == 1 records; with the flag
+        # inverted (as it was before 2026-08-12) that zeroed every survivor's
+        # probability and preserved the dominated ones instead.
         if not dominated:
-            cand['pareto_flag'] = 1
+            cand['pareto_flag'] = 0
             cand['running_avg'] = (
                 (1.0 - alpha) * rank_counter
                 + alpha * float(cand.get('running_avg', 0.0))
             )
             accepted_frontier.append(cand)
         else:
-            cand['pareto_flag'] = 0
+            cand['pareto_flag'] = 1
             ri = rank_counter
             if ri < int(cand.get('min_rank', 10001)):
                 cand['min_rank'] = ri

@@ -2335,9 +2335,29 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
         c['alliance_score_avg'] = avg_score
         c['round_count'] = history_counter
 
-    # C tail-call: FUN_00424850((int *)param_1, '\x01') — conviction/deceit flag
-    # dispatcher invoked after all ally candidates are scored.  Ghidra body not
-    # visible; g_deceit_level is fully managed by GenerateAndSubmitOrders.  No-op.
+        # C also writes two PER-ROUND slots (decompile 1092-1098):
+        #   puVar5[history_counter + 0x35] = new_score
+        #   puVar5[history_counter + 0x53] = avg_score
+        # _rank_candidates_for_power's Pareto filter reads exactly these —
+        # trial_scores[t] across t = 0..history_counter, and the current
+        # round's 0x53 slot as the tie-break dimension.  Without them every
+        # comparison was 0-vs-0 and nothing could ever be dominated.
+        # Added 2026-08-12.
+        trial_scores = c.setdefault('trial_scores', [])
+        while len(trial_scores) <= history_counter:
+            trial_scores.append(0)
+        trial_scores[history_counter] = new_score
+        c['final_dim_score'] = avg_score
+
+    # C tail-call: FUN_00424850((int *)param_1, '\x01').  This is not a
+    # conviction/deceit dispatcher as previously assumed — it is
+    # RankCandidatesForPower, already ported as _rank_candidates_for_power for
+    # the param_2 == '\0' call site in BuildAndSendSUB.  It prunes dominated
+    # candidates, assigns each survivor a share of the remaining probability
+    # mass, and writes the per-candidate selection probability the order
+    # picker consumes.  Wired up 2026-08-12 (was a documented no-op).
+    from ..bot.analysis import _rank_candidates_for_power
+    _rank_candidates_for_power(state, power, flag=1)
 
 
 def _refresh_order_table(state: InnerGameState, power: int) -> None:
