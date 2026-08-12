@@ -38,21 +38,35 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
       REJ if bVar1 AND bVar2 AND NOT bVar3
       BWX otherwise (0x4A02 — "busy waiting", i.e. not applicable to us)
     Hostile = g_enemy_flag[p]==1 OR g_relation_score[own][p] < 0.
+
+    C (_eval_pce.c:48) exempts the hostility test entirely when the proposal
+    is a straight two-party PCE *and* the sender carries the deceit/active-turn
+    flag DAT_00633768 (state.g_power_active_turn, set by the RESPOND deceit
+    path).  Restored 2026-08-12 — the gate was previously unconditional, so a
+    bilateral peace from such a sender was rejected where C accepts it.
     """
     _BWX = 0x4A02
     own = state.albert_power_idx
     bVar1 = bVar2 = False
     bVar3 = True
-    for tok in rest:
-        p = _pow_idx(tok)
-        if p is None:
-            continue
+
+    powers = [q for q in (_pow_idx(t) for t in rest) if q is not None]
+    _active = getattr(state, 'g_power_active_turn', None)
+    _sender_active = (
+        _active is not None and 0 <= from_power < len(_active)
+        and int(_active[from_power]) == 1
+    )
+    skip_hostility = (len(powers) == 2 and _sender_active)
+
+    for p in powers:
         if p == own:
             bVar1 = True
         else:
             if p == from_power:
                 bVar2 = True
-            if int(state.g_enemy_flag[p]) == 1 or int(state.g_relation_score[own, p]) < 0:
+            if not skip_hostility and (
+                    int(state.g_enemy_flag[p]) == 1
+                    or int(state.g_relation_score[own, p]) < 0):
                 bVar3 = False
     if bVar1 and bVar2:
         return 0x481C if bVar3 else 0x4814   # YES or REJ
