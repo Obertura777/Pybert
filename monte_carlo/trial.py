@@ -919,16 +919,22 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                 _build_order_mto(pB, pC, state.g_ring_coast_b)
                 _build_order_mto(pC, pA, state.g_ring_coast_c)
 
-        # 1e. Random exploit pass (15% chance; 35% if late-game ally mode) ────
-        # Mirrors: if (iVar20 < 0x0f) { if (local_76f) goto LAB_004505d1 }
-        #          else if (local_76f && late_game && not_albert && iVar20 < 0x23) goto LAB_004505d1
-        # Both branches require local_76f (has_ally).
+        # 1e. Random exploit pass ─────────────────────────────────────────────
+        # C (decompile 816-847), both arms sharing ONE roll:
+        #   r = (rand() / 0x17) % 100
+        #   if (r < 0x0f)  { if (has_ally) → exploit }          # 15 %
+        #   fallback: if (r < 0x41 && g_other_power_lead_flag == 1
+        #                 && near_end > 6.0)  → trust check → exploit
+        # Corrected 2026-08-12: the fallback threshold is 0x41 = 65, not 35,
+        # and its gate is g_other_power_lead_flag (DAT_00baed69) rather than a
+        # has_ally / albert-power test.  The has_ally requirement belongs to
+        # the FIRST arm only.
         r_exploit = random.randrange(100)
         do_exploit = r_exploit < 15 and has_ally
-        if (not do_exploit and has_ally
-                and state.g_near_end_game_factor > 6.0
-                and getattr(state, 'g_albert_power', own_power) != power_index
-                and r_exploit < 35):
+        if (not do_exploit
+                and r_exploit < 65
+                and int(getattr(state, 'g_other_power_lead_flag', 0)) == 1
+                and state.g_near_end_game_factor > 6.0):
             do_exploit = True
 
         if do_exploit:
@@ -1954,21 +1960,32 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
             order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
             press_active = (state.g_press_flag == 1)   # C: DAT_00baed68 == '\x01'
 
+            # C tests g_TargetFlag (0x5e40e8, hi word DAT_005e40ec) here — a
+            # DIFFERENT array from g_ProvTargetFlag (0x5ee8e8), which this same
+            # function uses at decompile line 3717.  g_TargetFlag is bound as
+            # state.g_target_flag (written by SnapshotProvinceState with 1/2);
+            # g_prov_target_flag is ScoreProvinces' classification.
+            # Corrected 2026-08-12: both sites read g_prov_target_flag.
             if order_type in (_ORDER_MTO, _ORDER_CTO):
                 dest = int(state.g_order_table[prov, _F_DEST_PROV])
-                tflag = int(state.g_prov_target_flag[power_index, dest])
+                tflag = int(state.g_target_flag[power_index, dest])
                 if tflag == 2:
                     state.g_early_game_bonus += 150 if press_active else 75
 
             elif order_type == _ORDER_SUP_MTO:
-                # C offset 0x2c = destination of the supported unit (_F_DEST_PROV).
-                # Gate: SC not owned by our power AND no enemy presence at dest.
-                # Then: TargetFlag[dest] == 2  OR  (press_mode AND history_counter == 0)
+                # C (decompile 3021-3027) uses TWO different node offsets:
+                #   node+0x2c = the supported unit's province  → _F_SECONDARY
+                #   node+0x30 = that unit's destination        → _F_DEST_PROV
+                # The SC gate is on +0x2c; only the target-flag test is on
+                # +0x30.  Corrected 2026-08-12: both read _F_DEST_PROV.
+                supported = int(state.g_order_table[prov, _F_SECONDARY])
                 dest = int(state.g_order_table[prov, _F_DEST_PROV])
-                sc_at_dest = int(state.g_sc_ownership[power_index, dest])
-                ep_at_dest = int(state.g_enemy_presence[power_index, dest])
-                if sc_at_dest == 0 and ep_at_dest == 0:
-                    tflag_dest = int(state.g_prov_target_flag[power_index, dest])
+                # C's second operand is DAT_00520cec — the HI word of
+                # g_SCOwnership, i.e. the pair is one int64 == 0 test, not a
+                # separate enemy-presence check (0x4f6ce8).
+                sc_at_supported = int(state.g_sc_ownership[power_index, supported])
+                if sc_at_supported == 0:
+                    tflag_dest = int(state.g_target_flag[power_index, dest])
                     if (tflag_dest == 2) or (press_active and state.g_history_counter == 0):
                         state.g_early_game_bonus += 50
 
