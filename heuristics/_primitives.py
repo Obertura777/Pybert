@@ -460,6 +460,61 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     # Transfer local_a808 into fleet_adj_score (used by Phase 5)
     fleet_adj_score[:] = local_a808
 
+    # --- Phase 5a: per-unit reach accumulation (C:1105-1210) ---
+    # This loop was missing entirely, which left main_score pinned at its 5000
+    # seed and made every non-own power score exactly (2000-5000)*50 = -150000.
+    # Ported 2026-08-12 once FUN_0041c270 was decoded: it is
+    # std::map<pair<province,coast>, int[42]>::operator[], returning node+5, so
+    # value[p] is that (province, coast)'s per-power score — bound here as
+    # final_score_set[p, prov], dropping the coast dimension as elsewhere.
+    #
+    # Two arms, keyed on whether the unit belongs to the power being scored:
+    #   own unit  (C:1115) — subtract its reach, then add a move bonus when the
+    #                        destination scores better than 0.85x the source
+    #                        and press is off.
+    #   other's   (C:1168) — add its reach, then subtract a trial-weight-scaled
+    #                        term when the friendly-unit flag is clear.
+    _tw = float(trial_weight) if trial_weight else 1.0
+    press_flag = int(getattr(state, 'g_press_flag', 0))   # C: DAT_00baed68
+    for prov, unit_data in state.unit_info.items():
+        unit_power = unit_data.get('power', -1)
+        if not (0 <= prov < num_provinces):
+            continue
+        for power in range(num_powers):
+            reach_at = float(state.g_unit_province_reach[power, prov])
+            moved = float(prov_move_count[prov])
+
+            if unit_power == power:
+                # C:1119 gate — int64 g_enemy_reach_score at (power, prov) > 0.
+                if float(state.g_enemy_reach_score[power, prov]) <= 0:
+                    continue
+                threat_b[power]   -= reach_at
+                main_score[power] -= reach_at
+
+                # C:1131-1142 — a unit standing here that belongs to someone
+                # else disqualifies the move bonus.
+                occupant = state.unit_info.get(prov, {}).get('power', power)
+                if occupant != power:
+                    continue
+                if int(state.g_order_table[prov, 0]) not in (2, 6):  # MTO / CTO
+                    continue
+                dest = int(state.g_order_table[prov, 2])
+                if not (0 <= dest < num_provinces):
+                    continue
+                score_dest = float(state.final_score_set[power, dest])
+                score_src  = float(state.final_score_set[power, prov])
+                if score_src * 0.85 < score_dest and press_flag == 0:
+                    main_score[power] += ((_tw - moved) * reach_at) / _tw
+            else:
+                # C:1172 gate — int64 g_own_reach_score at (power, prov) > 0.
+                if float(state.g_own_reach_score[power, prov]) <= 0:
+                    continue
+                main_score[power] += reach_at
+                if int(state.g_friendly_unit_flag[power, prov]) == 0:
+                    d = ((_tw - moved) * reach_at) / _tw
+                    threat_b[power]   -= d
+                    main_score[power] -= d
+
     # --- Phase 5: Final accumulation ---
     for power in range(num_powers):
         if power == own_power:
