@@ -618,7 +618,11 @@ def build_order_sup_mto(
             # bVar3 (C L129-136): adj==mover, unit-at-target, threat-delta==1
             if adj_prov == mover and this_prov == target:
                 unit_power = this_unit.get('power', 0)
-                t_sc   = int(state.g_threat_level[unit_power, mover])
+                # C reads g_ThreatScore[unit.power * 0x100 + adj], the
+                # per-power coverage counter built by ScoreProvinces Section 2
+                # — bound here as g_coverage_flag.  g_threat_level is
+                # DAT_005460e8, a different array with a different stride.
+                t_sc   = int(state.g_coverage_flag[unit_power, mover])
                 base_sc = int(state.g_order_table[target, _F_INCOMING_MOVE])
                 if t_sc - base_sc == 1:
                     b3 = True

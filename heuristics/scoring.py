@@ -400,7 +400,13 @@ def score_provinces(state: InnerGameState,
     state.g_ally_reach_score.fill(0)      # g_ally_reach_score  DAT_005658e8
     state.g_enemy_reach_score.fill(0)     # g_enemy_reach_score DAT_00535ce8
     state.g_total_reach_score.fill(0)     # g_total_reach_score DAT_0052b4e8
-    state.g_threat_level.fill(-1)        # g_ThreatScore sentinel: -1 = unassigned (ScoreProvinces.c:162, second-pass init)
+    # C zeroes DAT_005460e8/ec (ScoreProvinces.c:197).  This used to fill -1,
+    # attributing the sentinel from ScoreProvinces.c:162 — but that line
+    # initialises the pair-indexed region of g_ThreatScore (bound here as
+    # g_coverage_flag), a different array.  The -1 made every "no threat"
+    # province read as -1, inverting the `threat == 0` gates in
+    # moves/support.py's two SUP builders.
+    state.g_threat_level.fill(0)         # g_threat_level     DAT_005460e8
     state.g_convoy_reach_count.fill(0)    # g_convoy_reach_count DAT_005850e8
     state.g_enemy_mobility_count.fill(0)  # g_enemy_mobility_count DAT_0057a8e8
     state.g_sc_ownership.fill(0)         # g_sc_ownership     DAT_00520ce8
@@ -414,6 +420,14 @@ def score_provinces(state: InnerGameState,
     # into every consumer of the per-power maxima.
     state.g_max_prov_score_per_power.fill(0)
     state.g_min_prov_score_per_power.fill(1_000_000)
+    # C's first reset block (ScoreProvinces.c:118-137) also clears these four
+    # every call.  Nothing in the port reset them, so they accumulated for the
+    # whole game — most visibly g_enemy_presence, which never went back to 0
+    # once any enemy unit had touched a province.
+    state.g_attack_count.fill(0)         # g_attack_count      DAT_006040e8
+    state.g_enemy_presence.fill(0)       # g_enemy_presence    DAT_004f6ce8
+    state.g_build_order_pending.fill(0)  # g_build_order_pending DAT_006190e8
+    state.g_threat_path_score.fill(0)    # g_threat_path_score DAT_005700e8
 
     # Friendly/unit-presence flags.
     # g_friendly_unit_flag and g_established_ally_flag are *persisted* to state
@@ -443,6 +457,10 @@ def score_provinces(state: InnerGameState,
                 seen.add(a)
         reachability[prov, power] += 1
         state.g_coverage_flag[power, prov] += 1
+        # C:293 — g_ProximityScore[unit.power][unit.prov] = 0 once per unit,
+        # per call.  Omitting it let the counter grow without bound, since
+        # moves/support.py and BuildOrder_SUP_MTO only ever add to it.
+        state.g_proximity_score[power, prov] = 0
 
     # Section 3 — per-unit presence flags.
     #
@@ -459,8 +477,60 @@ def score_provinces(state: InnerGameState,
         state.g_sc_ownership[power, prov] = 1
 
     # Section 4 — per-power outer loop: alliance-gated reach → scored tables
+    # C: ScoreProvinces.c:302-432.  Loop nesting matches the decompile —
+    # local_559c = outer_power, local_5598 = prov, local_557c = inner_power.
+    press_flag = int(getattr(state, 'g_press_flag', 0))
+    near_end   = float(getattr(state, 'g_near_end_game_factor', 0.0))
+
     for outer_power in range(num_powers):
         for prov in range(num_provinces):
+            # ── Designation-derived trust (C:314-355) ─────────────────────
+            # Each province carries three ally-designation slots.  The trust
+            # used by the own-reach gate below is taken from the LAST slot
+            # whose hi word is non-negative, evaluated c → b → a, so slot a
+            # wins when present.  This is trust(outer_power, designee) — NOT
+            # the trust-matrix diagonal the port previously used.
+            desig_trust_lo = 0.0
+            desig_trust_hi = 0
+            d_c = int(state.g_ally_designation_c[prov])
+            d_b = int(state.g_ally_designation_b[prov])
+            d_a = int(state.g_ally_designation_a[prov])
+            c_hi = int(state.g_ally_designation_c_hi[prov])
+            b_hi = int(state.g_ally_designation_b_hi[prov])
+            a_hi = int(state.g_ally_designation_a_hi[prov])
+            if c_hi >= 0 and 0 <= d_c < num_powers:
+                desig_trust_lo = float(state.g_ally_trust_score[outer_power, d_c])
+                desig_trust_hi = int(state.g_ally_trust_score_hi[outer_power, d_c])
+            if b_hi >= 0 and 0 <= d_b < num_powers:
+                desig_trust_lo = float(state.g_ally_trust_score[outer_power, d_b])
+                desig_trust_hi = int(state.g_ally_trust_score_hi[outer_power, d_b])
+            if a_hi >= 0 and 0 <= d_a < num_powers:
+                desig_trust_lo = float(state.g_ally_trust_score[outer_power, d_a])
+                desig_trust_hi = int(state.g_ally_trust_score_hi[outer_power, d_a])
+
+            # outer_power itself designated as this province's ally?
+            is_ally_desig = (
+                (d_a == outer_power and a_hi == 0)
+                or (d_b == outer_power and b_hi == 0)
+                or (d_c == outer_power and c_hi == 0)
+            )
+
+            # Early-game press suppression (C:342-355): with press on and
+            # near_end_game < 2.0, slot B's designation trust survives only
+            # if outer and the designee trust each other mutually (both > 1).
+            if press_flag == 1 and near_end < 2.0 and b_hi >= 0 and 0 <= d_b < num_powers:
+                fwd_lo = float(state.g_ally_trust_score[outer_power, d_b])
+                fwd_hi = int(state.g_ally_trust_score_hi[outer_power, d_b])
+                rev_lo = float(state.g_ally_trust_score[d_b, outer_power])
+                rev_hi = int(state.g_ally_trust_score_hi[d_b, outer_power])
+                mutual = (
+                    (fwd_hi >= 0 and (fwd_hi > 0 or fwd_lo > 1))
+                    and (rev_hi > 0 or (rev_hi >= 0 and rev_lo > 1))
+                )
+                if not mutual:
+                    desig_trust_lo = 0.0
+                    desig_trust_hi = 0
+
             for inner_power in range(num_powers):
                 reach = int(reachability[prov, inner_power])
                 if reach == 0:
@@ -472,32 +542,37 @@ def score_provinces(state: InnerGameState,
                 # fixed 2026-04-14 — previously hardcoded to 0.
                 history = int(state.g_relation_score[outer_power, inner_power])
 
+                # Three-clause hostility gate, shared by the threat update and
+                # the enemy-reach accumulator (C:381-383 and C:401-403).
+                hostile_gate = (
+                    (trust_lo == 0 and trust_hi == 0)
+                    or history < 10
+                    or (trust_hi >= 0 and (trust_hi > 0 or trust_lo > 1)
+                        and not is_ally_desig)
+                )
+
                 if inner_power == outer_power:
-                    if trust_lo == 0:
+                    # C:357-366 — own reach is recorded only when the
+                    # designation-derived trust is zero in both words.
+                    if desig_trust_lo == 0.0 and desig_trust_hi == 0:
                         state.g_own_reach_score[outer_power, prov] = reach
                 else:
-                    # Threat (best enemy reach)
-                    # Gate: ScoreProvinces.c:379-381
-                    #   clause1: trust_lo==0 AND trust_hi==0 (both scores unknown)
-                    #   clause2: history < 10 (insufficient history)
-                    #   clause3: trust_hi>=0 AND (trust_hi>0 OR trust_lo>1)
-                    #            AND outer_power NOT a designated ally for prov
+                    # Threat (best enemy reach) — C:375-388.
+                    threat_fired = False
                     if reach > state.g_threat_level[outer_power, prov]:
-                        is_ally_desig = (
-                            (int(state.g_ally_designation_a[prov]) == outer_power and int(state.g_ally_designation_a_hi[prov]) == 0) or
-                            (int(state.g_ally_designation_b[prov]) == outer_power and int(state.g_ally_designation_b_hi[prov]) == 0) or
-                            (int(state.g_ally_designation_c[prov]) == outer_power and int(state.g_ally_designation_c_hi[prov]) == 0)
-                        )
-                        if ((trust_lo == 0 and trust_hi == 0) or history < 10 or
-                                (trust_hi >= 0 and (trust_hi > 0 or trust_lo > 1) and not is_ally_desig)):
+                        if hostile_gate:
                             state.g_threat_level[outer_power, prov] = reach
+                            threat_fired = True
 
-                    # Ally reach (trust > 0 or established history)
-                    if trust_lo > 0 or history > 3:
+                    # Ally reach — C:389-397: int64 trust > 3.  C jumps over
+                    # this block (goto LAB_00447c0c) when the threat update
+                    # above fired, so the two are mutually exclusive.
+                    if (not threat_fired
+                            and trust_hi >= 0 and (trust_hi > 0 or trust_lo > 3)):
                         state.g_ally_reach_score[outer_power, prov] += reach
 
-                    # Enemy reach (uncertain trust)
-                    if trust_lo <= 0:
+                    # Enemy reach — C:399-410 reuses the hostility gate.
+                    if hostile_gate:
                         state.g_enemy_reach_score[outer_power, prov] += reach
 
                     state.g_total_reach_score[outer_power, prov] += reach
@@ -534,10 +609,19 @@ def score_provinces(state: InnerGameState,
         # g_attack_count.  No approximation — the field is correct.
         # A separate pass (C:1243-1260) writes DAT_006190e8 (g_build_order_pending)
         # = 600; see post-loop block below.
-        for prov, info in state.unit_info.items():
-            if info['power'] == outer_power:
-                weight = 1 if state.g_other_power_lead_flag else 5
-                state.g_attack_count[outer_power, prov] = float(weight)
+        # C (ScoreProvinces.c:441-461) calls GameBoard_GetPowerRec on the
+        # province's home-SC power set (province_record + 0x14) and writes the
+        # weight when outer_power is found there — i.e. the gate is "prov is
+        # one of outer_power's HOME supply centres", not "outer_power has a
+        # unit standing on prov".  Since g_attack_count * build_weight seeds
+        # BFS round 0, the old gate reshaped the entire candidate ranking.
+        # Section 4h below overwrites g_attack_count for every province it
+        # scores, so this pre-seed only survives on provinces 4h skips — the
+        # same as in C, where line 644 re-zeroes the row before 4h runs.
+        weight = 1.0 if state.g_other_power_lead_flag else 5.0
+        for prov in state.home_centers.get(outer_power, frozenset()):
+            if 0 <= prov < num_provinces:
+                state.g_attack_count[outer_power, prov] = weight
 
         # Section 4e — convoy/mobility counts (C: uncertain-trust fleet gate)
         # Updated 2026-04-14: adds the `g_ally_trust_score < 1 AND < 0` test
@@ -904,13 +988,26 @@ def score_provinces(state: InnerGameState,
     # then re-propagates 9 BFS rounds.  g_build_order_pending is non-zero only
     # in the WIN phase (own_power has no units), so this is a no-op in movement
     # phases where the seed is identical to the Phase-1 pass above.
+    is_win_season = str(getattr(state, 'g_season', '')).upper().startswith('WIN')
     for bfs_power in range(num_powers):
         state.g_candidate_bfs[bfs_power, 0].fill(0.0)
         for prov in all_provs:
-            state.g_candidate_bfs[bfs_power, 0, prov] = (
+            # C indexes g_build_order_pending with the SAME (power, prov) pair
+            # as g_attack_count (ScoreProvinces.c:1538-1541) — the BFS power's
+            # row, not own_power's.
+            seed = (
                 float(state.g_attack_count[bfs_power, prov]) * seed_w
-                + float(state.g_build_order_pending[own_power, prov]) * move_w
+                + float(state.g_build_order_pending[bfs_power, prov]) * move_w
             )
+            # WIN-phase occupied-own-SC penalty (C:1545-1554): −0x9c4.
+            # C additionally requires the unit's type to match the adjacency
+            # entry being walked; the Python BFS has no per-entry type, so the
+            # gate here is "a unit stands on the province".
+            if (is_win_season
+                    and int(state.g_sc_ownership[bfs_power, prov]) == 1
+                    and prov in state.unit_info):
+                seed -= 2500.0
+            state.g_candidate_bfs[bfs_power, 0, prov] = seed
 
         for rnd in range(1, 10):
             state.g_candidate_bfs[bfs_power, rnd].fill(0.0)
