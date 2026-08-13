@@ -7,18 +7,22 @@ from ..moves import enumerate_hold_orders, enumerate_convoy_reach, compute_safe_
 
 from ._flags import (
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,
-    _F_HOLD_WEIGHT, _F_CTO_DEST_PROP,
+    _F_MOVE_PROB, _F_HOLD_WEIGHT, _F_CTO_DEST_PROP,
     _F_CONVOY_LO, _F_CONVOY_HI,
+    _F_SELECTED_SCORE_LO, _F_SELECTED_SCORE_HI,
     _F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2, _F_CONVOY_DEPTH,
     _F_INCOMING_MOVE, _F_SUP_SRC_LO, _F_SUP_CHAIN_CONFLICT,
-    _F_TARGET_PROV, _F_THREAT_TOTAL, _F_SUP_COUNT, _F_SUP_TARGET,
-    _F_ORDER_ASGN, _F_CUM_SCORE,
+    _F_TARGET_PROV, _F_THREAT_TOTAL, _F_MOVE_HISTORY, _F_SUP_COUNT, _F_SUP_TARGET,
+    _F_ORDER_ASGN, _F_UNIT_REACH_SCORE, _F_CUM_SCORE,
     _ORDER_HLD, _ORDER_MTO, _ORDER_SUP_HLD, _ORDER_SUP_MTO,
     _ORDER_CVY, _ORDER_CTO,
 )
 from .evaluation import (
     evaluate_order_score,
     evaluate_order_proposal,
+    snapshot_order_entry,
+    restore_order_entry,
+    candidate_orders_key,
 )
 from .generation import generate_orders
 from .trial import (

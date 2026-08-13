@@ -35,6 +35,36 @@ from ..heuristics import (
 logger = logging.getLogger(__name__)
 
 
+def _candidate_rank_threshold(call_count: int, n_trials: int, flag: int) -> int:
+    """Recover FUN_00424850's ``local_80`` x87 threshold schedule."""
+    if flag == 0:
+        return call_count + 1
+
+    if n_trials == 0:
+        # 0042496e–00424992: call_count is explicitly stored/reloaded through a
+        # float temporary before the divide/multiply sequence.
+        call_count_f = float(np.float32(call_count))
+        return int(
+            1.0 + call_count_f
+            * (1.0 - call_count_f / (call_count + 3000.0))
+        )
+
+    # 0042494c–00424961. DAT_004afdb0 is double 0.05 and
+    # DOUBLE_004afda8 is 5.0.
+    base = int(call_count * 0.05 + 5.0)
+    if n_trials >= 8:
+        return base
+
+    # 004249a4–004249dd. IDIV truncates toward zero. Accepted-proposal counts
+    # are nonnegative, so integer // exactly matches the C quotient here.
+    integer_gate = 1 - call_count // (call_count + 500)
+    # DAT_004afd98 = double 0.6; DAT_004afda0 = double 0.078.
+    return int(
+        base
+        + call_count * integer_gate * (0.6 - n_trials * 0.078)
+    )
+
+
 def _phase_handler(state: InnerGameState, phase: int) -> None:
     """PhaseHandler (FUN_0040df20 / SetGamePhase).
 
@@ -438,16 +468,13 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
     g_candidate_record_list via a 7-phase pipeline:
 
       Phase 1  Find max score among this power's candidates.
-      Phase 2  Build sorted list (DESCENDING adjusted score; offset = 2500 -
-               max).  See the comment at the sort for why descending.
-      Phase 3  Pareto-dominance filter across all completed MC-trial dimensions
-               (penalty 100 if n_allies==0, else 50).  Pareto-selected
-               candidates accumulate an accepted frontier; dominated ones get
-               a rank number and update min/max_rank.
-      Phase 4  Probability scoring: each non-processed candidate's share of
-               "remaining probability space" based on SC counts vs. up to
-               three left-neighbours; write to rec['weight'] and update EMA
-               of rec['running_avg'].
+      Phase 2  Build a descending adjusted-score tree (offset = 2500-max).
+      Phase 3  Pareto-dominance filter with a 100/50/0 margin selected by
+               candidate field 0x13; erase dominated temporary-tree nodes.
+      Phase 4  Probability scoring from adjusted score keys and up to three
+               following surviving nodes. The x87 call sequence proves the
+               power term is ``(current_key - following_key) ** curve``;
+               update weight and running-rank EMA.
       Phase 5  Re-sort (same offset; order unchanged in practice).
       Phase 6  Rank/select: promote candidates whose running_avg ≥ threshold
                (call_count + 1) subject to rank/near-end-game guards.
@@ -461,12 +488,11 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
       flag == 1  — UpdateAllyOrderScore's tail call (C: FUN_00424850(param_1,
                    '\\x01')).  The threshold instead depends on the completed-
                    trial count (decompile lines 84-99):
-                     n_trials == 0      → call_count + 3000
-                     0 < n_trials < 8   → call_count + 500
-                     n_trials >= 8      → the pre-branch FloatToInt64, whose
-                                          x87 argument is lost in the decompile.
-                   Wired up 2026-08-12; monte_carlo/trial.py previously treated
-                   this tail call as a no-op.
+                     n_trials == 0      → 1 + call_count *
+                                           (1 - call_count/(call_count+3000))
+                     0 < n_trials < 8   → base + call_count * integer gate
+                                           * (B - n_trials*A)
+                     n_trials >= 8      → 0.05*call_count + 5
 
     Callees (C++, absorbed into Python list ops / math):
       FUN_00410330  — allocate list/tree node (absorbed into local list)
@@ -484,28 +510,17 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
     # DAT_0062e460[power] — unit count (non-zero = active)
     unit_count_arr = state.g_unit_count
     # DAT_00b9fe88[power] — ProcessTurn call count
-    call_count_arr = getattr(state, 'g_PowerCallCount',
-                             np.zeros(7, dtype=np.int32))
+    call_count_arr = state.g_power_call_count
     near_end: float = state.g_near_end_game_factor
 
-    sc_count_local: int = int(unit_count_arr[power_idx]) + 1   # local_90 init
     alpha: float = (n_trials / (n_trials + 2)) if n_trials >= 0 else 0.0  # local_7c
+    # local_8c is the x87 exponent consumed by the three _safe_pow calls.
+    curve_exponent = 1.8 / (int(unit_count_arr[power_idx]) + 1.0) + 1.75
     # local_80 — the running-average cutoff used by Phase 6.  C computes the
     # trial-count-dependent value first and only overwrites it with
     # `call_count + 1` when param_2 == '\0' (decompile lines 84-100).
     _call_count = int(call_count_arr[power_idx])
-    if flag == 0:
-        threshold: float = float(_call_count + 1)
-    elif n_trials == 0:
-        threshold = float(_call_count + 3000)
-    else:
-        # 0 < n_trials < 8 → (call_count + 500) scaled by
-        # (1 - call_count // (call_count + 500)), which is 1 for any
-        # call_count < 500.  For n_trials >= 8 the C value comes from the
-        # pre-branch FloatToInt64 whose x87 operand the decompile drops; we
-        # continue the < 8 value rather than invent one.
-        _scale = 1 - (_call_count // (_call_count + 500)) if _call_count + 500 else 1
-        threshold = float((_call_count + 500) * _scale)
+    threshold = float(_candidate_rank_threshold(_call_count, n_trials, flag))
 
     # ── Phase 1: find max score ──────────────────────────────────────────
     SENTINEL = -(1 << 20)
@@ -525,123 +540,88 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
         rec for rec in state.g_candidate_record_list
         if rec.get('power_idx', rec.get('power', -1)) == power_idx
     ]
-    # DESCENDING — highest adjusted score first.
-    # FUN_00419fa0 is an MSVC std::_Tree insert: node layout [0]=_Left,
-    # [1]=_Parent, [2]=_Right, [3]=key, +0x19=_Isnil.  Its descent computes
-    #     _Addleft = (node.key < new_key)
-    # with the operands swapped relative to a std::less tree, which is what
-    # comp(new_key, node_key) expands to under std::greater.  So the container
-    # is ordered descending and the walk from begin() sees the BEST candidate
-    # first.  Corrected 2026-08-12: the port sorted ascending, which inverted
-    # Phase 3's dominance direction (each candidate was compared against
-    # WORSE peers instead of better ones), handed Phase 4's probability mass
-    # to the worst candidate instead of the best, and reversed the rank
-    # numbering that Phase 6's min_rank/rank thresholds are calibrated on.
+    # The separately-audited FUN_00419fa0 helper computes
+    # `_Addleft = node.key < new_key`, the reversed operands used by the
+    # std::greater instantiation.  begin()/forward iteration is descending.
     power_recs.sort(key=lambda r: int(r.get('score', 0)) + score_offset,
                     reverse=True)
 
     # ── Phase 3: Pareto-dominance filter ────────────────────────────────
-    # accepted_frontier holds the "not yet dominated" prefix of the sorted list.
-    # A candidate is dominated if any frontier member beats it on ALL
-    # trial dims by ≥ penalty AND their final-dim scores differ.
-    accepted_frontier: list = []
-    rank_counter: int = 0   # local_b8 (integer rank for non-Pareto items)
-
-    for cand in power_recs:
-        if cand.get('processed', 0):
-            continue
-
-        n_allies: int = int(cand.get('n_allies', 0))
-        if n_allies == 0:
-            penalty: int = 100
-        elif n_allies == 1:
-            penalty = 50
-        else:
-            penalty = 0  # C: 0xFFFFFFCE + 0x32 overflows to 0
-        trial_scores_c = cand.get('trial_scores', [])
-        final_dim_c: int = cand.get('final_dim_score', 0)
-
-        dominated = False
-        for prev in accepted_frontier:
-            trial_scores_p = prev.get('trial_scores', [])
-            final_dim_p: int = prev.get('final_dim_score', 0)
-            # Skip dim 0 if n_trials > 7 (start at 2); check dims 0..n_trials
-            start_dim = 2 if n_trials > 7 else 0
-            prev_dominates_all = True
-            for t in range(start_dim, n_trials + 1):
-                ps = trial_scores_p[t] if t < len(trial_scores_p) else 0
-                cs = trial_scores_c[t] if t < len(trial_scores_c) else 0
-                if ps < cs + penalty:
-                    prev_dominates_all = False
+    # Dominated nodes are erased from the temporary tree immediately.  Keep
+    # local_ad outside the loop: the C only resets it for an unprocessed node.
+    temp_recs = list(power_recs)
+    local_ad = 0
+    # local_b8 is a reused 32-bit stack slot. The raw dword write of 1 at
+    # 00424b2a is mis-typed by Ghidra as the float denormal 1.4013e-45; the
+    # following comparisons and increment consume it as an integer rank.
+    rank_counter = 1
+    i = 0
+    while i < len(temp_recs):
+        cand = temp_recs[i]
+        if not cand.get('processed', 0):
+            local_ad = 0
+            other_score = int(cand.get('other_score', 0))  # field 0x13
+            penalty = 100 if other_score == 0 else (50 if other_score == 1 else 0)
+            trial_scores_c = cand.get('trial_scores', [])
+            final_dim_c = int(cand.get('final_dim_score', 0))
+            for prev in temp_recs[:i]:
+                trial_scores_p = prev.get('trial_scores', [])
+                start_dim = 2 if n_trials > 7 else 0
+                if all(
+                    (trial_scores_p[t] if t < len(trial_scores_p) else 0)
+                    >= (trial_scores_c[t] if t < len(trial_scores_c) else 0) + penalty
+                    for t in range(start_dim, n_trials + 1)
+                ) and int(prev.get('final_dim_score', 0)) != final_dim_c:
+                    local_ad = 1
                     break
-            if prev_dominates_all and final_dim_p != final_dim_c:
-                dominated = True
-                break
+            cand['pareto_flag'] = local_ad
 
-        # C field 0x51 records `local_ad`, which is set to 1 when a dominating
-        # peer WAS found — so 1 means "dominated", not "on the frontier".
-        # Phase 6 zeroes the weight of 0x51 == 1 records; with the flag
-        # inverted (as it was before 2026-08-12) that zeroed every survivor's
-        # probability and preserved the dominated ones instead.
-        if not dominated:
-            cand['pareto_flag'] = 0
-            cand['running_avg'] = (
-                (1.0 - alpha) * rank_counter
-                + alpha * float(cand.get('running_avg', 0.0))
-            )
-            accepted_frontier.append(cand)
-        else:
-            cand['pareto_flag'] = 1
-            ri = rank_counter
-            if ri < int(cand.get('min_rank', 10001)):
-                cand['min_rank'] = ri
-            if int(cand.get('max_rank', 0)) < ri:
-                cand['max_rank'] = ri
-            rank_counter += 1
+        if local_ad == 1:
+            temp_recs.pop(i)
+            continue
+        if rank_counter < int(cand.get('min_rank', 10000)):
+            cand['min_rank'] = rank_counter
+        if int(cand.get('max_rank', 0)) < rank_counter:
+            cand['max_rank'] = rank_counter
+        rank_counter += 1
+        i += 1
 
     # ── Phase 4: probability scoring ────────────────────────────────────
-    # Walk non-processed records in sorted order; for each compute a
-    # "share of remaining territory" using up to 3 left-neighbours'
-    # SC counts via _safe_pow-based Elo-like formulas.
-    # local_90 accumulates (starts at sc_count_local).
-    non_proc = [r for r in power_recs if not r.get('processed', 0)]
-    running_pool: float = float(sc_count_local)  # local_90
+    # The C iterators walk following surviving nodes.  Their node field 3 is
+    # the adjusted score key, not a candidate supply-centre count.
+    non_proc = temp_recs
+    running_pool = 0.0
 
+    survivor_rank = 0
     for i, cand in enumerate(non_proc):
-        sc_i: float = float(max(int(cand.get('sc_count', 0)), 0))
+        if cand.get('processed', 0):
+            continue
+        survivor_rank += 1
+        key_i = float(int(cand.get('score', 0)) + score_offset)
         share_a = 0.0   # local_b4
         share_b = 0.0   # local_48 low word
         share_c = 0.0   # local_68 low word
 
-        if sc_i > 0:
-            # Neighbour 1 (i-1): share_a = sc_j / (pow(sc_i-sc_j, sc_j) + sc_i + sc_j)
-            if i >= 1:
-                sc_j = float(max(int(non_proc[i - 1].get('sc_count', 0)), 0))
-                if sc_j > 0:
-                    diff_a = sc_i - sc_j
-                    powered_a = _safe_pow(diff_a, sc_j) if diff_a != 0 else 1.0
-                    denom_a = powered_a + sc_i + sc_j
-                    share_a = sc_j / denom_a if denom_a else 0.0
-
-            # Neighbour 2 (i-2): share_b = sc_k*0.666 / (pow(sc_i-sc_k,sc_k*0.666) + sc_i + sc_k)
-            if i >= 2:
-                sc_k = float(max(int(non_proc[i - 2].get('sc_count', 0)), 0))
-                if sc_k > 0:
-                    exp_b = sc_k * 0.666
-                    diff_b = sc_i - sc_k
-                    powered_b = _safe_pow(diff_b, exp_b) if diff_b != 0 else 1.0
-                    denom_b = powered_b + sc_i + sc_k
-                    share_b = exp_b / denom_b if denom_b else 0.0
-
-            # Neighbour 3 (i-3): share_c = sc_l*0.5 / (pow(sc_i-sc_l,sc_l*0.5) + sc_i + sc_l)
-            if i >= 3:
-                sc_l = float(max(int(non_proc[i - 3].get('sc_count', 0)), 0))
-                if sc_l > 0:
-                    exp_c = sc_l * 0.5
-                    diff_c = sc_i - sc_l
-                    powered_c = _safe_pow(diff_c, exp_c) if diff_c != 0 else 1.0
-                    denom_c = powered_c + sc_i + sc_l
-                    share_c = exp_c / denom_c if denom_c else 0.0
+        if key_i > 0.0:
+            for distance, scale in ((1, 1.0), (2, 0.666), (3, 0.5)):
+                j = i + distance
+                if j >= len(non_proc):
+                    break
+                key_j = float(int(non_proc[j].get('score', 0)) + score_offset)
+                if key_j <= 0.0:
+                    continue
+                # Each call site executes FILD(delta), FLD(curve), then calls
+                # _safe_pow. As at ScoreProvinces' proven sqrt call, ST1 is
+                # the base and ST0 the exponent: delta ** curve.
+                powered = _safe_pow(key_i - key_j, curve_exponent)
+                denominator = powered + key_i + key_j
+                share = key_j * scale / denominator if denominator else 0.0
+                if distance == 1:
+                    share_a = share
+                elif distance == 2:
+                    share_b = share
+                else:
+                    share_c = share
 
         # fVar1 = (1.0 - share_b) * (100.0 - running_pool) * (1.0 - share_a) * (1.0 - share_c)
         fVar1 = (1.0 - share_b) * (100.0 - running_pool) * (1.0 - share_a) * (1.0 - share_c)
@@ -649,43 +629,55 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
         running_pool += fVar1           # local_90 accumulates
 
         # EMA update: running_avg = (1-alpha)*rank_position + alpha*old_avg
-        rank_pos = float(i)             # local_b8 at this point (count of processed so far)
+        rank_pos = float(survivor_rank)  # C increments local_b8 before using it
         cand['running_avg'] = (
             (1.0 - alpha) * rank_pos
-            + alpha * float(cand.get('running_avg', 0.0))
+            + alpha * float(cand.get('running_avg', 10000.0))
         )
 
     # ── Phase 5: re-sort with same offset (already sorted; no-op) ───────
 
     # ── Phase 6: rank/select ─────────────────────────────────────────────
-    rank_b: float = 0.0
-    near_end_count: float = 0.0
+    rank_b = 0
+    guarded_count = 0
 
     for cand in power_recs:
-        # Count near-end-game non-processed candidates with move orders
-        if int(cand.get('has_moves', 0)) and not cand.get('processed', 0) and near_end < 7.0:
-            near_end_count += 1.0
+        rank_b += 1
+        # Candidate field 0x15 is local_c10 from EvaluateOrderProposal, not a
+        # Boolean "has moves" flag.
+        if (int(cand.get('rank_penalty', 0)) > 0
+                and not cand.get('processed', 0) and near_end < 7.0):
+            guarded_count += 1
 
-        running_avg_f = float(cand.get('running_avg', 0.0))
-        rank_i = int(rank_b)
-        min_rank_v = int(cand.get('min_rank', 10001))
+        # C jumps directly to iterator advance for an already retired record.
+        if cand.get('processed', 0):
+            continue
+
+        running_avg_f = float(cand.get('running_avg', 10000.0))
+        rank_i = rank_b
+        min_rank_v = int(cand.get('min_rank', 10000))
         pareto_f = int(cand.get('pareto_flag', 0))
 
         # Conditions that force "skip/demote" (goto LAB_00425626):
         # (a) running_avg < threshold, OR
-        # (b) min_rank >= 6 AND rank >= 10, OR
-        # (c) has_moves AND near_end_count < 10, OR
-        # (d) already processed
+        # (b) min_rank < 6 OR rank < 10, OR
+        # (c) field 0x15 != 0 AND fewer than ten such candidates seen.
         skip = (
             running_avg_f < threshold
-            or (min_rank_v >= 6 and rank_i >= 10)
-            or (bool(cand.get('has_moves', 0)) and near_end_count < 10.0)
-            or bool(cand.get('processed', 0))
+            or min_rank_v < 6
+            or rank_i < 10
+            or (int(cand.get('rank_penalty', 0)) != 0 and guarded_count < 10)
         )
 
         if not skip:
             # Promote: mark as selected, assign negative rank score
-            final_s = -1000000 - rank_i
+            if rank_i < int(cand.get('min_rank', 10000)):
+                cand['min_rank'] = rank_i
+            if int(cand.get('max_rank', 0)) < rank_i:
+                cand['max_rank'] = rank_i
+            min_rank_v = int(cand['min_rank'])
+            # C uses the record's best-ever rank field, not this pass's rank.
+            final_s = -1000000 - min_rank_v
             cand['processed'] = 1
             cand['weight'] = 0.0
             cand['score'] = final_s
@@ -703,12 +695,10 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
             else:
                 cand['output_score'] = float(cand.get('weight', 0.0))
             # Update rank bounds
-            if rank_i < int(cand.get('min_rank', 10001)):
+            if rank_i < int(cand.get('min_rank', 10000)):
                 cand['min_rank'] = rank_i
             if int(cand.get('max_rank', 0)) < rank_i:
                 cand['max_rank'] = rank_i
-
-        rank_b += 1.0
 
     # ── Phase 7: normalize output_score ─────────────────────────────────
     # Sum output_score for non-processed candidates → remaining = 100 - sum.
@@ -721,7 +711,7 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
     if remaining > 90.0:
         remaining = 90.0
     denom_n = 100.0 - remaining
-    if denom_n and remaining > 0.0:
+    if denom_n:
         for cand in power_recs:
             if not cand.get('processed', 0):
                 os = float(cand.get('output_score', 0.0))

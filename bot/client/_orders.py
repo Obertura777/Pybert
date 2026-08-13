@@ -34,7 +34,6 @@ import numpy as np
 from ...state import InnerGameState
 from ...monte_carlo import (
     process_turn,
-    update_score_state,
     check_time_limit,
     _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
 )
@@ -141,6 +140,10 @@ class _OrdersMixin:
 
         # Step 2 — reset per-turn scalar flags
         # Mirrors: DAT_0062cc64 / ba2858 / ba285c / baed46 / baed5e / baed47 = 0
+        self.state.g_n_trials_completed = 0  # DAT_0062cc64
+        # send_GOF.c:104 resets DAT_00b9fe88 once per power immediately before
+        # the movement proposal passes begin.
+        self.state.g_power_call_count.fill(0)
         self.state.g_gof_sent = False           # clear server-GOF-pending flag
         self.state.g_cancel_press_sent = 0      # disarm fallback-GOF guard (DAT_00baed47)
         if not hasattr(self.state, 'g_pending_orders_A'):
@@ -461,12 +464,11 @@ class _OrdersMixin:
                         if press_cap == 0 and p != own_power_idx:
                             re_trials = 1
                         process_turn(self.state, p, num_trials=re_trials)
-        # Post-MC refresh: advance round counter so all processed powers are
-        # stale, then run UpdateScoreState (UpdateAllyOrderScore +
-        # RefreshOrderTable) to populate g_current_best_order from the
-        # accumulated MC candidates.  Mirrors BuildAndSendSUB.c:311.
+        # Make processed powers stale for BuildAndSendSUB's final
+        # RankCandidatesForPower(flag=0) + UpdateScoreState pass.  Do not
+        # refresh here: C performs that refresh immediately before reading
+        # slot zero for SUB (BuildAndSendSUB.c:287-317, then C:593-614).
         self.state.g_current_round += 1
-        update_score_state(self.state)
 
         # Candidate-vs-press corroboration penalty
         # (Source/ScoreOrderCandidates.c lines 342–630).  Marks candidates

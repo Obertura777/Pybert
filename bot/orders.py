@@ -788,7 +788,10 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
             seq['target_unit'] = f"{sup_chr} {dest_name}"
 
     elif order_type == _ORDER_CVY:
+        sec_data = state.unit_info.get(sec_id)
+        if sec_data:
+            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
+            seq['target_unit'] = f"{sec_chr} {sec_name}"
         seq['target_dest'] = dest_name
 
     return seq
-

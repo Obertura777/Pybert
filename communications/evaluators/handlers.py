@@ -597,7 +597,9 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
       g_xdo_proposal_by_sender : dict[int, list]  — DAT_00bb65f8 per-power list
       g_xdo_dest_by_sender     : dict[int, dict]  — DAT_00bb6bf8 per-power map
       g_xdo_global_dest_map    : dict             — DAT_00bb713c global map
-      g_xdo_candidate_list  : list[dict]       — in_stack_00000018 from FUN_00405090
+      g_xdo_order_move_by_power : dict[int, dict] — DAT_00bb69f8 per-power src→dest
+      g_xdo_order_hold_by_power : dict[int, set]  — DAT_00bb6af8 per-power hold set
+      g_xdo_candidate_list      : list[dict]       — in_stack_00000018 from FUN_00405090
 
     Unchecked callees: ScoreSupportOpp (DAT_00bb67f8/00bb69f8 paths),
                        FUN_004193f0 (DAT_00bb68f8 path),
@@ -644,6 +646,14 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
     # ── Step 4: pvStack_80 = element 2 of sublist 0 (source province) ─────────
     # C: GetSubList(local_40, 0) + GetListElement(2) → low byte = province code
     src_prov: str = unit_triple[2] if len(unit_triple) > 2 else ''
+
+    def province_id(value):
+        """Translate DAIDE province tokens to the integer IDs used by MC."""
+        if isinstance(value, int):
+            return value
+        token = str(value).upper()
+        lookup = getattr(state, 'prov_to_id', {}) or {}
+        return lookup.get(token, lookup.get(token.split('/')[0], value))
 
     if not hasattr(state, 'g_xdo_dest_by_sender'):
         state.g_xdo_dest_by_sender = {}
@@ -705,7 +715,10 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             # ScoreSupportOpp(&DAT_00bb69f8 + bVar3_reread*0xc, buf, &ppiStack_90)
             # ppiStack_90 = ppiVar14 = sup_unit_prov  →  key = sup_unit_prov
             _score_support_opp(
-                state, 'DAT_00bb69f8', sup_power_idx, (sup_unit_prov, ppiVar16)
+                state,
+                'DAT_00bb69f8',
+                sup_power_idx,
+                (province_id(sup_unit_prov), province_id(ppiVar16)),
             )
 
             # C loop: FUN_004193f0(&DAT_00bb68f8 + entry_power*0xc, buf, &pvStack_50)
@@ -716,9 +729,8 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
         else:
             # SUP HLD: StdMap_FindOrInsert(DAT_00bb6af8 + bVar3_reread*0xc, ..., ppiStack_7c)
             # table index = bVar3_reread = sup_power_idx; key = ppiStack_7c = sup_unit_prov
-            if not hasattr(state, 'g_xdo_sup_hld_map'):
-                state.g_xdo_sup_hld_map = {}
-            state.g_xdo_sup_hld_map.setdefault(sup_power_idx, {})[sup_unit_prov] = sup_unit_prov
+            hold_sets = state.g_xdo_order_hold_by_power
+            hold_sets.setdefault(sup_power_idx, set()).add(province_id(sup_unit_prov))
 
             # C loop: FUN_004193f0(&DAT_00bb68f8 + entry_power*0xc, buf, &pvStack_50)
             # pvStack_50 = pvStack_80 = src_prov  →  key = src_prov
@@ -762,27 +774,29 @@ def _score_support_opp(
       +0x04  parent ptr          (ppiVar4[1])
       +0x08  right child ptr     (ppiVar4[2])
       +0x0C  key   (int)         (ppiVar4[3])  ← compared against *param_2
-      +0x10  value (int)         (ppiVar4[4])  ← zero on insert
+      +0x10  value (int)         (ppiVar4[4])  ← param_2[1] on pair inserts
       +0x14  _Color byte
       +0x15  _Isnil byte         ← sentinel check: == '\\0' means real node
 
     Algorithm: BST lower-bound walk; if key already present return its node
-    (was_inserted=False); else allocate zero-valued node via FUN_00403ca0
-    (was_inserted=True).  FUN_00401400 = BST iterator-decrement (predecessor).
+    (was_inserted=False); else allocate a node via FUN_00403ca0
+    (was_inserted=True).  DAT_00bb69f8 passes a two-int source/destination
+    pair; the simpler opportunity maps only rely on a default-zero value.
+    FUN_00401400 = BST iterator-decrement (predecessor).
 
     Python tables:
       'DAT_00bb67f8' → state.g_xdo_mto_opp_score[power][key]   (MTO/CTO path)
-      'DAT_00bb69f8' → state.g_xdo_sup_mto_score[power][key]   (SUP-MTO path)
+      'DAT_00bb69f8' → state.g_xdo_order_move_by_power[power]
+                       [source] = destination (XDO SUP-MTO path)
 
     Returns (sub_table, key, was_inserted).  Call sites that only need the
-    side-effect (ensuring the key exists with a default-0 value) may discard
-    the return value.
+    insertion side effect may discard the return value.
 
     Callees: FUN_00401400 (BST predecessor), FUN_00403ca0 (BST insert).
     """
     _TABLE_ATTR: dict = {
         'DAT_00bb67f8': 'g_xdo_mto_opp_score',
-        'DAT_00bb69f8': 'g_xdo_sup_mto_score',
+        'DAT_00bb69f8': 'g_xdo_order_move_by_power',
     }
     attr: str = _TABLE_ATTR.get(base_offset, base_offset)
     if not hasattr(state, attr):
@@ -792,7 +806,9 @@ def _score_support_opp(
     key = args[0]  # province name (str) in Python port; int in C
     was_inserted: bool = key not in sub
     if was_inserted:
-        sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)
+        # DAT_00bb69f8 receives the full {source, destination} pair at XDO.c:166.
+        # Other ScoreSupportOpp users retain their existing zero-valued insert.
+        sub[key] = args[1] if base_offset == 'DAT_00bb69f8' else 0
     return sub, key, was_inserted
 
 

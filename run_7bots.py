@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import logging
+import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -54,12 +55,13 @@ log.setLevel(logging.INFO)
 # ── File handler: capture ALL debug output to games/debug.log ──────────
 GAMES_DIR.mkdir(parents=True, exist_ok=True)
 _log_path = GAMES_DIR / "debug.log"
-if _log_path.exists():
+if multiprocessing.current_process().name == "MainProcess" and _log_path.exists():
     _log_path.unlink()
-_fh = logging.FileHandler(_log_path, mode="w", encoding="utf-8")
+_fh = logging.FileHandler(_log_path, mode="a", encoding="utf-8")
 _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logging.getLogger().addHandler(_fh)  # attach to root so it captures everything
+
 
 # python-diplomacy uses tornado @gen.coroutine, which creates an inner asyncio
 # Task for the generator runner. When that task fails (e.g. send timeout), the
@@ -69,6 +71,7 @@ logging.getLogger().addHandler(_fh)  # attach to root so it captures everything
 class _TornadoFutureFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return "Future exception was never retrieved" not in record.getMessage()
+
 
 logging.getLogger("asyncio").addFilter(_TornadoFutureFilter())
 
@@ -135,7 +138,37 @@ async def _pause_and_save(game, game_id: str, pause_phase: str) -> None:
         _mark(f"Debug log saved to {log_file} ({log_file.stat().st_size} bytes)")
 
 
-async def main(host: str, port: int, deadline: int, pause_phase: str, press: bool) -> None:
+def _run_bot_process(
+    power: str, host: str, port: int, game_id: str, press: bool
+) -> None:
+    """Run one CPU-heavy bot on its own event loop and WebSocket process."""
+    if port == 443:
+        _patch_connect_for_ssl()
+
+    async def _run() -> None:
+        client_mod = importlib.import_module(f"{_PKG}.bot.client")
+        client = client_mod.AlbertClient(
+            power_name=power,
+            host=host,
+            port=port,
+            username=f"Albert_{power}",
+            password="password",
+            game_id=game_id,
+        )
+        if not press:
+            client.state.g_minimal_press_mode = 1
+        try:
+            await client.play()
+        finally:
+            if client.connection is not None:
+                client.connection.close()
+
+    asyncio.run(_run())
+
+
+async def main(
+    host: str, port: int, deadline: int, pause_phase: str, press: bool
+) -> None:
     use_ssl = port == 443
     if use_ssl:
         _patch_connect_for_ssl()
@@ -195,74 +228,64 @@ async def main(host: str, port: int, deadline: int, pause_phase: str, press: boo
 
     watcher_task = asyncio.create_task(_phase_watcher(), name="pause_watcher")
 
-    # ── 3. Import AlbertClient via absolute package path ────────────────
-    _client_mod = importlib.import_module(f"{_PKG}.bot.client")
-    AlbertClient = _client_mod.AlbertClient
-
-    clients: list = []
-    tasks: list[asyncio.Task] = []
+    # ── 3. Launch bots on independent event loops ───────────────────────
+    # Each bot's Monte Carlo pipeline is synchronous and CPU-heavy.  Running
+    # all seven on this event loop can prevent every WebSocket from answering
+    # pings for more than a minute once unit counts grow.  Separate spawned
+    # processes give each bot an independent event loop while the lightweight
+    # admin watcher remains responsive here.
+    process_context = multiprocessing.get_context("spawn")
+    processes: list[multiprocessing.Process] = []
     for power in POWERS:
-        client = AlbertClient(
-            power_name=power,
-            host=host,
-            port=port,
-            username=f"Albert_{power}",
-            password="password",
-            game_id=game_id,
+        process = process_context.Process(
+            target=_run_bot_process,
+            args=(power, host, port, game_id, press),
+            name=f"Pybert-{power}",
         )
-        if not press:
-            client.state.g_minimal_press_mode = 1
-        clients.append(client)
-        tasks.append(asyncio.create_task(client.play(), name=power))
+        process.start()
+        processes.append(process)
         log.info("Queued %s", power)
 
     _mark(f"All 7 bots queued — will pause+save at {pause_phase}")
 
-    # Wait for either the watcher (pause+save complete) or any bot to finish.
-    # If any bot finishes/crashes early at deadline=0 the game will stall,
-    # so we treat any bot completion before the watcher fires as fatal and
-    # tear everything down — no point waiting for a stalled game.
+    async def _watch_bot_processes() -> tuple[str, int]:
+        while True:
+            for power, process in zip(POWERS, processes):
+                if process.exitcode is not None:
+                    return power, process.exitcode
+            await asyncio.sleep(1.0)
+
+    process_watcher = asyncio.create_task(
+        _watch_bot_processes(), name="bot_process_watcher"
+    )
+
     done, _pending = await asyncio.wait(
-        [watcher_task, *tasks],
+        [watcher_task, process_watcher],
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     if watcher_task in done:
-        _mark("pause+save complete — cancelling bot tasks")
+        _mark("pause+save complete — stopping bot processes")
     else:
-        for power, t in zip(POWERS, tasks):
-            if t in done:
-                exc = t.exception() if not t.cancelled() else None
-                _mark(f"bot {power} exited before pause phase (exc={exc!r}); aborting")
+        power, exit_code = process_watcher.result()
+        _mark(
+            f"bot {power} exited before pause phase "
+            f"(exit_code={exit_code}); aborting"
+        )
         if not watcher_task.done():
             watcher_task.cancel()
 
-    for t in tasks:
-        if not t.done():
-            t.cancel()
+    if not process_watcher.done():
+        process_watcher.cancel()
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join(timeout=10.0)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5.0)
 
-    # Bound the wait so a bot stuck in synchronous Monte Carlo can't pin us.
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True),
-            timeout=120.0,
-        )
-        for power, result in zip(POWERS, results):
-            if isinstance(result, asyncio.CancelledError):
-                continue
-            if isinstance(result, Exception):
-                log.error("%s crashed: %s", power, result)
-    except asyncio.TimeoutError:
-        _mark("bot cancellation timed out after 120s — forcing exit")
-
-    # Close all connections so asyncio.run can actually exit.
-    for c in clients:
-        conn = getattr(c, "connection", None)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
     try:
         connection.close()
     except Exception:
@@ -294,7 +317,7 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--pause-phase",
-        default="W1902A",
+        default="W1904A",
         help="Short phase name (e.g. 'W1902A') at which to pause "
         "the game and dump its state to games/. Default: W1902A.",
     )

@@ -389,10 +389,8 @@ def score_provinces(state: InnerGameState,
     """
     num_powers = 7
     num_provinces = 256
-    # C iterates only provinces with a non-zero "alive" flag (offset +3,
-    # stride 0x24).  Invalid province IDs (> map size) have flag == '\0'
-    # and are skipped.  Iterating all 256 gives bogus 75-scores to ~170
-    # non-existent provinces, flooding normalization.
+    # C has an explicit board province count. Python arrays are fixed at 256,
+    # so use adjacency keys to avoid scoring non-existent array slots.
     valid_provs = getattr(state, 'valid_provinces', None)
 
     # Section 1 — zero 11 per-power-province tables

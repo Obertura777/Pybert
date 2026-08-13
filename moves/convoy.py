@@ -28,6 +28,7 @@ from ._constants import (
     _F_DEST_PROV,
     _F_INCOMING_MOVE,
     _F_ORDER_ASGN,
+    _F_CONVOY_DEPTH,
     _F_CONVOY_LEG0,
     _F_CONVOY_LEG1,
     _F_CONVOY_LEG2,
@@ -302,7 +303,11 @@ def _get_convoy_route(state: InnerGameState, src_prov: int, dst_prov: int):
     return int(dst_entry.get('fleet_count', 0)), list(dst_entry.get('fleets', []))
 
 
-def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> dict:
+def _enumerate_convoy_chains_for_src(
+    state: InnerGameState,
+    army_src: int,
+    eligible_fleets: set[int] | None = None,
+) -> dict:
     """
     BFS over fleet chains starting from fleets adjacent to ``army_src``.
     Returns ``{dst_prov: chain}`` where ``dst_prov`` is a non-fleet,
@@ -319,9 +324,19 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
     MAX_CHAIN = 3
 
     # Fixed 2026-04-20 (audit #2): army-type filter for initial fleet search.
+    army_power = state.unit_info.get(army_src, {}).get('power')
     depth_1_fleets = [
-        adj for adj in _filtered_adj(state, army_src, 'A')
+        # This is not an army movement adjacency: C scans the army province's
+        # board adjacency for an occupying own fleet, so sea neighbours must
+        # remain visible here.
+        adj for adj in state.get_unit_adjacencies(army_src)
         if state.get_unit_type(adj) == 'F'
+        and state.unit_info.get(adj, {}).get('power') == army_power
+        # ProcessTurn C:1706 tests the province terrain byte for zero before
+        # admitting a fleet into the convoy BFS.  Fleets on coastal land
+        # provinces can move at sea but cannot convoy an army.
+        and adj in state.water_provinces
+        and (eligible_fleets is None or adj in eligible_fleets)
     ]
     if not depth_1_fleets:
         return {}
@@ -339,6 +354,11 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
             for adj in _filtered_adj(state, terminal, 'F'):
                 if adj == army_src:
                     continue
+                # A convoy destination must be a land/coastal province.  An
+                # unoccupied sea has no unit type, so testing only for a fleet
+                # unit incorrectly admitted empty water as a landing square.
+                if adj in state.water_provinces:
+                    continue
                 if state.get_unit_type(adj) == 'F':
                     continue
                 # First chain reaching this dst wins (BFS order →
@@ -351,6 +371,12 @@ def _enumerate_convoy_chains_for_src(state: InnerGameState, army_src: int) -> di
             if depth < MAX_CHAIN:
                 for adj in _filtered_adj(state, terminal, 'F'):
                     if state.get_unit_type(adj) != 'F':
+                        continue
+                    if state.unit_info.get(adj, {}).get('power') != army_power:
+                        continue
+                    if adj not in state.water_provinces:
+                        continue
+                    if eligible_fleets is not None and adj not in eligible_fleets:
                         continue
                     if adj in visited_fleets:
                         continue
@@ -403,6 +429,7 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     state.g_order_table[src_prov, _F_ORDER_TYPE] = _ORDER_CTO
     state.g_order_table[src_prov, _F_DEST_PROV] = dst_prov
     state.g_order_table[src_prov, _F_ORDER_ASGN] = 1  # Order committed
+    state.g_order_table[src_prov, _F_CONVOY_DEPTH] = fleet_count
     
     if len(route) > 0:
         state.g_order_table[src_prov, _F_CONVOY_LEG0] = route[0]
@@ -463,5 +490,3 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
                 break
 
     assign_support_order(state, power_idx, src_prov, dst_prov, coast, flag=1)
-
-

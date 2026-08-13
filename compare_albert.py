@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -36,6 +37,9 @@ if str(_PARENT) not in sys.path:
 from diplomacy import Game
 
 from Pybert.bot.client import AlbertClient
+from Pybert.monte_carlo import restore_order_entry
+from Pybert.bot.orders import _build_order_seq_from_table
+from Pybert.dispatch import validate_and_dispatch_order
 
 
 POWERS = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
@@ -65,7 +69,9 @@ def _build_game(state_data: dict, phase_name: str) -> Game:
 
 
 def _capture_orders_for_power(state_data: dict, phase_name: str,
-                              power: str, seed: int) -> list[str] | None:
+                              power: str, seed: int,
+                              capture_candidates: bool = False
+                              ) -> list[str] | tuple[list[str], list[list[str]]] | None:
     """Run Pybert as `power` on the given state, return submitted orders.
 
     Returns None on bot failure.  An empty list is a valid result (e.g.
@@ -78,6 +84,12 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
     client.current_phase = g.get_current_phase()
     # Force NO_PRESS mode so the bot doesn't try to send DAIDE messages.
     client.state.g_minimal_press_mode = 1
+    # This is an offline ``diplomacy.Game``, not a NetworkGame.  Submission
+    # still goes through ``Game.set_orders``, but GOF is a network readiness
+    # signal (``NetworkGame.no_wait``) and has no local equivalent.  Suppress
+    # outbound protocol traffic so a successful order-generation run is not
+    # misreported as a Pybert failure after its orders have been produced.
+    client._send_dm = lambda _msg: None
 
     try:
         client.state.synchronize_from_game(g)
@@ -99,7 +111,32 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
             submitted = list(g.get_orders(power))
         except Exception:
             pass
-    return submitted
+    if not capture_candidates or not phase_name.endswith("M"):
+        return submitted
+
+    # Keep candidate coverage separate from final selection.  A candidate is
+    # useful oracle evidence only if its complete snapshot can pass the same
+    # serializer/validator path as a submitted set.  The validator mutates the
+    # order table and submitted list, so use a deep copy per record.
+    candidate_sets: list[list[str]] = []
+    own_idx = POWERS.index(power)
+    for candidate in client.state.g_candidate_record_list:
+        if int(candidate.get("power", -1)) != own_idx:
+            continue
+        candidate_state = copy.deepcopy(client.state)
+        candidate_state.g_submitted_orders = []
+        valid = True
+        for entry in candidate.get("orders", []):
+            prov = restore_order_entry(
+                candidate_state.g_order_table, entry, full_row=True)
+            seq = _build_order_seq_from_table(candidate_state, prov)
+            if (seq is None or validate_and_dispatch_order(
+                    candidate_state, own_idx, seq) != 0):
+                valid = False
+                break
+        if valid:
+            candidate_sets.append(list(candidate_state.g_submitted_orders))
+    return submitted, candidate_sets
 
 
 def _norm_order(o: str) -> str:
@@ -160,6 +197,10 @@ def main() -> None:
                         help="Directory of Albert reference orders.")
     parser.add_argument("--game", default=None,
                         help="Restrict to one game JSON filename.")
+    parser.add_argument("--phase", default=None,
+                        help="Restrict to one exact phase name (for example S1907M).")
+    parser.add_argument("--power", choices=POWERS, default=None,
+                        help="Restrict to one power.")
     parser.add_argument("--max-games", type=int, default=None,
                         help="Stop after N games.")
     parser.add_argument("--phase-types", default="M",
@@ -169,6 +210,11 @@ def main() -> None:
                         help="Random seed (passed to random.seed before each run).")
     parser.add_argument("--verbose", action="store_true",
                         help="Print each phase/power result.")
+    parser.add_argument(
+        "--candidate-coverage", action="store_true",
+        help="For movement phases, also report whether Albert's complete order "
+             "set exists among Pybert's generated legal candidates.",
+    )
     parser.add_argument("--out", default=None,
                         help="Optional path for per-(game,phase,power) JSON dump.")
     args = parser.parse_args()
@@ -193,6 +239,8 @@ def main() -> None:
     n_pybert_failed = 0
     unit_match_total = 0
     unit_total = 0
+    n_candidate_pairs = 0
+    n_candidate_covered = 0
     by_phase_type: dict[str, dict] = defaultdict(
         lambda: {"phase_powers": 0, "exact": 0, "unit_match": 0, "unit_total": 0,
                  "failed": 0}
@@ -218,6 +266,8 @@ def main() -> None:
         for phase_name, albert_orders_per_power in albert_game.items():
             if not phase_name or phase_name == "COMPLETED":
                 continue
+            if args.phase and phase_name != args.phase:
+                continue
             if phase_name[-1] not in phase_suffixes:
                 continue
             state = _phase_state(full_game, phase_name)
@@ -231,15 +281,23 @@ def main() -> None:
             for power, albert_orders in albert_orders_per_power.items():
                 if power not in POWERS:
                     continue
+                if args.power and power != args.power:
+                    continue
                 albert_orders = list(albert_orders or [])
-                pybert_orders = _capture_orders_for_power(
-                    state, phase_name, power, seed=args.seed)
-                if pybert_orders is None:
+                capture = _capture_orders_for_power(
+                    state, phase_name, power, seed=args.seed,
+                    capture_candidates=args.candidate_coverage)
+                if capture is None:
                     n_pybert_failed += 1
                     by_phase_type[phase_name[-1]]["failed"] += 1
                     if args.verbose:
                         print(f"  [{phase_name}] {power}: PYBERT FAILED")
                     continue
+                if args.candidate_coverage and phase_name.endswith("M"):
+                    pybert_orders, candidate_sets = capture
+                else:
+                    pybert_orders = capture
+                    candidate_sets = []
                 diff = _compare_orders(albert_orders, pybert_orders)
                 n_phase_powers += 1
                 by_phase_type[phase_name[-1]]["phase_powers"] += 1
@@ -251,16 +309,62 @@ def main() -> None:
                 by_phase_type[phase_name[-1]]["unit_match"] += diff["unit_match"]
                 by_phase_type[phase_name[-1]]["unit_total"] += diff["unit_total"]
 
+                candidate_covered = None
+                candidate_best_unit_match = None
+                candidate_unit_coverage = None
+                closest_candidate = None
+                if args.candidate_coverage and phase_name.endswith("M"):
+                    albert_norm = {_norm_order(o) for o in albert_orders}
+                    candidate_covered = any(
+                        {_norm_order(o) for o in orders} == albert_norm
+                        for orders in candidate_sets
+                    )
+                    candidate_diffs = [
+                        _compare_orders(albert_orders, orders)
+                        for orders in candidate_sets
+                    ]
+                    if candidate_diffs:
+                        closest_idx = max(
+                            range(len(candidate_diffs)),
+                            key=lambda i: candidate_diffs[i]["unit_match"],
+                        )
+                        candidate_best_unit_match = candidate_diffs[
+                            closest_idx]["unit_match"]
+                        closest_candidate = candidate_sets[closest_idx]
+                        covered_orders = {
+                            _norm_order(order)
+                            for orders in candidate_sets for order in orders
+                        }
+                        candidate_unit_coverage = sum(
+                            _norm_order(order) in covered_orders
+                            for order in albert_orders
+                        )
+                    n_candidate_pairs += 1
+                    n_candidate_covered += int(candidate_covered)
+
                 if args.verbose:
                     flag = "✓" if diff["exact_set_match"] else "✗"
                     print(f"  [{phase_name}] {power}: {flag} "
                           f"unit_match={diff['unit_match']}/{diff['unit_total']}"
-                          f" albert={diff['albert_count']} pybert={diff['pybert_count']}")
+                          f" albert={diff['albert_count']} pybert={diff['pybert_count']}"
+                          + (f" candidate={'yes' if candidate_covered else 'no'}"
+                             f"/{len(candidate_sets)}"
+                             f" best={candidate_best_unit_match}/{diff['unit_total']}"
+                             f" unit-coverage={candidate_unit_coverage}/{len(albert_orders)}"
+                             if candidate_covered is not None else ""))
                     if not diff["exact_set_match"]:
                         for o in diff["albert_only"]:
                             print(f"       albert-only: {o}")
                         for o in diff["pybert_only"]:
                             print(f"       pybert-only: {o}")
+                    if (candidate_covered is False
+                            and closest_candidate is not None):
+                        closest_diff = _compare_orders(
+                            albert_orders, closest_candidate)
+                        for o in closest_diff["albert_only"]:
+                            print(f"       closest misses: {o}")
+                        for o in closest_diff["pybert_only"]:
+                            print(f"       closest has:    {o}")
 
                 if args.out:
                     per_record.append({
@@ -269,6 +373,10 @@ def main() -> None:
                         "power": power,
                         "albert": albert_orders,
                         "pybert": pybert_orders,
+                        "candidate_covered": candidate_covered,
+                        "candidate_count": len(candidate_sets),
+                        "candidate_best_unit_match": candidate_best_unit_match,
+                        "candidate_unit_coverage": candidate_unit_coverage,
                         **{k: v for k, v in diff.items()
                            if k not in ("albert_only", "pybert_only")},
                     })
@@ -288,6 +396,9 @@ def main() -> None:
     if unit_total:
         print(f"  Per-unit match: {unit_match_total}/{unit_total}"
               f" = {100*unit_match_total/unit_total:.1f}%")
+    if n_candidate_pairs:
+        print(f"  Albert set generated: {n_candidate_covered}/{n_candidate_pairs}"
+              f" = {100*n_candidate_covered/n_candidate_pairs:.1f}%")
     print()
     print("Breakdown by phase type:")
     for suf in sorted(by_phase_type):

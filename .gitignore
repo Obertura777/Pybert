@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 *.md
+!progress.md
 all_games/
 all_games_albert
 

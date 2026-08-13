@@ -235,7 +235,13 @@ def _safe_pow(base: float, exp: float) -> float:
     """FUN_0047b370 proxy. Returns base**exp; returns 0.0 if base <= 0."""
     if base <= 0.0:
         return 0.0
-    return base ** exp
+    try:
+        return base ** exp
+    except OverflowError:
+        # The C floating-point helper saturates to +inf for an overflowing
+        # positive power; Python raises instead.  Callers use the result in a
+        # denominator, where +inf correctly contributes a zero share.
+        return float('inf')
 
 
 def _float_to_int64(value: float) -> int:

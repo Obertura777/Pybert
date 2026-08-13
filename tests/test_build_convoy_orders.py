@@ -25,15 +25,20 @@ _pkg_name = os.path.basename(_pkg_root)
 _state     = __import__(f'{_pkg_name}.state',       fromlist=['InnerGameState'])
 _constants = __import__(f'{_pkg_name}.moves._constants', fromlist=['_F_ORDER_TYPE'])
 _convoy    = __import__(f'{_pkg_name}.moves.convoy', fromlist=['build_convoy_orders'])
+_bot_orders = __import__(
+    f'{_pkg_name}.bot.orders', fromlist=['_build_order_seq_from_table'])
 
 InnerGameState      = _state.InnerGameState
 build_convoy_orders = _convoy.build_convoy_orders
 register_convoy_fleet = _convoy.register_convoy_fleet
+_enumerate_convoy_chains_for_src = _convoy._enumerate_convoy_chains_for_src
+_build_order_seq_from_table = _bot_orders._build_order_seq_from_table
 
 _F_ORDER_TYPE    = _constants._F_ORDER_TYPE
 _F_DEST_PROV     = _constants._F_DEST_PROV
 _F_INCOMING_MOVE = _constants._F_INCOMING_MOVE
 _F_ORDER_ASGN    = _constants._F_ORDER_ASGN
+_F_CONVOY_DEPTH  = _constants._F_CONVOY_DEPTH
 _F_CONVOY_LEG0   = _constants._F_CONVOY_LEG0
 _F_CONVOY_LEG1   = _constants._F_CONVOY_LEG1
 _F_CONVOY_LEG2   = _constants._F_CONVOY_LEG2
@@ -51,6 +56,37 @@ STP = 50   # St. Petersburg (coastal, army destination)
 ENG = 60   # English Channel (water, unused fleet)
 
 POWER_ENG = 0  # England
+
+
+def test_route_enumerator_uses_only_own_fleets_and_land_destinations():
+    state = InnerGameState()
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        NTH: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+        NWG: {'power': 1, 'type': 'F', 'coast': ''},
+    }
+    state.water_provinces = frozenset({NTH, NWG, ENG})
+    state.adj_matrix = {LON: [NTH], NTH: [LON, STP, ENG, NWG]}
+    state.fleet_adj_matrix = {NTH: [LON, STP, ENG, NWG]}
+
+    assert _enumerate_convoy_chains_for_src(state, LON) == {STP: (NTH,)}
+
+
+def test_route_enumerator_rejects_fleets_on_coastal_land():
+    state = InnerGameState()
+    coastal_fleet = 70
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        coastal_fleet: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+    }
+    state.water_provinces = frozenset()
+    state.adj_matrix = {
+        LON: [coastal_fleet],
+        coastal_fleet: [LON, STP],
+    }
+    state.fleet_adj_matrix = {coastal_fleet: [LON, STP]}
+
+    assert _enumerate_convoy_chains_for_src(state, LON) == {}
 
 
 def _make_state(army_src, army_dst, fleet_provs, adj_map):
@@ -132,6 +168,10 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_ORDER_ASGN] == 1
 
+    def test_army_convoy_leg_count(self, state):
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+        assert state.g_order_table[LON, _F_CONVOY_DEPTH] == 1
+
     def test_convoy_leg0_set(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
@@ -179,6 +219,18 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_convoy_dst_to_src[STP] == LON
 
+    def test_fleet_dispatch_sequence_names_convoyed_army(self, state):
+        state.prov_to_id = {'LON': LON, 'NTH': NTH, 'STP': STP}
+        state._id_to_prov = {value: key for key, value in state.prov_to_id.items()}
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+
+        assert _build_order_seq_from_table(state, NTH) == {
+            'type': 'CVY',
+            'unit': 'F NTH',
+            'target_unit': 'A LON',
+            'target_dest': 'STP',
+        }
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  2-fleet convoy:  LON → NTH → NWG → STP
@@ -200,6 +252,7 @@ class TestTwoFleetConvoy:
     def test_army_cto_with_two_legs(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_ORDER_TYPE] == _ORDER_CTO
+        assert state.g_order_table[LON, _F_CONVOY_DEPTH] == 2
         assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
         assert state.g_order_table[LON, _F_CONVOY_LEG1] == NWG
         assert state.g_order_table[LON, _F_CONVOY_LEG2] == 0  # unused
@@ -239,6 +292,7 @@ class TestThreeFleetConvoy:
     def test_army_cto_with_three_legs(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_ORDER_TYPE] == _ORDER_CTO
+        assert state.g_order_table[LON, _F_CONVOY_DEPTH] == 3
         assert state.g_order_table[LON, _F_CONVOY_LEG0] == NTH
         assert state.g_order_table[LON, _F_CONVOY_LEG1] == NWG
         assert state.g_order_table[LON, _F_CONVOY_LEG2] == BAR

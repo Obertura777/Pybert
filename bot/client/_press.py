@@ -31,8 +31,8 @@ from ...monte_carlo import (
     process_turn,
     update_score_state,
     check_time_limit,
+    restore_order_entry,
     _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
-    _ORDER_HLD, _ORDER_MTO,
 )
 from ...communications import (
     parse_message,
@@ -85,6 +85,47 @@ class _PressMixin:
     # Cross-mixin method (provided by _OrdersMixin)
     _validate_orders: Callable[..., None]
 
+    @staticmethod
+    def _track_request_future(future: Any, operation: str, phase: str = "") -> None:
+        """Consume the result of a fire-and-forget NetworkGame request.
+
+        python-diplomacy returns a Tornado/asyncio Future, not necessarily a
+        coroutine.  Leaving that Future unobserved makes an ordinary rejected
+        request surface later as ``Exception in Future ... after timeout``.
+        """
+        if future is None:
+            return
+
+        if asyncio.iscoroutine(future):
+            try:
+                future = asyncio.get_running_loop().create_task(future)
+            except RuntimeError:
+                future.close()
+                logger.warning("%s not sent: no running event loop", operation)
+                return
+
+        if not hasattr(future, "add_done_callback"):
+            return
+
+        def _consume_result(done_future):
+            try:
+                done_future.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                # Phase-dependent requests can legitimately lose a race with
+                # phase processing or reconnect synchronization.  The next
+                # GameProcessed notification will generate fresh orders.
+                logger.warning(
+                    "%s rejected%s: %s: %s",
+                    operation,
+                    f" for phase {phase}" if phase else "",
+                    type(exc).__name__,
+                    exc,
+                )
+
+        future.add_done_callback(_consume_result)
+
     def _schedule_set_orders(self, orders: list[str]) -> None:
         """Submit orders to the game, handling async NetworkGame properly.
 
@@ -95,20 +136,18 @@ class _PressMixin:
         """
         if self.game is None:
             return
+        phase = getattr(self.game, "current_short_phase", "") or ""
         try:
-            coro = self.game.set_orders(
+            future = self.game.set_orders(
                 power_name=self.power_name, orders=orders, wait=True)
         except TypeError:
-            coro = self.game.set_orders(
+            future = self.game.set_orders(
                 power_name=self.power_name, orders=orders)
-        if coro is not None and asyncio.iscoroutine(coro):
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(coro)
-            except RuntimeError:
-                logger.warning(
-                    "No running event loop — set_orders for %s not sent",
-                    self.power_name)
+        self._track_request_future(
+            future, f"set_orders for {self.power_name}", phase
+        )
+        if future is not None and hasattr(future, "add_done_callback"):
+            self._pending_orders_future = future
 
     def _send_dm(self, msg: object) -> None:
         """
@@ -157,14 +196,43 @@ class _PressMixin:
         # wait flag to False instead of broadcasting to other powers.
         body_str = ' '.join(str(t) for t in msg) if isinstance(msg, list) else str(msg)
         if body_str.strip() == 'GOF':
-            import asyncio as _asyncio
-            coro = self.game.no_wait()
-            if coro is not None and _asyncio.iscoroutine(coro):
-                try:
-                    _asyncio.get_running_loop().create_task(coro)
-                except RuntimeError:
-                    logger.warning("_send_dm: GOF no_wait — no running loop")
-            logger.info("_send_dm: GOF → no_wait() (wait=False) for %s", self.power_name)
+            phase = getattr(self.game, "current_short_phase", "") or ""
+
+            def _send_no_wait() -> None:
+                # Never release the wait flag for orders computed in a phase
+                # that has already moved on.
+                if phase != (getattr(self.game, "current_short_phase", "") or ""):
+                    return
+                future = self.game.no_wait()
+                self._track_request_future(
+                    future, f"no_wait for {self.power_name}", phase
+                )
+                logger.info(
+                    "_send_dm: GOF → no_wait() (wait=False) for %s",
+                    self.power_name,
+                )
+
+            pending_orders = getattr(self, "_pending_orders_future", None)
+            if pending_orders is not None:
+                def _after_orders(done_future) -> None:
+                    try:
+                        done_future.result()
+                    except asyncio.CancelledError:
+                        return
+                    except Exception:
+                        return
+                    _send_no_wait()
+
+                if pending_orders.done():
+                    _after_orders(pending_orders)
+                    return
+                pending_orders.add_done_callback(_after_orders)
+                logger.info(
+                    "_send_dm: GOF queued behind set_orders for %s",
+                    self.power_name,
+                )
+            else:
+                _send_no_wait()
             return
 
         # Skip all outbound press in no-press mode.
@@ -293,10 +361,10 @@ class _PressMixin:
         Structure (mirroring FUN_00457890 at each labelled site):
           1. ScheduledPressDispatch     — pre-loop flush (line 252).
           2. CheckTimeLimit             — abort if MTL already fired (line 291).
-          3. Order submission           — RegisterProposalOrders / ScoreOrderCandidates
-                                         collapsed to game.set_orders (MC already ran).
-          4. UpdateScoreState           — refresh ally order tables after commit
-                                         (line 395 inside inner loop, post-submission).
+          3. Candidate ranking/refresh  — RankCandidatesForPower followed by
+                                         UpdateScoreState, before slot zero is read.
+          4. Order submission           — consume refreshed slot zero and call
+                                         game.set_orders (MC already ran).
           Outer broadcast-list loop (LAB_004579a9, do{}while(true)):
             per-node CheckTimeLimit (line 207);
             per-node ScheduledPressDispatch inside inner trial sub-loop (line 342);
@@ -351,50 +419,38 @@ class _PressMixin:
             logger.warning("MTL expired before BuildAndSendSUB — skipping SUB")
             return
 
-        # Pick the highest-scoring candidate for OUR power. process_turn
-        # appends one candidate record per (power, trial), so best_orders
-        # holds candidates for all 7 powers — we want our own.
-        own_candidates = [c for c in best_orders if c.get('power') == own_power_idx]
-        if own_candidates:
-            best = max(own_candidates, key=lambda c: float(c.get('score', 0.0)))
-            order_pairs = best.get('orders', [])
-        else:
-            best = None
-            order_pairs = []
+        # BuildAndSendSUB.c ranks each active power and refreshes its 30-slot
+        # table before the later SUB block dereferences slot zero
+        # (C:287-317 precede C:593-614).  The old Python order was reversed:
+        # it submitted the slot produced by the flag=1 ally-score pass, then
+        # ran this final flag=0 rank/refresh after game.set_orders, when it
+        # could no longer affect the submitted move set.
+        for power_i in range(n_powers):
+            _rank_candidates_for_power(self.state, power_i)
+        update_score_state(self.state)
 
-        # ── Swap breaker: detect same-power reciprocal moves (A→B + B→A) ──
-        # In Diplomacy, two units from the same power cannot swap provinces;
-        # they bounce and both hold.  The MC trial loop assigns unit orders
-        # independently and never checks for intra-power swaps, so we break
-        # them here by converting the lower-province unit to HLD.
-        if order_pairs:
-            _mto_map = {}  # prov → dest_prov for MTO orders
-            for entry in order_pairs:
-                if len(entry) >= 3 and int(entry[1]) == _ORDER_MTO:
-                    _mto_map[int(entry[0])] = int(entry[2])
-            _swap_victims = set()
-            for prov_a, dest_a in _mto_map.items():
-                if dest_a in _mto_map and _mto_map[dest_a] == prov_a:
-                    # Swap detected — mark the lower-province unit as victim
-                    victim = min(prov_a, dest_a)
-                    _swap_victims.add(victim)
-            if _swap_victims:
-                new_pairs = []
-                for entry in order_pairs:
-                    prov = int(entry[0])
-                    if prov in _swap_victims:
-                        # Convert to HLD: (prov, ORDER_HLD, prov, 0, 0)
-                        new_pairs.append(
-                            (entry[0], _ORDER_HLD, entry[0], 0, 0)
-                        )
-                        logger.warning(
-                            "DIAG[%s] broke same-power swap: prov %d was "
-                            "MTO→%d, converted to HLD",
-                            self.power_name, prov, int(entry[2]),
-                        )
-                    else:
-                        new_pairs.append(entry)
-                order_pairs = new_pairs
+        # C submits the complete order list referenced by slot zero in
+        # DAT_00bbf690/694.  The rank/refresh immediately above populated the
+        # Python equivalent.  Choosing max(candidate.score) here bypasses
+        # RefreshOrderTable's stochastic selection and is not a C path.
+        refreshed_slots = self.state.g_current_best_order.get(own_power_idx, [])
+        if refreshed_slots:
+            best = None
+            order_pairs = refreshed_slots[0]
+        else:
+            # Defensive fallback for callers that invoke this method without
+            # the normal GenerateAndSubmitOrders/update_score_state prelude.
+            own_candidates = [
+                c for c in best_orders if c.get('power') == own_power_idx
+            ]
+            if own_candidates:
+                best = max(
+                    own_candidates, key=lambda c: float(c.get('score', 0.0))
+                )
+                order_pairs = best.get('orders', [])
+            else:
+                best = None
+                order_pairs = []
 
         self.state.g_submitted_orders = []
         # Restore g_order_table from the candidate snapshot for our own provinces.
@@ -404,19 +460,12 @@ class _PressMixin:
         # The candidate carries the per-order field snapshot (see
         # evaluate_order_proposal in monte_carlo.py); rehydrate the relevant
         # rows before calling _build_order_seq_from_table.
-        from ...monte_carlo import _F_SECONDARY as _MC_F_SECONDARY  # local import
         _diag_dispatch_ok = 0
         _diag_dispatch_fail = 0
         _diag_seq_none = 0
         for entry in order_pairs:
-            if len(entry) >= 5:
-                prov, order_type, dest_prov, dest_coast, secondary = entry[:5]
-                self.state.g_order_table[prov, _F_ORDER_TYPE] = float(order_type)
-                self.state.g_order_table[prov, _F_DEST_PROV]  = float(dest_prov)
-                self.state.g_order_table[prov, _F_DEST_COAST] = float(dest_coast)
-                self.state.g_order_table[prov, _MC_F_SECONDARY] = float(secondary)
-            else:
-                prov = entry[0]
+            prov = restore_order_entry(
+                self.state.g_order_table, entry, full_row=True)
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
                 rc = validate_and_dispatch_order(self.state, own_power_idx, seq)
@@ -469,16 +518,6 @@ class _PressMixin:
         if self.game is not None:
             self._validate_orders(formatted)
             self._schedule_set_orders(formatted)
-
-        # ── 3b. RankCandidatesForPower — inner-loop candidate selection ─────
-        # C: FUN_00424850(piVar10, '\0') called per-power in BuildAndSendSUB
-        # inner loop after ScoreOrderCandidates.  In Python, MC has already
-        # run; call once per power to rank g_candidate_record_list entries.
-        for power_i in range(n_powers):
-            _rank_candidates_for_power(self.state, power_i)
-
-        # ── 4. UpdateScoreState — post-commit refresh (line 395) ─────────────
-        update_score_state(self.state)
 
         # ── Outer broadcast-list loop (LAB_004579a9) ─────────────────────────
         # C: do { } while(true) — iterates g_broadcast_list with a per-node
@@ -646,12 +685,12 @@ class _PressMixin:
         try:
             # NetworkGame (server): async vote request — schedule coroutine
             if hasattr(self.game, 'vote') and callable(self.game.vote):
-                coro = self.game.vote(vote='yes')
-                if coro is not None and asyncio.iscoroutine(coro):
-                    try:
-                        asyncio.get_running_loop().create_task(coro)
-                    except RuntimeError:
-                        pass
+                future = self.game.vote(vote='yes')
+                self._track_request_future(
+                    future,
+                    f"draw vote for {self.power_name}",
+                    getattr(self.game, "current_short_phase", "") or "",
+                )
             else:
                 # Local Game: set directly on the power object
                 power = self.game.powers.get(self.power_name)

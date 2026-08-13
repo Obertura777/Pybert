@@ -172,6 +172,8 @@ class InnerGameState:
     g_victory_threshold: "Any"
     g_xdo_dest_by_sender: "Any"
     g_xdo_global_dest_map: "Any"
+    g_xdo_order_move_by_power: "Any"
+    g_xdo_order_hold_by_power: "Any"
     g_xdo_sup_hld_map: "Any"
     g_baed6d: "Any"
     g_one_shot_press: "Any"
@@ -301,16 +303,21 @@ class InnerGameState:
         # 30-field per-province order state; fields defined by _F_* constants in monte_carlo.py
         self.g_order_table = np.zeros((256, 30), dtype=np.float64)
 
-        # DAT_00baedb8[prov*0x1e] — order table [6]: convoy-chain depth score OR support order score lo-word (dual-use)
-        self.g_convoy_chain_score = np.zeros(256, dtype=np.float64)
-        # DAT_00baedbc[prov*0x1e] — order table [7]: hi-word companion (dual-use g_order_score_hi)
-        self.g_order_score_hi = np.zeros(256, dtype=np.float64)
-        # DAT_00baedf4[prov*0x1e] — unit adjacency reach score per province
-        self.g_unit_reach_score = np.zeros(256, dtype=np.float64)
-        # DAT_00baedf8[prov*0x1e] — cut-support risk: <0 = own unit, >0 = enemy
-        self.g_cut_support_risk = np.zeros(256, dtype=np.float64)
-        # DAT_00baeddc[prov*0x1e] — number of units demanding support to this province
-        self.g_support_demand = np.zeros(256, dtype=np.int32)
+        # DAT_00baedb8/bc[prov*0x1e] — g_OrderTable fields 6/7: convoy-chain
+        # or order score int64 pair.  Keep views so move builders feed the
+        # evaluator's row reads.
+        self.g_convoy_chain_score = self.g_order_table[:, 6]
+        self.g_order_score_hi = self.g_order_table[:, 7]
+        # DAT_00baedf4[prov*0x1e] — unit adjacency reach/hold factor.  This is
+        # g_OrderTable field 21, not separate storage.
+        self.g_unit_reach_score = self.g_order_table[:, 21]
+        # DAT_00baedf8[prov*0x1e] — field 22, cut-support contribution.
+        self.g_cut_support_risk = self.g_order_table[:, 22]
+        # DAT_00baeddc[prov*0x1e] — peak hostile reach / support demand.  This
+        # is not separate storage in C: it is g_OrderTable field 15.  Keep a
+        # live view so ProcessTurn's aggregate writer and EvaluateOrderScore's
+        # row-field reader cannot diverge.
+        self.g_support_demand = self.g_order_table[:, 15]
         # DAT_00ba3770[province] — convoy source province score (0xffffffff = unset)
         self.g_convoy_source_prov = np.zeros(256, dtype=np.float64)
 
@@ -384,8 +391,11 @@ class InnerGameState:
         self.g_winter_score_b = np.zeros(256, dtype=np.float64)
 
         self.g_hold_weight = np.zeros(256, dtype=np.float64)
-        self.g_unit_move_prob = np.zeros(256, dtype=np.float64)
-        self.g_fleet_support_score = np.zeros(256, dtype=np.float64)
+        # DAT_00baedb0[prov*0x1e] — g_OrderTable field 4.
+        self.g_unit_move_prob = self.g_order_table[:, 4]
+        # DAT_00baee00[prov*0x1e] — field 24 (lo word of the fleet/order
+        # contribution pair consumed by EvaluateOrderScore's final pass).
+        self.g_fleet_support_score = self.g_order_table[:, 24]
 
         # ── EnumerateHoldOrders output arrays ──────────────────────────────
         # g_unit_province_reach[power, province] = that power's score for the
@@ -484,9 +494,20 @@ class InnerGameState:
         # ScoreSupportOpp (FUN_00404fd0): key = dest_prov, value = int score.
         self.g_xdo_mto_opp_score: dict = {}
 
-        # DAT_00bb69f8[prov*0xc] — per-supporting-unit-province SUP-MTO scoring map.
-        # ScoreSupportOpp (FUN_00404fd0): key = sup_power, value = int score.
-        self.g_xdo_sup_mto_score: dict = {}
+        # DAT_00bb69f8[power*0xc] — accepted XDO move constraints.
+        # XDO.c:166 stores the supported unit's source → proposed destination;
+        # ProcessTurn.c Step 4 reads this exact per-power map.
+        self.g_xdo_order_move_by_power: dict[int, dict] = {}
+
+        # DAT_00bb6af8[power*0xc] — accepted XDO hold constraints.
+        # XDO.c:190 inserts the supported unit's province; ProcessTurn.c Step 4
+        # treats membership as a proposed hold (destination == source).
+        self.g_xdo_order_hold_by_power: dict[int, set] = {}
+
+        # Compatibility aliases for the old, incorrect support-scoring names.
+        # Keep them identity-linked so external callers see the corrected data.
+        self.g_xdo_sup_mto_score = self.g_xdo_order_move_by_power
+        self.g_xdo_sup_hld_map = self.g_xdo_order_hold_by_power
 
         # DAT_00ba1fb0[province] — safe-reach score per province.
         # Set to max sorted-set rank of reachable uncontested provinces; 0xffffffff = no safe move.
@@ -819,6 +840,12 @@ class InnerGameState:
         # ── UpdateScoreState / BuildAndSendSUB globals ───────────────────────
         # DAT_0062e460[power] — unit count; non-zero = power has live units
         self.g_unit_count = np.zeros(7, dtype=np.int32)
+        # DAT_00b9fe88[power] — accepted EvaluateOrderProposal count for the
+        # current movement turn.  send_GOF.c resets this before its ten scoring
+        # passes; EvaluateOrderProposal.c increments it inside the unique,
+        # non-deviating proposal gate.  RankCandidatesForPower and
+        # BuildAndSendSUB both consume the resulting per-power count.
+        self.g_power_call_count = np.zeros(7, dtype=np.int32)
         # DAT_00bc1e04 — current round number
         self.g_current_round: int = 0
         # DAT_00bc1e00 per-power game-board round records; power → last seen round
@@ -997,6 +1024,9 @@ class InnerGameState:
         # No unit can ever enter a SHUT province; they are excluded from adj_matrix
         # entirely so they never appear as valid move destinations.
         self.shut_provinces: frozenset = frozenset()
+        # Province-record byte +3: nonzero for a supply centre. Populated from
+        # the map's SC list during synchronization.
+        self.sc_provinces: set = set()
 
         # ── PhaseHandler snapshots (FUN_0040df20) ────────────────────────────
         # DAT_0062e4b8 — phase×power snapshot of g_ally_trust_score lo-word
@@ -1245,10 +1275,8 @@ class InnerGameState:
             self.land_provinces = frozenset(land_prov_ids)
 
             # Valid province IDs — the set of provinces that exist on the
-            # game map.  C's per-province loops check an "alive" flag at
-            # offset +3 of the per-province record (stride 0x24); provinces
-            # beyond the map have this flag as '\0' and are skipped.  In
-            # Python we use the adj_matrix key set as the equivalent gate.
+            # game map. Province-record byte +3 is the supply-centre flag, not a map-
+            # validity flag; use the adjacency keys for validity instead.
             # Any loop that iterates `range(256)` for province scoring
             # should instead iterate `state.valid_provinces`.
             self.valid_provinces: frozenset = frozenset(self.adj_matrix.keys())
