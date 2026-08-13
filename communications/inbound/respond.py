@@ -18,6 +18,7 @@ Module-level deps: ``...state.InnerGameState``;
 ``..senders.send_ally_press_by_power`` (respond).
 """
 
+import copy as _copy
 import time as _time
 
 from ...state import InnerGameState
@@ -30,6 +31,7 @@ def receive_proposal(
     sender_power: int,
     proposal_tokens: list,
     send_fn=None,
+    participant_powers: "list[int] | None" = None,
 ) -> None:
     """
     Port of RECEIVE_PROPOSAL (named; no binary address recovered by Ghidra).
@@ -39,8 +41,8 @@ def receive_proposal(
 
       1. Appends its token sequence to g_pos_analysis_list.
       2. Logs "We have received the proposal: %s" (mirrors C SEND_LOG).
-      3. Adds sender_power to g_alliance_msg_tree (DAT_00bbf638) — the Python
-         equivalent of BuildAllianceMsg's sorted-BST insert.
+      3. Adds the elapsed proposal event to g_alliance_msg_tree
+         (DAT_00bbf638), mirroring BuildAllianceMsg's sorted-BST insert.
       4. Calls _prepare_ally_press_entry(state, sender_power) [FUN_00418db0
          — removes any existing THN(<sender_power>) entries from
          g_master_order_list so that the new entry added by
@@ -49,7 +51,7 @@ def receive_proposal(
     C parameters (recovered as in_stack offsets by Ghidra, pushed by caller):
       +0x14  sender_power     — byte index of the sending power
       +0x18  proposal_tokens  — ordered token list (iterated for map inserts)
-      +0x04  sub_tokens       — token list used by FUN_00465d90 overlap check
+      +0x04  sub_tokens       — token list used by FUN_00465d90 equality check
                                 (same data as proposal_tokens in practice;
                                  Python uses proposal_tokens for both roles)
 
@@ -60,17 +62,15 @@ def receive_proposal(
     Callees absorbed inline:
       FUN_00465870  — std::list default-constructor → []
       FUN_0047020b  — get own-power context ptr (→ state.albert_power_idx)
-      FUN_004243a0  — init analysis-record struct (→ absorbed, no Python state)
+      FUN_004243a0  — init analysis-record struct
       FUN_00465930  — TokenSeq_Count (→ len())
       FUN_00401950  — list content destructor (→ no-op; locals start empty)
       StdMap_FindOrInsert  — std::map lower-bound+insert (→ set.add / dict)
       FUN_00419cb0  — list/range iterator init for g_pos_analysis_list (→ loop)
       FUN_00411a80  — bind iteration to DAT_00bb65d4 secondary sentinel (→ loop)
       GetListElement  — indexed token fetch (→ list index)
-      FUN_00465d90  — token-seq overlap bool (→ frozenset intersection)
-      GameBoard_GetPowerRec — power-record lookup (→ absorbed; inner loop only
-                              fires for nodes with power_count>0, which never
-                              occurs for freshly inserted entries → no-op)
+      FUN_00465d90  — token-sequence equality
+      GameBoard_GetPowerRec — participant/acknowledgement set lookup
       TreeIterator_Advance  — BST iterator step (→ absorbed in loop)
       FUN_0040f860  — std::list::iterator++ (→ Python for-loop)
       FUN_00465f60  — token-list copy (→ list())
@@ -87,19 +87,19 @@ def receive_proposal(
     import logging as _log_module
     _log = _log_module.getLogger(__name__)
 
-    # ── Overlap check against g_pos_analysis_list ───────────────────────────────
+    # ── Exact-match check against g_pos_analysis_list ────────────────────────
     # C outer loop iterates g_pos_analysis_list nodes; FUN_00465d90(node+4, &stack4)
-    # returns True when node's token set overlaps the incoming proposal.
+    # returns True when the ordered token sequences are identical.
     # C line 126: if (*(char*)(puVar2+8) != '\0') goto LAB_0043232b — processed
     # entries are skipped (the goto path does NOT set the match flag, so the
     # outer loop simply advances to the next node without treating it as a match).
-    # The inner power-record loop uses piStack_c8 which is always empty for
-    # freshly inserted entries (power_count == 0), so it never executes and
-    # acStack_102[0] stays '\x01' → the outer loop breaks immediately on any
-    # overlap with an unprocessed entry, treating the proposal as already seen.
-    proposal_set = frozenset(proposal_tokens)
+    # The C then compares the freshly-built participant map with node+0xc.
+    # Both the ordered token sequence and participant set must match.
+    participants = {int(sender_power)}
+    participants.update(int(p) for p in (participant_powers or []))
     already_seen = any(
-        proposal_set & entry['token_set']
+        list(proposal_tokens) == entry.get('tokens', [])
+        and participants == set(entry.get('participant_powers', set()))
         for entry in state.g_pos_analysis_list
         if entry.get('processed_flag', 0) == 0
     )
@@ -111,38 +111,22 @@ def receive_proposal(
     # C: FUN_00465f60(copy, &stack4)  →  copy proposal token list
     #    FUN_004223c0(analysis, record)  →  init analysis struct (absorbed)
     #    FUN_00430370(&sentinel, &iter, copy)  →  std::list insert
-    # Build sub_entries from XDO clauses in the proposal (C node+0xc/0xd).
-    # Each XDO clause becomes a sub-entry with province and order_type for
-    # the board-satisfaction check in EvaluateOrderProposalsAndSendGOF.
-    # Fixed 2026-04-20 (M-BOT-3): previously empty, causing GOF board-check
-    # to always pass (bVar3 stayed True → all proposals treated as satisfiable).
-    from ..parsers import _parse_xdo_candidates
-    sub_entries = []
-    xdo_cands = _parse_xdo_candidates(' '.join(str(t) for t in proposal_tokens))
-    for cand in xdo_cands:
-        sub_entries.append({
-            'province': cand.get('province', cand.get('src_prov', -1)),
-            'order_type': cand.get('order_type', -1),
-            'power': cand.get('power', sender_power),
-        })
-
     state.g_pos_analysis_list.append({
         'tokens': list(proposal_tokens),
-        'token_set': proposal_set,
-        'power_count': 0,   # C node[0xe]; always 0 for newly inserted entries
-        # ── Sub-entries for board-satisfaction check (C node+0xc/0xd) ─────
-        'sub_entries': sub_entries,
+        'token_set': frozenset(proposal_tokens),
+        'participant_powers': participants,
         # ── Press-entries for CAL_MOVE inner loop (C node+0x15/0x16) ──────
-        # Populated by ack_matcher when YES arrives for this proposal.
-        'press_entries': [],
-        # ── Ack-matcher schema extension (2026-04-14) ──────────────────────
-        # FUN_0042c970 keys sender-match against C node offsets +0xc/+0xf/+0x12.
-        # +0xc / +0xf both hold the sender power (primary check on any ack).
-        # +0x12 is the secondary slot consulted on non-YES (REJ/BWX) acks.
-        # In the Python model a single ``sender_power`` captures both.
+        # RECEIVE_PROPOSAL runs after EvaluatePress and copies the accepted
+        # DAT_00bb65d4 clauses into this analysis record.
+        'press_entries': [
+            {'tokens': _copy.deepcopy(t)}
+            for t in getattr(state, 'g_accepted_proposals', [])
+        ],
+        # C record maps: +0xc participants, +0xf affirmative acknowledgers,
+        # +0x12 rejection/deviation acknowledgers.
         'sender_power':     sender_power,
         'processed_flag':   0,          # C node[+8]; 0 = unprocessed, set by ack-matcher bookkeeping
-        'role_b_set':       set(),      # C node[+0x0e / per-role sub-tree] — YES-ack role-B set
+        'role_b_set':       {sender_power},
         'role_c_set':       set(),      # C node[+0x16 / per-role sub-tree] — REJ/BWX role-C set
     })
 
@@ -154,9 +138,8 @@ def receive_proposal(
     # ── BuildAllianceMsg — record sender in g_alliance_msg_tree ────────────────
     # C: puStack_f4 = (int)(elapsed_seconds + 10000)
     #    BuildAllianceMsg(&DAT_00bbf638, &pvStack_e8, (int *)&puStack_f4)
-    # Python models g_alliance_msg_tree keyed by power index rather than by the
-    # C timestamp value (elapsed_seconds + 10000).
-    build_alliance_msg(state, sender_power)
+    event_key = int(_time.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
+    build_alliance_msg(state, event_key)
 
     # ── PrepareAllyPressEntry — FUN_00418db0(sender_power) ───────────────────
     # C: final call; marks sender's per-power press-entry as pending so that
@@ -177,19 +160,18 @@ def _respond_walk_pos_analysis(
 
     C flow (decompiled.txt lines 261–316):
       Iterate g_pos_analysis_list (DAT_00bb65c8/cc sentinel loop):
-        FUN_00465d90(node+0x10, local_3c) — token-seq overlap check.
-        If overlap:
-          iStack_68 = node[0x34]  (power-count field)
+        FUN_00465d90(node+0x10, local_3c) — token-sequence equality.
+        If equal:
+          iStack_68 = node[0x34]  (participant-map head)
           GameBoard_GetPowerRec(node+0x30, apuStack_8c, &uStack_c4)
-          if puVar13[1] != iStack_68                  ← power-count mismatch
+          if puVar13[1] != iStack_68                  ← own power is a participant
              AND (YES != param_2 OR g_power_active_turn[sender] == 1):
                StdMap_FindOrInsert(node+0x48, &send_time, &uStack_c4)
         FUN_0040f860(&iter)  ← advance list iterator
 
-    GameBoard_GetPowerRec (power-count mismatch check) is absorbed — the check
-    fires conservatively whenever the token sets overlap.
+    GameBoard_GetPowerRec is represented by membership in participant_powers.
     StdMap_FindOrInsert → g_deviation_tree[(token_key, own_power)] insert.
-    FUN_00465d90        → frozenset intersection (already used in receive_proposal).
+    FUN_00465d90        → ordered-list equality.
     FUN_0047a948        → AssertFail (absorbed).
     FUN_0040f860        → list iterator advance (absorbed as Python for-loop).
     """
@@ -197,15 +179,15 @@ def _respond_walk_pos_analysis(
     g_active = getattr(state, 'g_power_active_turn', None)
     sender_active = bool(g_active is not None and g_active[sender_power])
 
-    sublist3_set = frozenset(sublist3)
-    if not sublist3_set:
+    if not sublist3:
         return
 
     for entry in state.g_pos_analysis_list:
-        entry_set = entry.get('token_set', frozenset())
-        if not (entry_set & sublist3_set):
+        if entry.get('tokens', []) != list(sublist3):
             continue
-        # C: (puVar13[1] != iStack_68) — power-count mismatch; absorbed as True.
+        if own_power not in set(entry.get('participant_powers', set())):
+            continue
+        # C: lookup result differs from the participant-map head: key found.
         # C: (YES != param_2 || g_power_active_turn[sender] == 1)
         if response_type != _YES or sender_active:
             key = (frozenset(entry['tokens']), own_power)
@@ -261,11 +243,11 @@ def respond(
       THN response.  Skips queueing step; goes straight to proposal-list walk.
 
     Timing (non-tournament mode):
-      target = elapsed_since_session_start + rand(0–7) + 5 s
+      target = received_timestamp - turn_start + rand(0–7) + 5 s
       If target < best_ally_turn_score  → push to best_score + 2 s
       If g_move_time_limit_sec > 0        → cap at limit − 20 s
     Timing (tournament mode / g_press_instant != 0):
-      target = elapsed_since_session_start  (send immediately)
+      target = received_timestamp - turn_start  (send immediately)
 
     Callees absorbed inline:
       FUN_00465870  list init          → []
@@ -351,7 +333,18 @@ def respond(
                 best_score_lo = lo_val
 
     # ── Compute target send time ──────────────────────────────────────────────
-    elapsed: float = _time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
+    # C uses RESPOND's param_3/param_4 timestamp captured on the broadcast
+    # record, not a fresh __time64() call. Reconstruct the signed int64 before
+    # subtracting the turn-start int64.
+    received_timestamp = (
+        ((int(elapsed_hi) & 0xffffffff) << 32)
+        | (int(elapsed_lo) & 0xffffffff)
+    )
+    if received_timestamp & (1 << 63):
+        received_timestamp -= (1 << 64)
+    elapsed = float(received_timestamp) - float(
+        getattr(state, 'g_turn_start_time', 0.0)
+    )
 
     if not tournament_mode:
         # C: uVar17 = (rand() / 0x17) & 0x80000007  → 0-7 (mod-8 random)
@@ -391,11 +384,12 @@ def respond(
 
         # Gate 1: sender must be designated enemy
         # C: (&DAT_004cf568)[uVar17*2] == 1  AND  (&DAT_004cf56c)[uVar17*2] == 0
-        # Python: g_enemy_flag[sender] == 1 (int32; hi-word of int64 is always 0)
         g_enemy = getattr(state, 'g_enemy_flag', None)
+        g_enemy_hi = getattr(state, 'g_enemy_flag_hi', None)
         enemy_flag = int(g_enemy[uVar17]) if g_enemy is not None else 0
+        enemy_flag_hi = int(g_enemy_hi[uVar17]) if g_enemy_hi is not None else 0
 
-        if enemy_flag == 1:
+        if enemy_flag == 1 and enemy_flag_hi == 0:
             # Gate 2: trust and relation check
             # C: iVar18 = uVar17*21 + own_power  (sender→own direction in int64 array)
             trust_hi = int(state.g_ally_trust_score_hi[uVar17, own_power])
@@ -458,7 +452,7 @@ def respond(
                     'target_power':   sender_power,
                 })
 
-                state.g_alliance_msg_tree.add(sender_power)
+                state.g_alliance_msg_tree.add(int(target) + 2500)
 
                 _respond_walk_pos_analysis(
                     state, sublist3, sender_power, response_type, own_power
@@ -502,6 +496,6 @@ def respond(
         'target_powers':  _target_powers,
     })
 
-    state.g_alliance_msg_tree.add(sender_power)
+    state.g_alliance_msg_tree.add(int(target) + 2500)
 
     _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)

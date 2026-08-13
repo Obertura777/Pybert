@@ -14,11 +14,7 @@ Cross-module deps: handlers in ``.history``, ``.ack``, ``.gate`` and
 ``...state.InnerGameState``.
 """
 
-import re
-import time as _time
-
 from ...state import InnerGameState
-from ..alliance import build_alliance_msg
 from ..parsers import _extract_top_paren_groups, _split_top_level_groups
 from .history import process_hst
 from .ack import (
@@ -164,60 +160,6 @@ def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
     elif top_tok == 'TRY':
         if top_body:
             process_try(state, sender_id, top_body)
-
-    # ── ALY side-channel processing ────────────────────────────────────────
-    # REJ-of-ALY and plain-ALY alliance mapping. Both variants reach the
-    # alliance-matrix side-channel; the top_tok gate disambiguates REJ
-    # (break alliance, degrade trust) from PRP/YES (establish, increment
-    # trust). Nested ALY inside REJ(PRP(ALY(...))) is correctly seen as a
-    # REJ because top_tok is the first token of the content group.
-    # Fixed 2026-04-18 (AUDIT_moves_and_messages.md #3, #4).
-    if top_tok == 'REJ' and 'ALY' in content_str:
-        match = re.search(r'ALY \((.*?)\)', content_str)
-        if match:
-            allies = match.group(1).split()
-            for ally in allies:
-                ally_upper = ally.strip().upper()
-                # Body tokens are 3-letter DAIDE codes ("FRA") — consult
-                # daide_names, not the full-name power_names used for sender.
-                if ally_upper in daide_names:
-                    ally_id = daide_names.index(ally_upper)
-                    if ally_id != sender_id:
-                        # Break alliance mapping forcefully
-                        state.g_ally_matrix[sender_id, ally_id] = 0
-                        state.g_ally_matrix[ally_id, sender_id] = 0
-
-                        # Degrade trust aggressively on rejections
-                        current_trust = state.g_ally_trust_score[sender_id, ally_id]
-                        state.g_ally_trust_score[sender_id, ally_id] = max(0.0, current_trust - 2.0)
-
-                        # Update alliance tree — C: BuildAllianceMsg(&DAT_00bbf638,
-                        # buf, elapsed_sec+10000).  Key is game-elapsed seconds
-                        # + 10000, NOT a power token.  Fixed 2026-05-02.
-                        _elapsed_key = int(_time.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
-                        build_alliance_msg(state, _elapsed_key)
-
-    elif top_tok in ('PRP', 'YES') and 'ALY' in content_str:
-        match = re.search(r'ALY \((.*?)\)', content_str)
-        if match:
-            allies = match.group(1).split()
-            for ally in allies:
-                ally_upper = ally.strip().upper()
-                if ally_upper in daide_names:
-                    ally_id = daide_names.index(ally_upper)
-                    if ally_id != sender_id:
-                        # Establish explicit bilateral bounds
-                        state.g_ally_matrix[sender_id, ally_id] = 1
-                        state.g_ally_matrix[ally_id, sender_id] = 1
-
-                        # Increment trust progressively
-                        state.g_ally_trust_score[sender_id, ally_id] += 1.0
-                        state.g_ally_trust_score[ally_id, sender_id] += 1.0
-
-                        # Update alliance tree — mirrors REJ branch above.
-                        _elapsed_key = int(_time.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
-                        build_alliance_msg(state, _elapsed_key)
-
 
 def parse_message(state: InnerGameState, sender: str, message: str):
     """

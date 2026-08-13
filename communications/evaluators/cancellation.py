@@ -86,13 +86,8 @@ def _cancel_pce(state: InnerGameState, tokens: list) -> bool:
     # GetSubList(&token_list, ..., 1) fetches the power sub-list (index 1).
     # In Python `tokens` already contains the unwrapped list from CAL_MOVE.
     # The PCE token is: PCE ( power1 power2 … ) → tokens[1:] are power bytes.
-    pce_powers: list[int] = []
-    for tok in tokens[1:]:
-        try:
-            p = int(tok) & 0xFF
-            pce_powers.append(p)
-        except (TypeError, ValueError):
-            pass
+    from ._common import _extract_powers
+    pce_powers = _extract_powers(tokens[1:])
 
     uVar3: int = len(pce_powers)   # FUN_00465930 result
     if uVar3 <= 0:
@@ -243,21 +238,9 @@ def _remove_dmz(state: InnerGameState, tokens: list) -> bool:
     # ── Parse token stream ────────────────────────────────────────────────────
     # GetSubList(press, 1) → power list  (local_60)
     # GetSubList(press, 2) → province list (local_34)
-    # In Python, `tokens` is the flat unwrapped list from cal_move().
-    # Layout after CAL_MOVE strips the leading 'DMZ': [pow1 pow2 … prov1 prov2 …]
-    # We split the same way as _handle_dmz: values < 7 are power indices,
-    # values >= 7 are province indices.
-    dmz_powers: list[int] = []
-    dmz_provs:  list[int] = []
-    for tok in tokens[1:]:
-        try:
-            v = int(tok)
-        except (ValueError, TypeError):
-            continue
-        if v < 7:
-            dmz_powers.append(v)
-        else:
-            dmz_provs.append(v)
+    from ._common import _extract_powers, _extract_provs
+    dmz_powers = _extract_powers(tokens[1] if len(tokens) > 1 else [])
+    dmz_provs = _extract_provs(state, tokens[2] if len(tokens) > 2 else [])
 
     n_powers: int = len(dmz_powers)   # uVar6
     n_provs:  int = len(dmz_provs)    # uStack_84
@@ -399,7 +382,10 @@ def _not_xdo(state: "InnerGameState", tokens: list) -> bool:
     # In Python `tokens` is the flat unwrapped NOT-XDO list from cal_move().
     # Layout: ['XDO', sender_power, order_cmd, dest, ...]
     # We treat tokens[1:] as the XDO inner content (local_1c equivalent).
-    xdo_content: list = list(tokens[1:]) if len(tokens) > 1 else []
+    xdo_content: list = (
+        list(tokens[1]) if len(tokens) > 1 and isinstance(tokens[1], list)
+        else list(tokens[1:])
+    )
 
     # ── Step 2: registration loop over in_stack_00000018 ─────────────────────
     # C: pCStack_3c = *in_stack_00000018 (head); puStack_40 = &stack0x14 (iter)

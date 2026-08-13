@@ -14,6 +14,22 @@ from ...state import InnerGameState
 from ._evals import _cal_value, _eval_single_xdo
 
 
+def _press_items(tokens: list) -> list:
+    """Convert a flat parenthesized wire token list to C-style top-level items."""
+    if not isinstance(tokens, list):
+        return list(tokens) if tokens else []
+    if '(' not in tokens and ')' not in tokens:
+        return list(tokens)
+    from ..parsers import _split_top_level_groups
+    return _split_top_level_groups(tokens)
+
+
+def _clause_items(item) -> list:
+    if not isinstance(item, list):
+        return [item]
+    return _press_items(item)
+
+
 def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     """
     Port of EvaluatePress = FUN_0042fc40.
@@ -43,10 +59,12 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     _log = _logging.getLogger(__name__)
 
     _YES, _REJ = 0x481C, 0x4814
-    _AND, _ORR, _XDO = 0x4A01, 0x4A0F, 0x4A1F
+    _AND, _ORR, _XDO, _NOT = 0x4A01, 0x4A0F, 0x4A1F, 0x480D
 
-    # C: clears DAT_00bb65d8 (scratch list) at start of each call.
-    # Python: use local scratch; nothing to clear on state.
+    # DAT_00bb65d8 is the header for DAT_00bb65d4, not a separate local
+    # scratch container.  C destroys and reinitializes the accepted-proposal
+    # tree at the start of every EvaluatePress call.
+    state.g_accepted_proposals.clear()
 
     press = entry.get('sublist3', entry.get('press_content', []))
     order_cands = entry.get('order_candidates', [])
@@ -57,9 +75,16 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     # Extract from_power index for sub-evaluator calls.
     _from_tok = entry.get('from_power_tok', 0)
     _from_pow = (_from_tok & 0x7f) if isinstance(_from_tok, int) and _from_tok >= 0x4100 else 0
+    # Hidden C arguments at stack+0x1c/+0x18 are the FRM recipient list and
+    # sender byte. Every context-sensitive evaluator first computes
+    # FUN_00466480(recipients, sender), i.e. recipients followed by sender.
+    from ._common import _extract_powers
+    _context_powers = _extract_powers(entry.get('sublist2', [])) + [_from_pow]
+
+    structured = _press_items(press)
 
     # Identify first token (may be string like 'AND' or int like 0x4A01)
-    first = press[0] if press else None
+    first = structured[0] if structured else None
     first_is_and = (first == _AND or str(first).upper() == 'AND')
     first_is_orr = (first == _ORR or str(first).upper() == 'ORR')
 
@@ -68,12 +93,15 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
         # C first loop (lines 82-95): count XDO clauses, stripping NOT first.
         # NOT XDO(...) counts as an XDO clause for the CAL_VALUE gate.
         def _is_xdo_toks(toks):
-            t = toks
+            t = list(toks)
             while t and (t[0] == _NOT or str(t[0]).upper() == 'NOT'):
                 t = t[1:]
+                if len(t) == 1 and isinstance(t[0], list):
+                    t = _clause_items(t[0])
             return bool(t) and (t[0] == _XDO or str(t[0]).upper() == 'XDO')
 
-        xdo_count = sum(1 for c in order_cands if _is_xdo_toks(c.get('tokens', [])))
+        clauses = [_clause_items(c) for c in structured[1:]]
+        xdo_count = sum(1 for tok in clauses if _is_xdo_toks(tok))
 
         result_ok = True
 
@@ -86,18 +114,17 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
 
         # C: second loop runs unconditionally after CAL_VALUE (bVar10 set but
         # loop not aborted). Track pre-call length so failure cleanup is scoped
-        # to entries added during this call only (mirrors the DAT_00bb65d8
-        # scratch-walk that removes only the current call's entries).
-        _prior_len = len(state.g_accepted_proposals)
-
-        for cand in order_cands:
-            tok = cand.get('tokens', [])
+        for tok in clauses:
             # C second loop (lines 138-158): skip _eval_single_xdo for XDO
             # clauses when xdo_count >= 2 — CAL_VALUE already covered them.
             # Non-XDO clauses (PCE/DMZ/ALY/etc.) are always evaluated.
             if xdo_count >= 2 and _is_xdo_toks(tok):
+                # CAL_VALUE inserts each compound XDO clause into
+                # DAT_00bb65d4 during its extraction pass.
+                if tok not in state.g_accepted_proposals:
+                    state.g_accepted_proposals.append(tok)
                 continue
-            r = _eval_single_xdo(state, tok, _from_pow)
+            r = _eval_single_xdo(state, tok, _from_pow, _context_powers)
             if r == _YES:
                 # C: FUN_00419300(&DAT_00bb65d4, apvStack_2c, local_6c)
                 state.g_accepted_proposals.append(tok)
@@ -105,7 +132,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
                 result_ok = False
 
         if not result_ok:
-            del state.g_accepted_proposals[_prior_len:]
+            state.g_accepted_proposals.clear()
             _log.debug("evaluate_press: AND proposal rejected")
             return _REJ
 
@@ -118,9 +145,9 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
         scratch: list = []   # DAT_00bb65d8 analog
         scratch_count = 0    # DAT_00bb65dc analog
 
-        for cand in order_cands:
-            tok = cand.get('tokens', [])
-            r = _eval_single_xdo(state, tok, _from_pow)
+        clauses = [_clause_items(c) for c in structured[1:]]
+        for tok in clauses:
+            r = _eval_single_xdo(state, tok, _from_pow, _context_powers)
             if r == _YES:
                 if scratch_count == 0:
                     scratch = tok
@@ -144,8 +171,8 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
 
     else:
         # ── Single proposal path ─────────────────────────────────────────
-        tok = order_cands[0].get('tokens', press) if order_cands else press
-        r = _eval_single_xdo(state, tok, _from_pow)
+        tok = structured
+        r = _eval_single_xdo(state, tok, _from_pow, _context_powers)
         if r == _YES:
             # C: FUN_00419300(&DAT_00bb65d4, apvStack_4c, &stack0x00000008)
             state.g_accepted_proposals.append(tok)

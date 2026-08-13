@@ -107,7 +107,9 @@ def _ally_trust_ok(state: "InnerGameState", own: int, other: int) -> bool:
         return False
     if hi_rev < 0 or (hi_rev == 0 and lo_rev == 0):
         return False
-    if int(getattr(state, 'g_enemy_flag', [0] * 7)[other]) == 1:
+    enemy_lo = int(getattr(state, 'g_enemy_flag', [0] * 7)[other])
+    enemy_hi = int(getattr(state, 'g_enemy_flag_hi', [0] * 7)[other])
+    if enemy_lo == 1 and enemy_hi == 0:
         return False
     try:
         rel = int(state.g_relation_score[own, other])  # DAT_00634e90

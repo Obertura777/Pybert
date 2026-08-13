@@ -109,9 +109,8 @@ def send_alliance_press(
         # CAL_VALUE uses current.score[own] − predecessor.score[own] for the
         # delta classification that drives YES/REJ/BWX/HUH verdict bands.
         'score_vector': [0] * 7,
-        # AllianceRecord +0x9c history flag (C: `[0x27] as undefined4*`).
-        # CAL_VALUE preflight gate: must be >= 1 to use the diff-form delta,
-        # else fall back to absolute current.score[own].
+        # Registration gate flag (separate from local_150 / `watermark`, which
+        # CAL_VALUE uses as the prior-record key for delta scoring).
         'history_flag': 0,
     }
     if entry_data:
@@ -187,7 +186,7 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
                 'trial_count':      0,
                 'score_vector':     [0] * 7,
                 'history_flag':     1,
-                'order_candidates': [{'tokens': ['SUB'], 'type_flag': 1}],
+                'order_candidates': [{'tokens': ['SUB'], 'type_flag': 0}],
             }
             bl = state.g_broadcast_list
             insert_pos = len(bl)
@@ -241,13 +240,24 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
         # Compute per-power score vector (same as register_received_press in gate.py)
         from .inbound.gate import legitimacy_gate
         score_vec = [0] * 7
-        cands = [{'tokens': tokens, 'type_flag': 1}]
+        parsed = _parse_xdo_body_to_order(tokens)
+        # Candidate-node type_flag is XDO polarity (plain XDO = 0), distinct
+        # from entry type_flag=1 above (self-generated broadcast record).
+        cand = {'tokens': tokens, 'type_flag': 0}
+        if parsed is not None:
+            cand_power, order_seq = parsed
+            cand['power'] = cand_power
+            cand['order_seq'] = order_seq
+        cands = [cand]
         for pwr in range(7):
             try:
                 s = legitimacy_gate(
                     state, pwr,
-                    [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)
-                      if isinstance(c, dict) else 0} for c in cands],
+                    [{
+                        'order_seq': c.get('order_seq', c),
+                        'power': c.get('power', pwr),
+                        'flag_bit': 0 if c.get('type_flag', 0) == 1 else 1,
+                    } for c in cands],
                 )
                 score_vec[pwr] = int(s)
             except (KeyError, IndexError, TypeError, ValueError):
@@ -259,8 +269,8 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
             'type_flag':        1,       # 1 = self-generated (vs 0 = received)
             'trial_count':      0,
             'score_vector':     score_vec,
-            'history_flag':     1,       # Mark as populated so CAL_VALUE uses diff-form
-            'order_candidates': [{'tokens': tokens, 'type_flag': 1}],
+            'history_flag':     1,       # Populated self-generated broadcast record
+            'order_candidates': cands,
         }
 
         bl = state.g_broadcast_list
@@ -807,8 +817,8 @@ def cancel_prior_press(state: InnerGameState,
     """
     Port of CancelPriorPress (FUN_0040e8e0).
 
-    Sends NOT(g_prior_press_token) via SendDM to withdraw a prior press
-    proposal.  Guarded by g_cancel_press_sent (once-per-turn flag).
+    Sends the fixed DAIDE message NOT(GOF).  Guarded by
+    g_cancel_press_sent (once-per-turn flag).
     Fires when:
       - curr_sc_cnt[own_power] > 0, OR
       - unit_pending count > 0 (param_1+8+0x24bc in original; reset each
@@ -824,18 +834,12 @@ def cancel_prior_press(state: InnerGameState,
     if getattr(state, 'g_cancel_press_sent', 0) == 1:
         return
 
-    token = getattr(state, 'g_prior_press_token', None)
-    if token is None:
-        return
-
     own_sc = int(state.sc_count[own_power]) if hasattr(state, 'sc_count') else 0
     unit_pending = int(getattr(state, 'g_unit_pending', 0))
 
     if own_sc > 0 or unit_pending:
-        msg = f"NOT ( {token} )"
-        _send(msg)
+        _send("NOT ( GOF )")
         state.g_cancel_press_sent = 1
-        state.g_prior_press_token = None
 
 
 # ── DispatchPressAndFallbackGOF ───────────────────────────────────────────────
@@ -869,16 +873,13 @@ def _check_server_reachable(state: InnerGameState, mode: int = -1) -> bool:
     """
     Port of FUN_004117d0(-1) called from dispatch_press_and_fallback_gof.
 
-    Returns True (non-zero) when any unprocessed g_pos_analysis_list entry has
-    had its board orders satisfied — used by the caller to decide whether to
-    apply the time-window check before sending a fallback GOF.  If False, the
-    caller sends GOF immediately without checking the time window.
+    Returns True while any unresolved g_pos_analysis_list proposal exists,
+    causing the caller to retain the fallback-GOF hold-back window. ``mode``
+    is -1 at this call site, so no participant filter is applied.
 
-    NOTE: the original stub described this as a TCP server-reachability check.
-    The actual decompile shows it scans g_pos_analysis_list for board-order
-    matches; the "reachable/unreachable" framing was a misinterpretation.  In
-    the C game, unmatched proposals (False) trigger immediate fallback; matched
-    proposals (True) cause the caller to wait up to base_wait+25 s first.
+    The original stub described this as a TCP server-reachability check. The
+    function actually scans proposal-analysis records; the wrapper name is
+    retained only for compatibility with the existing caller.
 
     """
     return _fun_004117d0(state, mode)
@@ -1108,13 +1109,12 @@ def propose(
          populates it; the inner loop always exits at the sentinel check
          before GameBoard_GetPowerRec fires.  Dead code — not replicated.
 
-      3. If no duplicate (C inserts into g_pos_analysis_list at line 204
-         before CancelPriorPress/SendDM — immaterial in single-threaded Python):
+      3. If no duplicate, C inserts into g_pos_analysis_list at line 204,
+         before CancelPriorPress/SendDM:
            - Calls CancelPriorPress before the send (C line 210).
            - Sends via send_fn / SendDM (C line 211).
-           - Inserts a tracking entry into g_pos_analysis_list (C FUN_00430370).
            - Logs "We are proposing: %s" (C SEND_LOG).
-           - Calls BuildAllianceMsg for each recipient (C BuildAllianceMsg).
+           - Calls BuildAllianceMsg once for the proposal event.
 
     Parameters
     ----------
@@ -1145,55 +1145,47 @@ def propose(
 
     # Proposal-tree matching (C PROPOSE.c lines 110–168):
     # Walk g_pos_analysis_list; skip processed entries (C: sent_flag != '\0' → advance).
-    # Exact token-list match on an unprocessed entry → proposal already in flight, skip.
+    # After an exact token-list match, C checks that every proposed participant
+    # occurs in the existing node's +0xc map. A proposal to a broader/different
+    # audience therefore remains distinct.
+    participants = {int(own_power)}
+    participants.update(int(p) for p in recipient_powers)
     for entry in getattr(state, 'g_pos_analysis_list', []):
         if entry.get('processed_flag', 0) != 0:
             continue
-        if proposal_tokens == entry.get('tokens', []):
+        existing_participants = set(entry.get('participant_powers', set()))
+        if (proposal_tokens == entry.get('tokens', [])
+                and participants.issubset(existing_participants)):
             _log.debug("propose: dedup skip — exact match in g_pos_analysis_list")
             return False
+
+    # C: FUN_00465f60 copy + FUN_00430370 insert into DAT_00bb65c8
+    # This happens before CancelPriorPress and SendDM.
+    state.g_pos_analysis_list.append({
+        'tokens':         proposal_tokens,
+        'token_set':      frozenset(proposal_tokens),
+        'participant_powers': participants,
+        'press_entries':  [],
+        'sender_power':   own_power,
+        'processed_flag': 0,
+        'role_b_set':     {own_power},
+        'role_c_set':     set(),
+    })
 
     # C: CancelPriorPress(param_1) — called before SendDM
     cancel_prior_press(state, own_power, _send)
 
     # C: SendDM(pvVar5, local_6c)
     # Send only to the intended recipients — not broadcast to all powers.
-    # respond() uses the same {'message': ..., 'recipient': ...} dict convention
-    # that _send_dm understands; without it, _send_dm fans out to every power.
     _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
     for _pwr in recipient_powers:
         _rcpt = _POWER_FULL[_pwr] if 0 <= _pwr < len(_POWER_FULL) else None
         _send({'message': message, 'recipient': _rcpt} if _rcpt else message)
     _log.info("We are proposing: %s", message)
 
-    # C: FUN_00465f60 copy + FUN_00430370 insert into DAT_00bb65c8
-    # Mirrors receive_proposal entry schema so ack_matcher / RECEIVE_PROPOSAL
-    # dedup can match against it next turn.
-    from .parsers import _parse_xdo_candidates
-    sub_entries = []
-    for cand in _parse_xdo_candidates(message):
-        sub_entries.append({
-            'province':   cand.get('province', cand.get('src_prov', -1)),
-            'order_type': cand.get('order_type', -1),
-            'power':      cand.get('power', own_power),
-        })
-
-    state.g_pos_analysis_list.append({
-        'tokens':         proposal_tokens,
-        'token_set':      frozenset(proposal_tokens),
-        'power_count':    0,
-        'sub_entries':    sub_entries,
-        'press_entries':  [],
-        'sender_power':   own_power,
-        'processed_flag': 0,
-        'role_b_set':     set(),
-        'role_c_set':     set(),
-    })
-
-    # C: BuildAllianceMsg(&DAT_00bbf638, ...) for each recipient power
+    # C: after sending, archive one event keyed by elapsed time + 10000.
     from .alliance import build_alliance_msg
-    for pwr in recipient_powers:
-        build_alliance_msg(state, pwr)
+    event_key = int(_time.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
+    build_alliance_msg(state, event_key)
 
     return True
-

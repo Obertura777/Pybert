@@ -8,7 +8,7 @@ refactor to make the module tree easier to navigate.
 Contains:
 
 - DAIDE press-type token constants (``_TOK_ALY`` … ``_TOK_XDO``)
-- TokenSeq primitives (``_token_seq_copy`` / ``_overlap`` / ``_no_overlap`` /
+- TokenSeq primitives (``_token_seq_copy`` / ``_equal`` / ``_not_equal`` /
   ``_concat_single`` / ``_count`` / ``_less``)
 - ``_wrap_single_token`` — build a ``[prefix, payload]`` token pair
 - ``_get_daide_context_ptr`` — accessor for the per-thread DAIDE
@@ -62,40 +62,43 @@ def _token_seq_copy(source_tokens) -> list:
     return list(source_tokens) if source_tokens else []
 
 
-def _token_seq_overlap(seq_a, seq_b) -> bool:
+def _token_seq_equal(seq_a, seq_b) -> bool:
     """
-    Port of FUN_00465d90 — token-seq overlap / containment check.
+    Port of FUN_00465d90 — token-sequence equality.
 
     C signature: ``bool __thiscall FUN_00465d90(void *this, int *param_1)``
 
-    Returns True when the two token sequences share at least one element.
-    Absorbed throughout the codebase as ``frozenset(a) & frozenset(b)``.
+    Returns false when the lengths differ, otherwise compares every ushort in
+    order.  This is the equality companion to ``FUN_00465cf0`` (less-than);
+    ``FUN_00465df0`` immediately negates it to implement inequality.
 
     Called from:
       receive_proposal               — deduplicate proposals against g_pos_analysis_list
       _respond_walk_pos_analysis     — match proposals for g_deviation_tree inserts
       _cancel_prior_press            — scan g_master_order_list for THN(<power>) entries
     """
-    return bool(frozenset(seq_a) & frozenset(seq_b))
+    return list(seq_a) == list(seq_b)
 
 
-def _token_seq_no_overlap(seq_a, seq_b) -> bool:
+def _token_seq_not_equal(seq_a, seq_b) -> bool:
     """
-    Port of FUN_00465df0 — negated token-seq overlap check.
+    Port of FUN_00465df0 — token-sequence inequality.
 
     C signature: ``bool __thiscall FUN_00465df0(void *this, int *param_1)``
 
     Decompiled body (decompiled.txt lines 128–135):
-        bVar1 = FUN_00465d90(this, param_1);   // _token_seq_overlap
+        bVar1 = FUN_00465d90(this, param_1);   // TokenSeq::operator==
         return (bool)('\\x01' - bVar1);         // = !bVar1
 
-    Returns True when the two token sequences share NO element.
-    Called from BuildAndSendSUB as:
-        FUN_00465df0(puVar31 + 10, (int *)apvStack_220)
-    to gate whether a proposal's province list is disjoint from the current
-    SUB token list — proposals that don't touch any ordered province are skipped.
+    Returns True unless both sequences have identical lengths and elements.
     """
-    return not _token_seq_overlap(seq_a, seq_b)
+    return not _token_seq_equal(seq_a, seq_b)
+
+
+# Compatibility aliases for callers outside the package.  These names existed
+# in the early port, but their behavior is equality/inequality, not set overlap.
+_token_seq_overlap = _token_seq_equal
+_token_seq_no_overlap = _token_seq_not_equal
 
 
 def _token_seq_concat_single(prefix_seq: list, out: list, payload_token: int) -> list:

@@ -50,7 +50,7 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     bVar1 = bVar2 = False
     bVar3 = True
 
-    powers = [q for q in (_pow_idx(t) for t in rest) if q is not None]
+    powers = _extract_powers(rest)
     _active = getattr(state, 'g_power_active_turn', None)
     _sender_active = (
         _active is not None and 0 <= from_power < len(_active)
@@ -64,8 +64,9 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
         else:
             if p == from_power:
                 bVar2 = True
+            enemy_hi = int(getattr(state, 'g_enemy_flag_hi', [0] * 7)[p])
             if not skip_hostility and (
-                    int(state.g_enemy_flag[p]) == 1
+                    (int(state.g_enemy_flag[p]) == 1 and enemy_hi == 0)
                     or int(state.g_relation_score[own, p]) < 0):
                 bVar3 = False
     if bVar1 and bVar2:
@@ -73,7 +74,8 @@ def _eval_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     return _BWX
 
 
-def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
+              context_powers: "list[int] | None" = None) -> int:
     """
     Port of FUN_0041f090 — DMZ (demilitarise) proposal evaluator.
 
@@ -83,25 +85,22 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     C semantics (_eval_dmz.c):
       * Build a set of DMZ powers from sublist-1 (``local_48``).  Set
         ``own_in_dmz`` if Albert is named in that set.
-      * For ``from_power`` (sublist-0 in C is the from-power singleton):
-          - If ``from_power == own``: trivial accept (skip province check).
-          - Else: run the ally-trust gate (``_ally_trust_ok``).  Failure → REJ.
+      * Build ``local_3c`` by appending the sender to the caller-provided
+        recipient list.  For every participant in that context:
+          - If the participant is Albert: skip its province check.
+          - Else: run the ally-trust gate.  Failure → REJ.
       * For each province in sublist-2: walk ``g_order_list`` looking for an
-        entry whose ``province`` and ``ally_power`` both match.  An entry
-        "justifies" the DMZ when:
-            entry.flag1 is True (alliance order)
-            NOT (entry.flag3 is False AND own_in_dmz)
-            from_power is NOT in the DMZ-powers list
+        entry whose ``province`` and ``ally_power`` both match. An entry
+        justifies the DMZ when ``flag2`` is set whenever Albert is named in
+        the DMZ, and either ``flag1`` is clear or the participant is named in
+        the DMZ.
         If no qualifying entry exists for some province → REJ.
 
     Return: YES (0x481C) on accept, REJ (0x4814) on reject.
 
-    NOTE: The C inner BST loop's last gate inspects a StdMap value-pointer
-    via GameBoard_GetPowerRec(local_48,...) that has uncertain Python
-    semantics (the map's value type is never explicitly written).  We
-    interpret it as "from_power is in the DMZ-powers list" — which matches
-    the observed behaviour that own-proposed DMZ is trivially accepted and
-    third-party DMZ requires an Albert/ally order to justify it.
+    The three node bytes at +0x1c/+0x1d/+0x1e map to flag1/flag2/flag3.
+    This evaluator reads flag1 and flag2; flag3 belongs to the separate DMZ
+    action handler and must not be substituted here.
     """
     _YES, _REJ = 0x481C, 0x4814
     own = int(state.albert_power_idx)
@@ -113,99 +112,41 @@ def _eval_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     dmz_powers = _extract_powers(powers_section)
     own_in_dmz = own in dmz_powers
 
-    # Trivial-accept: Albert's own DMZ proposals don't get province-checked
-    # (mirrors C line 109: province validation gated on ``local_78 != uVar15``).
-    if from_power == own:
-        return _YES
-
-    if not _ally_trust_ok(state, own, from_power):
-        return _REJ
-
     prov_ids = _extract_provs(state, provs_section)
-
-    # ── Topology gate A: enemy-home-SC check ─────────────────────────────
-    # Mirrors DMZ.c handler (DAT_00bb6f28 / g_ally_promise_list path):
-    # REJ if any proposed province is a home SC of an enemy power that is
-    # not itself in the DMZ powers list.  An enemy naming their own home SC
-    # in a DMZ is trying to shield it from Albert.
-    home_sc_map = getattr(state, 'g_mdf_home_sc', {}) or {}
-    enemy_flag  = getattr(state, 'g_enemy_flag', None)
-    p2id        = getattr(state, 'prov_to_id', {}) or {}
-    if home_sc_map and enemy_flag is not None and prov_ids:
-        dmz_set = set(dmz_powers)
-        # Build {prov_id: enemy_power_idx} for all enemy home SCs.
-        enemy_home: dict = {}
-        for pidx, pname in enumerate(_POWER_NAMES):
-            if pidx == own:
-                continue
-            if int(enemy_flag[pidx]) != 1:
-                continue
-            for sc_name in home_sc_map.get(pname, []):
-                sc_id = p2id.get(sc_name.upper()) or p2id.get(sc_name)
-                if sc_id is not None:
-                    enemy_home[int(sc_id)] = pidx
-        for prov in prov_ids:
-            ep = enemy_home.get(prov)
-            if ep is not None and ep not in dmz_set:
-                return _REJ
-
-    # ── Topology gate B: counter-list map-adjacency check ────────────────
-    # Mirrors DMZ.c handler (DAT_00bb7028 / g_ally_counter_list path):
-    # For each non-Albert DMZ power that has counter-proposals recorded,
-    # at least one DMZ province must appear as a dest_prov in that power's
-    # counter-list.  If the power has proposals but none touch the DMZ
-    # provinces, the DMZ is topologically irrelevant for that power.
-    counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
-    if prov_ids and counter_map:
-        for dp in dmz_powers:
-            if dp == own:
-                continue
-            dp_recs = counter_map.get(dp) or []
-            if not dp_recs:
-                continue  # no counter-proposals for this power yet → skip
-            dp_provs: set = set()
-            for r in dp_recs:
-                if isinstance(r, dict):
-                    v = r.get('dest_prov', -1)
-                    if v != -1:
-                        dp_provs.add(int(v))
-            if dp_provs and not any(p in dp_provs for p in prov_ids):
-                return _REJ
-
     order_list = getattr(state, 'g_order_list', []) or []
 
-    for prov in prov_ids:
-        # Walk g_order_list for a node justifying DMZ on this province.
-        # C BST loop (lines 120-155): for each entry matching (province, ally_power),
-        # apply three gates.  The third gate does a per-entry lookup of the entry's
-        # ally_power in the DMZ-powers std::map (local_48) via GameBoard_GetPowerRec.
-        # A hit means the entry's ally_power is a DMZ participant → disqualify.
-        found_qualifying = False
-        for entry in order_list:
-            if entry.get('province') != prov:
-                continue
-            entry_ally = entry.get('ally_power')
-            if entry_ally != from_power:
-                continue
-            # Match candidate; apply the three gating checks from the BST loop.
-            if not entry.get('flag1', False):
-                continue
-            if not entry.get('flag3', False) and own_in_dmz:
-                continue
-            # Gate 3: per-entry DMZ-powers membership check.  C looks up the
-            # *entry's* ally_power in local_48 (the DMZ-powers map built from
-            # the proposal).  A match disqualifies this entry.
-            if entry_ally in dmz_powers:
-                continue
-            found_qualifying = True
-            break
-        if not found_qualifying:
+    # C: local_3c = recipients + sender (FUN_00466480).  Direct unit-level
+    # calls lack that hidden argument, so retain the sender-only fallback.
+    participants = list(context_powers) if context_powers is not None else [from_power]
+    for participant in participants:
+        if participant == own:
+            continue
+        if not _ally_trust_ok(state, own, participant):
             return _REJ
+
+        for prov in prov_ids:
+            # Walk g_order_list for a node justifying DMZ on this province.
+            found_qualifying = False
+            for entry in order_list:
+                if entry.get('province') != prov:
+                    continue
+                entry_ally = entry.get('ally_power')
+                if entry_ally != participant:
+                    continue
+                if not entry.get('flag2', False) and own_in_dmz:
+                    continue
+                if entry.get('flag1', False) and entry_ally not in dmz_powers:
+                    continue
+                found_qualifying = True
+                break
+            if not found_qualifying:
+                return _REJ
 
     return _YES
 
 
-def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0,
+              context_powers: "list[int] | None" = None) -> int:
     """
     Port of FUN_0041e2d0 — ALY proposal evaluator.
 
@@ -216,8 +157,8 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     C demands all four conditions (_eval_aly.c lines 229):
       bVar1 = own  power in ALY list
       bVar2 = from-power in ALY list
-      bVar3 = no VSS-side power has any existing ALY-side power in
-              ``local_88`` (the ally-side StdMap built earlier)
+      bVar3 = every ALY-side power occurs in ``recipients + sender``
+              (``local_8c``, built from the hidden caller context)
       bVar4 = for each (aly_power != own, vss_power) pair, the per-pair
               compatibility gate passes.
 
@@ -255,9 +196,10 @@ def _eval_aly(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     if not (bVar1 and bVar2):
         return _REJ
 
-    # bVar3: no VSS power in the ALY-side StdMap (local_88).
-    aly_set = set(aly_powers)
-    if any(v in aly_set for v in vss_powers):
+    # C local_8c is the participant set (recipients + sender), not the ALY
+    # or VSS proposal set.  Each ALY power must be a message participant.
+    participants = set(context_powers) if context_powers is not None else {from_power}
+    if any(p not in participants for p in aly_powers):
         return _REJ
 
     # bVar4: per-pair compatibility (bulk of _eval_aly.c lines 139–228).
@@ -428,7 +370,16 @@ def _split_xdo_clauses(context_toks: list) -> "tuple[list, list]":
             s = s[1:-1].strip()
         return s
 
-    text = ' '.join(str(t) for t in context_toks).strip()
+    def _serialize(items) -> str:
+        parts = []
+        for item in items if isinstance(items, (list, tuple)) else [items]:
+            if isinstance(item, (list, tuple)):
+                parts.append(f"( {_serialize(item)} )")
+            else:
+                parts.append(str(item))
+        return ' '.join(parts)
+
+    text = _serialize(context_toks).strip()
     text = _strip_parens(text)
 
     positive: list = []
@@ -492,9 +443,10 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
          and compared independently. First fully-matching entry wins.
 
       3. Matching-sequence scoring (C lines 539–630):
-         Computes delta = current.score[own] − predecessor.score[own] (diff
-         form) or current.score[own] (fallback when history_flag < 1 or either
-         predecessor score is below the -79999 floor).  Band classification:
+         Uses node[0x27] as an exact prior-record key. When that reference
+         resolves and both baseline scores clear the -79999 floor, computes
+         ``current.score[own] - baseline.score[own]``; otherwise uses the
+         current score directly. Band classification:
            delta >= -199      → YES-eligible
            [-89999, -199)     → REJ
            [-99999, -89999)   → BWX
@@ -538,7 +490,6 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
 
     # ── 2. Sequence-catalog walk ──────────────────────────────────────────
     matched_entry = None
-    matched_index = -1
     pos_set = set(positive)
     neg_set = set(negative)
     _NOT_TOK = 0x480D
@@ -557,7 +508,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
             t = t[1:-1]
         return ' '.join(str(x) for x in t)
 
-    for idx, entry in enumerate(state.g_broadcast_list):
+    for entry in state.g_broadcast_list:
         if not isinstance(entry, dict):
             continue
         # C: *(char *)(puVar24 + 6) != '\0'
@@ -589,7 +540,6 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         if not neg_set.issubset(neg_texts):
             continue
         matched_entry = entry
-        matched_index = idx
         break
 
     if matched_entry is None:
@@ -599,13 +549,15 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         )
         # C: SEND_LOG("Could not find matching sequence") + BuildAllianceMsg archive.
         import time as _t
-        state.g_alliance_msg_tree.add(int(_t.time()))
+        state.g_alliance_msg_tree.add(
+            int(_t.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
+        )
         return _REJ
 
     # ── 3. Matching-sequence scoring (delta + verdict bands) ─────────────
     # C (CAL_VALUE.c lines 484–570):
-    #   preflight gates — history_flag >= 1, predecessor exists,
-    #   predecessor.score[own] >= -79999, predecessor.score[target] >= -79999
+    #   preflight gates — reference key >= 1, referenced record exists,
+    #   baseline.score[own] >= -79999, baseline.score[target] >= -79999
     #   diff form:      delta = current.score[own] − predecessor.score[own]
     #   fallback form:  delta = current.score[own]
     # Band classification (CAL_VALUE.c lines 612–627):
@@ -621,23 +573,29 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     cur_vec = matched_entry.get('score_vector') or [0] * 7
     cur_own = cur_vec[own_power_idx] if own_power_idx < len(cur_vec) else 0
 
-    # Tree-predecessor: nearest-smaller-key entry in the same catalog
-    # (C iterates the std::set<AllianceRecord> which is keyed by int at
-    # offset +16, so predecessor = highest-key entry with key < current.key).
-    # In the Python port the list is maintained sorted by `key` in
-    # send_alliance_press, so predecessor is simply matched_index − 1 when
-    # that entry's key is strictly less.
-    target_power = matched_entry.get('target_power', own_power_idx)
-    history_flag = matched_entry.get('history_flag', 0)
-    cur_key = matched_entry.get('key', 0)
+    target_power = matched_entry.get('target_power')
+    if target_power is None:
+        from_tok = matched_entry.get('from_power_tok', own_power_idx)
+        target_power = (
+            (int(from_tok) & 0x7f) if isinstance(from_tok, int)
+            else own_power_idx
+        )
+    target_power = int(target_power)
+    # C node[0x27] is local_150: the prior-record key captured by the
+    # registration pass (0xffffffff for no baseline). It is not the nearby
+    # one-byte history flag.
+    reference_key = matched_entry.get('watermark')
     predecessor = None
-    if matched_index > 0:
-        cand_pred = state.g_broadcast_list[matched_index - 1]
-        if isinstance(cand_pred, dict) and cand_pred.get('key', 0) < cur_key:
-            predecessor = cand_pred
+    if reference_key is not None and int(reference_key) >= 1:
+        predecessor = next(
+            (candidate for candidate in state.g_broadcast_list
+             if isinstance(candidate, dict)
+             and int(candidate.get('key', -1)) == int(reference_key)),
+            None,
+        )
 
     use_diff = False
-    if history_flag >= 1 and predecessor is not None:
+    if predecessor is not None:
         pred_vec = predecessor.get('score_vector') or [0] * 7
         pred_own = pred_vec[own_power_idx] if own_power_idx < len(pred_vec) else 0
         pred_tgt = pred_vec[target_power] if target_power < len(pred_vec) else 0
@@ -683,12 +641,27 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     try:
         cand_list = matched_entry.get('order_candidates', [])
         # Pass 1: positive candidates, sub-tree A → flag_bit=1 (skip rescore)
-        pos_gate = [{'order_seq': c, 'flag_bit': 1} for c in cand_list]
+        pos_gate = []
+        for c in cand_list:
+            toks = c.get('tokens', []) if isinstance(c, dict) else []
+            if _cand_is_neg(toks) or not isinstance(c, dict) or 'order_seq' not in c:
+                continue
+            pos_gate.append({
+                'order_seq': c['order_seq'],
+                'power': c.get('power', own_power_idx),
+                'flag_bit': 1,
+            })
         # Pass 2: negative candidates, sub-tree B → flag_bit=0 (rescore-eligible)
         neg_gate = []
         for neg_str in negative:
             for parsed in _pxc(neg_str):
-                neg_gate.append({'order_seq': parsed, 'flag_bit': 0})
+                if 'order_seq' not in parsed:
+                    continue
+                neg_gate.append({
+                    'order_seq': parsed['order_seq'],
+                    'power': parsed.get('power', own_power_idx),
+                    'flag_bit': 0,
+                })
         gate_score = legitimacy_gate(state, own_power_idx, pos_gate + neg_gate)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("cal_value: legitimacy_gate raised %s; treating as non-blocking", exc)
@@ -711,35 +684,32 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     return _REJ
 
 
-def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0,
+              context_powers: "list[int] | None" = None) -> int:
     """
     Port of FUN_0041ea20 — SLO (solo-win) proposal evaluator.
 
     C logic (from _eval_slo.c):
-      local_4c is the element-count field of the StdSet built from
-      SLO targets (local_54/local_50/local_4c form a 12-byte structure).
+      local_4c is the element-count field of the StdSet built from the hidden
+      caller context ``recipients + sender`` (local_54/local_50/local_4c).
       StdMap_FindOrInsert increments local_4c for each unique insertion.
       bVar2 = own power found in the SLO target list.
-      Returns YES iff local_4c == 1 (exactly one unique nominated power)
-                 AND bVar2 (that power is our own).
+      Returns YES iff local_4c == 1 (exactly one unique message participant)
+                 AND bVar2 (Albert occurs in the SLO target list).
 
     `rest` is tokens[1:] after SLO is stripped; rest[0] is the (power) sublist.
     """
-    if len(rest) != 1:
-        return 0x4814   # REJ — not a well-formed SLO proposal
-
     own = state.albert_power_idx
-    pwr_section = rest[0]
+    pwr_section = rest[0] if rest else []
     iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
-    targets: set = set()
+    own_is_target = False
     for tok in iterable:
         p = _pow_idx(tok)
-        if p is not None:
-            targets.add(p)
+        if p == own:
+            own_is_target = True
 
-    # local_4c == 1: exactly one unique power nominated for solo
-    # bVar2: that power is our own
-    if len(targets) == 1 and own in targets:
+    participants = set(context_powers) if context_powers is not None else {from_power}
+    if len(participants) == 1 and own_is_target:
         return 0x481C   # YES
     return 0x4814        # REJ
 
@@ -749,27 +719,26 @@ def _eval_drw(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
     Port of FUN_0041ed30 — DRW (draw) proposal evaluator.
 
     C logic (from _eval_drw.c):
-      bVar6 = True  iff  len(full_input)==2 (i.e. DRW + power_list section)
-                   AND own power is in the power list.
+      If len(full_input)==2 (DRW + power-list), bVar6 becomes True only
+      when the list is non-empty and contains Albert.  For every other input
+      length, the guarded validation block is skipped and bVar6 becomes True.
       Returns YES  iff  g_draw_sent (DAT_00baed5d) != 0  AND  bVar6.
       Otherwise REJ.
 
     `rest` is tokens[1:] after DRW is stripped, so C's len==2 ↔ len(rest)==1.
     """
-    # C uVar8==2 ↔ Python len(rest)==1 (DRW already consumed)
-    if len(rest) != 1:
-        return 0x4814   # REJ — not a well-formed DRW proposal
-
     own = state.albert_power_idx
-    bVar5 = False
-    pwr_section = rest[0]
-    iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
-    for tok in iterable:
-        if _pow_idx(tok) == own:
-            bVar5 = True
-            break
+    bVar6 = True
+    if len(rest) == 1:
+        bVar6 = False
+        pwr_section = rest[0]
+        iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
+        for tok in iterable:
+            if _pow_idx(tok) == own:
+                bVar6 = True
+                break
 
-    if state.g_draw_sent and bVar5:
+    if state.g_draw_sent and bVar6:
         return 0x481C   # YES
     return 0x4814        # REJ
 
@@ -792,14 +761,11 @@ def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     # FUN_0040d0a0: returns 1 if any two elements in the list share the
     # same first byte (= same power token), 0 if all unique.
     # bVar4 = short list AND no duplicate powers.
-    power_tokens = [_pow_idx(t) for t in rest if _pow_idx(t) is not None]
+    power_tokens = _extract_powers(rest)
     has_dup = len(power_tokens) != len(set(power_tokens))
-    bVar4 = (len(rest) < 3) and not has_dup
+    bVar4 = (len(power_tokens) < 3) and not has_dup
     bVar2 = bVar3 = False
-    for tok in rest:
-        p = _pow_idx(tok)
-        if p is None:
-            continue
+    for p in power_tokens:
         if p == own:
             bVar2 = True
         elif p == from_power:
@@ -811,7 +777,8 @@ def _eval_not_pce(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     return 0x481C     # default YES (Albert not named → not applicable)
 
 
-def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> int:
+def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
+                  context_powers: "list[int] | None" = None) -> int:
     """
     Port of FUN_0041f5a0 — NOT DMZ / SUB DMZ evaluator.
 
@@ -846,11 +813,9 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> i
                                      local_cc DOES NOT contain from_power, in
                                      which case fall through to YES/REJ.
 
-    NOTE: The C constructs ``local_7c`` from FUN_00466480 calls on a separate
-    caller-provided list (likely ALY relations of own and from_power). That
-    arg is not plumbed through to the Python dispatcher, so we use the
-    DMZ-powers list itself as the iteration set — sufficient to exercise the
-    DMZ-membership and per-pair gates correctly.
+    The C appends the sender to the recipient list twice into ``local_7c``.
+    The duplicate traversal matters to its later ``count < 3`` verdict gate,
+    so Python preserves both copies rather than reducing them to a set.
 
     Reference: ``_eval_not_dmz.c``  (FUN_0041f5a0)
     """
@@ -865,7 +830,8 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0) -> i
     dmz_powers = _extract_powers(powers_section)         # local_5c → local_cc set
     dmz_provs  = _extract_provs(state, provs_section)    # local_6c
     dmz_set    = set(dmz_powers)
-    iter_powers = list(dmz_powers)                       # local_7c surrogate (see NOTE)
+    participants = list(context_powers) if context_powers is not None else [from_p]
+    iter_powers = participants + participants           # two AppendList calls in C
 
     # ── helpers: dest_prov membership in promise / counter dicts ──────────
     promise_map = getattr(state, 'g_ally_promise_list', {}) or {}
@@ -954,7 +920,8 @@ def _eval_sub_xdo(rest: list) -> int:
 
 
 def _eval_single_xdo(state: "InnerGameState", tokens: list,
-                     from_power: int = 0) -> int:
+                     from_power: int = 0,
+                     context_powers: "list[int] | None" = None) -> int:
     """
     Port of FUN_0042c040 — single-proposal type dispatcher.
 
@@ -979,17 +946,17 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
       SUB NOT XDO      → _cal_value       (local_48 context)
       else             → HUH
 
-    DAT_004c6e14 = 0x4A26 = SUB token (confirmed via research.md §2585).
+    DAT_004c6e14 is PRP (0x4A13), the press-proposal wrapper.
     """
     _YES, _REJ, _HUH = 0x481C, 0x4814, 0x4806
     _PCE, _DMZ, _ALY = 0x4A10, 0x4A03, 0x4A00
     _XDO, _SLO, _DRW = 0x4A1F, 0x4816, 0x4801
-    _NOT, _SUB        = 0x480D, 0x4A26
+    _NOT, _PRP        = 0x480D, 0x4A13
 
     _NAME = {
         _PCE: 'PCE', _DMZ: 'DMZ', _ALY: 'ALY',
         _XDO: 'XDO', _SLO: 'SLO', _DRW: 'DRW',
-        _NOT: 'NOT', _SUB: 'SUB',
+        _NOT: 'NOT', _PRP: 'PRP',
     }
 
     def _teq(tok, val):
@@ -998,6 +965,21 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
     if not tokens:
         return _HUH
 
+    raw_tokens = list(tokens)
+    if '(' in raw_tokens or ')' in raw_tokens:
+        from ..parsers import _split_top_level_groups
+        tokens = _split_top_level_groups(raw_tokens)
+    else:
+        tokens = raw_tokens
+
+    def _unwrap(item) -> list:
+        if not isinstance(item, list):
+            return [item]
+        if '(' in item or ')' in item:
+            from ..parsers import _split_top_level_groups
+            return _split_top_level_groups(item)
+        return list(item)
+
     t0 = tokens[0]
     rest = tokens[1:]
 
@@ -1005,16 +987,16 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
         return _eval_pce(state, rest, from_power)
 
     if _teq(t0, _DMZ):
-        return _eval_dmz(state, rest, from_power)
+        return _eval_dmz(state, rest, from_power, context_powers)
 
     if _teq(t0, _ALY):
-        return _eval_aly(state, rest, from_power)
+        return _eval_aly(state, rest, from_power, context_powers)
 
     if _teq(t0, _XDO):
-        return _cal_value(state, rest)
+        return _cal_value(state, raw_tokens)
 
     if _teq(t0, _SLO):
-        return _eval_slo(state, rest, from_power)
+        return _eval_slo(state, rest, from_power, context_powers)
 
     if _teq(t0, _DRW):
         return _eval_drw(state, rest, from_power)
@@ -1022,32 +1004,39 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
     if _teq(t0, _NOT):
         if not rest:
             return _HUH
-        t1 = rest[0]
-        rest2 = rest[1:]
+        inner = _unwrap(rest[0]) if isinstance(rest[0], list) else rest
+        if not inner:
+            return _HUH
+        t1 = inner[0]
+        rest2 = inner[1:]
         if _teq(t1, _PCE):
             return _eval_not_pce(state, rest2, from_power)
         if _teq(t1, _DMZ):
-            return _eval_not_dmz(state, rest2, from_power)
+            return _eval_not_dmz(state, rest2, from_power, context_powers)
         if _teq(t1, _XDO):
-            return _cal_value(state, [_NOT] + rest)
+            return _cal_value(state, raw_tokens)
         return _HUH
 
-    if _teq(t0, _SUB):
-        # SUB = DAT_004c6e14 = 0x4A26; C logs the message before dispatching
+    if _teq(t0, _PRP):
+        # PRP = DAT_004c6e14; unwrap its one press-content sublist.
         if not rest:
             return _HUH
-        t1 = rest[0]
-        rest2 = rest[1:]
+        inner = _unwrap(rest[0]) if isinstance(rest[0], list) else rest
+        if not inner:
+            return _HUH
+        t1 = inner[0]
+        rest2 = inner[1:]
         if _teq(t1, _PCE):
             return _eval_not_pce(state, rest2, from_power)   # same as NOT PCE
         if _teq(t1, _DMZ):
-            return _eval_not_dmz(state, rest2, from_power)   # same as NOT DMZ
+            return _eval_not_dmz(state, rest2, from_power, context_powers)   # same as NOT DMZ
         if _teq(t1, _XDO):
             return _eval_sub_xdo(rest2)                       # FUN_0040d450
         if _teq(t1, _NOT):
-            if not rest2 or not _teq(rest2[0], _XDO):
+            not_inner = _unwrap(rest2[0]) if rest2 and isinstance(rest2[0], list) else rest2
+            if not not_inner or not _teq(not_inner[0], _XDO):
                 return _HUH
-            return _cal_value(state, [_NOT] + rest2)
+            return _cal_value(state, not_inner)
         return _HUH
 
     return _HUH

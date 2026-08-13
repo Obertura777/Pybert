@@ -67,7 +67,8 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
     num_powers = 7
 
     # tokens[1:] are the power indices inside PCE ( pow1 pow2 ... )
-    pce_powers = [int(t) for t in tokens[1:]]
+    from ._common import _extract_powers
+    pce_powers = _extract_powers(tokens[1:])
     n = len(pce_powers)
 
     changed = False
@@ -231,16 +232,18 @@ def _handle_aly(state: InnerGameState, tokens: list) -> bool:
     # ── Extract ALY and VSS power sub-lists ──────────────────────────────────
     # C: GetSubList(&stack0x4, apuStack_68, 1) → local_58 (ALY powers)
     #    GetSubList(&stack0x4, apuStack_68, 3) → local_48 (VSS powers)
-    # tokens layout after CAL_MOVE: ['ALY', aly_p1, aly_p2, ..., 'VSS', vss_p1, ...]
-    # Find the VSS boundary inside the token list.
-    try:
-        vss_idx = tokens.index('VSS')
-        aly_powers = [int(t) for t in tokens[1:vss_idx]]
-        vss_powers = [int(t) for t in tokens[vss_idx + 1:]]
-    except ValueError:
-        # No VSS keyword — treat entire token payload as ALY powers, VSS list empty.
-        aly_powers = [int(t) for t in tokens[1:]]
-        vss_powers = []
+    from ._common import _extract_powers
+    if len(tokens) >= 4 and str(tokens[2]).upper() == 'VSS':
+        aly_powers = _extract_powers(tokens[1])
+        vss_powers = _extract_powers(tokens[3])
+    else:
+        try:
+            vss_idx = tokens.index('VSS')
+            aly_powers = _extract_powers(tokens[1:vss_idx])
+            vss_powers = _extract_powers(tokens[vss_idx + 1:])
+        except ValueError:
+            aly_powers = _extract_powers(tokens[1:])
+            vss_powers = []
 
     changed = False
 
@@ -387,27 +390,9 @@ def _handle_dmz(state: InnerGameState, tokens: list) -> bool:
     # ── Extract DMZ powers (sublist 1) and DMZ provinces (sublist 2) ──────────
     # C: GetSubList(&stack4, &pvStack_64, 1) → local_74  (power list)
     #    GetSubList(&stack4, &pvStack_64, 2) → local_48  (province list)
-    # tokens layout: ['DMZ', pow1, pow2, ..., prov1, prov2, ...]
-    # We split on the first integer run vs a possible explicit list separator.
-    # In practice CAL_MOVE passes the raw sub-token list; we extract two int groups.
-    dmz_powers: list = []
-    dmz_provs:  list = []
-    # Simple heuristic: collect ints from tokens[1:]; power indices are small (<7),
-    # province indices can be larger.  The C GetSubList(1) returns the first nested
-    # parenthesised group and GetSubList(2) the second.  With flat token lists we
-    # rely on the split being signalled by a non-int sentinel, or fall back to
-    # "first group = powers (values < 7), second group = provinces".
-    # More robust: if tokens contain explicit sentinels they were stripped by CAL_MOVE.
-    # We therefore split by value: tokens < 7 are powers, ≥ 7 are provinces.
-    for tok in tokens[1:]:
-        try:
-            v = int(tok)
-        except (ValueError, TypeError):
-            continue
-        if v < 7:
-            dmz_powers.append(v)
-        else:
-            dmz_provs.append(v)
+    from ._common import _extract_powers, _extract_provs
+    dmz_powers = _extract_powers(tokens[1] if len(tokens) > 1 else [])
+    dmz_provs = _extract_provs(state, tokens[2] if len(tokens) > 2 else [])
 
     if not dmz_powers or not dmz_provs:
         return False
@@ -886,6 +871,13 @@ def cal_move(state: InnerGameState, press_tokens: list) -> bool:
     if not press_tokens:
         return False
 
+    # C TokenSeq elements preserve sub-list boundaries.  String-mode inbound
+    # press is flat and contains literal parentheses, so reconstruct those
+    # boundaries at this dispatcher edge.
+    if '(' in press_tokens or ')' in press_tokens:
+        from ..parsers import _split_top_level_groups
+        press_tokens = _split_top_level_groups(press_tokens)
+
     first = press_tokens[0]
 
     if first == 'PCE':
@@ -908,6 +900,13 @@ def cal_move(state: InnerGameState, press_tokens: list) -> bool:
         # temp wrapper.  Net effect: inner tokens of NOT are exposed for the
         # second-level dispatch.
         inner_tokens = press_tokens[1:]   # strip leading NOT token
+        if len(inner_tokens) == 1 and isinstance(inner_tokens[0], list):
+            from ..parsers import _split_top_level_groups
+            nested = inner_tokens[0]
+            inner_tokens = (
+                _split_top_level_groups(nested)
+                if '(' in nested or ')' in nested else list(nested)
+            )
         if not inner_tokens:
             return False
         inner_first = inner_tokens[0]

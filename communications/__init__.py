@@ -27,6 +27,8 @@ from .tokens import (
     _token_seq_copy,
     _token_seq_overlap,
     _token_seq_no_overlap,
+    _token_seq_equal,
+    _token_seq_not_equal,
     _token_seq_concat_single,
     _token_seq_count,
     _token_seq_less,

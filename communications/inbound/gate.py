@@ -59,8 +59,8 @@ def legitimacy_gate(
         'order_seq'  — parsed order dict consumed by validate_and_dispatch_order
         'flag_bit'   — the +0x1c channel tag (1 = sub-tree A, skip own-power
                        rescore; 0 = sub-tree B, eligible for clamp-window rescore)
-        'type_flag'  — alias accepted for back-compat with order_candidates from
-                       register_received_press (type_flag maps to flag_bit)
+        'type_flag'  — candidate polarity alias: 0=XDO maps to flag_bit=1;
+                       1=NOT-XDO maps to flag_bit=0
 
     Per-candidate evaluation mirrors the C:
 
@@ -91,9 +91,8 @@ def legitimacy_gate(
 
     for cand in candidates:
         order_seq = cand.get('order_seq') or cand
-        # type_flag from register_received_press: 0 = received/peer-side, eligible
-        # for own-power rescore; 1 = our-side/already-scoped.
-        flag_bit = cand.get('flag_bit', cand.get('type_flag', 0))
+        polarity = int(cand.get('type_flag', 0))
+        flag_bit = cand.get('flag_bit', 0 if polarity == 1 else 1)
 
         # Find the order's claimed power (from the XDO's unit spec) — the C
         # equivalent reads the power token out of the clause's TokenList and
@@ -193,22 +192,29 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
             # to the scorer via the fall-through at the sentinel.
             continue
         cands = entry.get('order_candidates', [])
-        cand_texts = set()
+        cand_pos = set()
+        cand_neg = set()
         for c in cands:
             t = c.get('tokens') if isinstance(c, dict) else c
             if t is not None:
-                cand_texts.add(' '.join(str(x) for x in t)
-                               if isinstance(t, (list, tuple))
-                               else str(t))
+                seq = list(t) if isinstance(t, (list, tuple)) else [t]
+                is_neg = bool(seq) and str(seq[0]).upper() == 'NOT'
+                if is_neg:
+                    seq = seq[1:]
+                    if seq and seq[0] == '(' and seq[-1] == ')':
+                        seq = seq[1:-1]
+                (cand_neg if is_neg else cand_pos).add(
+                    ' '.join(str(x) for x in seq)
+                )
         # C: require both sub-tree A size == positive count AND
         # sub-tree B size == negative count AND every clause found.
         # Python: collapse to subset-containment on the unified candidate
         # set. Strict-count equality is preserved by also requiring the
         # candidate set to be no larger than the union of proposed clauses
         # (a stricter reading: "the record represents exactly this shape").
-        if not pos_set.issubset(cand_texts):
+        if pos_set != cand_pos:
             continue
-        if neg_set & cand_texts:
+        if neg_set != cand_neg:
             continue
         # Flag gate: record +0x18 != 1 (not marked-skip), +0x1c == 0.
         # Python stand-in: require the entry's type_flag != 1 (i.e. not
@@ -230,12 +236,19 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
 
     def _score_orientation(pos_clauses, neg_clauses, pos_bit, neg_bit):
         cands = []
-        for c in pos_clauses:
-            cands.append({'order_seq': {'tokens': c.split(), 'type_flag': 0},
-                          'flag_bit': pos_bit})
-        for c in neg_clauses:
-            cands.append({'order_seq': {'tokens': c.split(), 'type_flag': 1},
-                          'flag_bit': neg_bit})
+        for clause, flag_bit in (
+            *((c, pos_bit) for c in pos_clauses),
+            *((c, neg_bit) for c in neg_clauses),
+        ):
+            parsed = _parse_xdo_candidates(clause)
+            for cand in parsed:
+                if 'order_seq' not in cand:
+                    continue
+                cands.append({
+                    'order_seq': cand['order_seq'],
+                    'power': cand.get('power', own_idx),
+                    'flag_bit': flag_bit,
+                })
         return legitimacy_gate(state, own_idx, cands)
 
     try:
@@ -278,7 +291,9 @@ def delay_review(state: "InnerGameState", body_tokens: list) -> int:
         # plus the +10000 offset (press_epoch isn't tracked in Python;
         # the offset alone discriminates the event class per the schema
         # in docs/funcs/DELAY_REVIEW.md).
-        state.g_alliance_msg_tree.add(int(_t.time()) + 10000)
+        state.g_alliance_msg_tree.add(
+            int(_t.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
+        )
         _log.debug("delay_review: score==0 → 1 (delay) + event archived")
         return 1
 
@@ -313,15 +328,13 @@ def register_received_press(
          scratch lists (local_12c, local_118) — all freed at end; absorbed.
       3. FUN_00426140(local_1e8) → local_1fc: legitimacy gate over the
          candidate set.  Returns a non-null pointer when score > 0.
-         When non-null: local_1d4[0]=1 (history_flag) and
+         When non-null: local_1d4[0]=1 (registration flag) and
          local_1cc=DAT_004c6bbc (int_8 / trial-cap token).
-         When null: both stay 0.  Gate effect is via CAL_VALUE score
-         branching — the function always enqueues regardless.
+         When null: both stay 0. The function always enqueues regardless.
       4. local_134 = __time64(NULL) — wall-clock capture.
-      5. Two-pass split of param_11 (order-candidates BST) by type_flag:
-           type_flag==0 → local_1e4 (sub-B / external set)
-           type_flag==1 → local_f0  (sub-A / own set; built but NOT passed
-                          to SendAlliancePress; only sub-B is sent)
+      5. Two-pass split of param_11 (order-candidates BST) by candidate polarity:
+           type_flag==0 → local_1e4 (positive XDO tree)
+           type_flag==1 → local_f0  (negative NOT-XDO tree)
          Pass 1: local_150 = 0xffffffff (no watermark).
                  BuildHostilityRecord + SendAlliancePress(local_1e4).
          Cleanup: both sets cleared.
@@ -337,12 +350,10 @@ def register_received_press(
       BuildHostilityRecord → fields embedded in each entry dict
       local_1d4[0]=1     → history_flag = 1 iff gate_score != 0
       local_1cc          → int_8 = g_press_proposals_cap iff gate_score != 0
-      sub-A (local_f0)   → extracted but discarded (consistent with C:
-                           only sub-B goes to SendAlliancePress)
-      score_vector[p]    → per-power legitimacy_gate score (richer than C's
-                           single-score replicated for all slots; deviation
-                           is intentional — CAL_VALUE delta uses own_power
-                           slot only, which is correct either way)
+      local_1e4/local_f0 → one Python candidate list retaining the polarity
+                           byte; CAL_VALUE reconstructs the two C trees
+      score_vector[p]    → the one legitimacy_gate score replicated to all
+                           seven slots, matching the C assignment loop
       DAT_00baed60       → state.g_broadcast_list_watermark = size_after
 
     Callees (C):
@@ -365,15 +376,13 @@ def register_received_press(
     sched_time = int(_time.time())  # C: local_134 = __time64(NULL)
 
     # Parse order candidates from press content (replaces the BST param_11).
-    # _parse_xdo_candidates always returns type_flag==0; the filter below is
-    # defensive but also mirrors the C type_flag==0 → sub-B split.
+    # Candidate type_flag is polarity: 0=XDO, 1=NOT-XDO.
     content_str = ' '.join(str(t) for t in press_content)
     order_candidates = _parse_xdo_candidates(content_str)
-    external_cands = [c for c in order_candidates if c.get('type_flag', 0) == 0]
 
     # C line 103: local_1fc = FUN_00426140(local_1e8)
     # Returns a non-null pointer (score != 0) or null (score == 0).
-    # Drives local_1d4[0] (history_flag) and local_1cc (int_8) in both passes.
+    # Drives local_1d4[0] (registration flag) and local_1cc in both passes.
     own_power_idx = getattr(
         state, 'albert_power_idx',
         getattr(state, 'g_albert_power', 0),
@@ -382,37 +391,27 @@ def register_received_press(
     try:
         gate_score = legitimacy_gate(
             state, int(own_power_idx),
-            [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
-             for c in external_cands],
+            [{
+                'order_seq': c.get('order_seq', c),
+                'power': c.get('power', int(own_power_idx)),
+                'flag_bit': 0 if c.get('type_flag', 0) == 1 else 1,
+            } for c in order_candidates],
         )
         _log.debug("register_received_press: legitimacy_gate -> %d", gate_score)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         _log.warning("register_received_press: legitimacy_gate raised %s; proceeding", exc)
 
     # C: local_1d4[0] = 1 and local_1cc = DAT_004c6bbc only when local_1fc != NULL.
-    # history_flag maps to local_1d4[0]; int_8 maps to local_1cc.
-    # CAL_VALUE's diff-form branch requires history_flag >= 1.
+    # history_flag maps to local_1d4[0]; int_8 maps to local_1cc. CAL_VALUE's
+    # delta-baseline branch is instead controlled by local_150 (`watermark`).
     history_flag = 1 if gate_score != 0 else 0
     int_8 = int(getattr(state, 'g_press_proposals_cap', 30)) if gate_score != 0 else 0
 
     # C: local_1f8 = DAT_00bb65f4  (g_broadcast_list size before first insert)
     size_before = len(state.g_broadcast_list)
 
-    # Per-power score vector (Python extension beyond C's single replicated score).
-    # C: auStack_1a4[slot] = local_1fc for all active-power slots (same value).
-    # Python: per-power legitimacy_gate gives _cal_value a richer baseline; the
-    # own_power_idx slot — which is what CAL_VALUE reads for delta scoring — is
-    # always correct, so the behavioural effect is identical.
-    score_vec = [0] * 7
-    for pwr in range(7):
-        try:
-            score_vec[pwr] = int(legitimacy_gate(
-                state, pwr,
-                [{'order_seq': c, 'flag_bit': c.get('type_flag', 0)}
-                 for c in external_cands],
-            ))
-        except (KeyError, IndexError, TypeError, ValueError):
-            score_vec[pwr] = 0
+    # C copies the one FUN_00426140 result into every active-power slot.
+    score_vec = [int(gate_score)] * 7
 
     # ── Pass 1: external candidates, watermark = sentinel ────────────────
     # C: local_150 = 0xffffffff (no watermark); key = local_e4[0] = DAT_00bb65f4
@@ -425,10 +424,11 @@ def register_received_press(
         'history_flag':     history_flag,  # local_1d4[0]
         'int_8':            int_8,         # local_1cc = DAT_004c6bbc when gate passes
         'from_power_tok':   from_power_tok,
+        'target_power':     int(from_power_tok) & 0x7f,
         'sublist1':         [from_power_tok],
         'sublist2':         list(to_power_toks),
         'sublist3':         list(press_content),
-        'order_candidates': list(external_cands),
+        'order_candidates': list(order_candidates),
         'score_vector':     list(score_vec),
     }
     send_alliance_press(state, key=size_before, entry_data=entry1)
@@ -445,7 +445,7 @@ def register_received_press(
     entry2: dict = dict(entry1)
     entry2['watermark']        = size_before   # local_150 = local_1f8
     entry2['flag']             = flag           # local_13c = param_12
-    entry2['order_candidates'] = list(external_cands)
+    entry2['order_candidates'] = list(order_candidates)
     send_alliance_press(state, key=size_after, entry_data=entry2)
 
     # C: DAT_00baed60 = puVar4 where puVar4 = DAT_00bb65f4 read during the

@@ -694,8 +694,20 @@ class _PressMixin:
                     if _prop_key in _responded_proposals:
                         continue
                     _responded_proposals.add(_prop_key)
-                    _receive_proposal(self.state, _from_idx, _prop_toks, self._send_dm)
                     _sVar2 = _evaluate_press(self.state, _entry)
+                    # C evaluates first; RECEIVE_PROPOSAL then copies
+                    # DAT_00bb65d4 (the accepted clauses) into the new ledger
+                    # node's press-entry tree.
+                    _participants = [
+                        int(tok) & 0x7f
+                        for tok in _entry.get('sublist2', [])
+                        if isinstance(tok, int)
+                    ]
+                    _receive_proposal(
+                        self.state, _from_idx, _prop_toks,
+                        participant_powers=_participants,
+                        send_fn=self._send_dm,
+                    )
                     _st = _entry.get('sched_time', 0)
                     _respond(
                         self.state,

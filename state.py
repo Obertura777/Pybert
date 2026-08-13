@@ -926,14 +926,13 @@ class InnerGameState:
         self.g_best_order_backup: dict = {}
         # DAT_00baed94/98 — press deal records (earlier proposals received)
         self.g_deal_list: list = []
-        # DAT_00bb65c8/cc — position analysis list (g_own_proposal_map in C); each entry:
-        #   {'tokens': list, 'token_set': frozenset, 'power_count': int}
-        # Cleared each turn.  Used by RECEIVE_PROPOSAL for proposal dedup.
+        # DAT_00bb65c8/cc — proposal-analysis list. Each entry carries exact
+        # tokens plus participant, affirmative, and rejection power sets.
+        # Cleared each turn; used for dedup, ACK bookkeeping, and GOF gating.
         self.g_pos_analysis_list: list = []
         # DAT_00bb65d4 — accepted proposals this turn (YES results from EvaluatePress)
         self.g_accepted_proposals: list = []
-        # DAT_00bbf638 — alliance-message BST; in Python modelled as a set of
-        # power indices inserted by BuildAllianceMsg / receive_proposal.
+        # DAT_00bbf638 — alliance-message BST keyed by elapsed-time event ids.
         self.g_alliance_msg_tree: set = set()
         # DAT_00bb69fc[power*3] — per-power alternate order list
         # (already declared as g_alt_order_list above)
@@ -949,8 +948,7 @@ class InnerGameState:
         # Each entry: {'scheduled_time': float, 'press_type': str,
         #              'data': list, 'sent': bool}
         self.g_master_order_list: list = []
-        # DAT_00ba2884:ba2880 — session start time (int64 Unix timestamp)
-        self.g_session_start_time: float = 0.0
+        # DAT_00ba2884:ba2880 is g_turn_start_time, set at each order turn.
         # DAT_00ba2858:ba285c — base wait threshold (seconds); GOF fires when
         #   elapsed > g_base_wait_time + 25 s  (FUN_00443ed0)
         self.g_base_wait_time: float = 0.0
@@ -968,8 +966,6 @@ class InnerGameState:
         self.g_turn_deadline: float = 0.0
 
         # ── CancelPriorPress globals ─────────────────────────────────────────
-        # DAT_004c6ce4 — prior press token to cancel (NOT message)
-        self.g_prior_press_token: object = None
         # DAT_00baed47 — once-per-turn send guard
         self.g_cancel_press_sent: int = 0
 

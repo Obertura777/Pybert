@@ -43,15 +43,24 @@ def _parse_xdo_candidates(content_str: str) -> list:
     """
     Extract XDO order sequences from a press content string.
 
-    Returns a list of dicts: {'tokens': [str, ...], 'type_flag': 0}.
-    type_flag=0 marks these as external (received) order candidates.
+    Returns candidate-node dictionaries. Candidate ``type_flag`` is the C
+    node+7 polarity byte: 0 for XDO, 1 for NOT(XDO). It is distinct from the
+    broadcast record's own ``type_flag`` (received versus self-generated).
     """
     candidates: list = []
     tokens = content_str.split()
     idx = 0
     while idx < len(tokens):
         if tokens[idx] == 'XDO':
-            xdo_tokens = ['XDO']
+            # Preserve a directly enclosing NOT wrapper.  CAL_VALUE keeps
+            # positive and negative XDO clauses in different C sub-trees;
+            # dropping NOT here made every negative clause look positive.
+            negated = (
+                idx >= 2 and tokens[idx - 1] == '('
+                and str(tokens[idx - 2]).upper() == 'NOT'
+            )
+            xdo_tokens = ['NOT', '('] if negated else []
+            xdo_tokens.append('XDO')
             idx += 1
             depth = 0
             opened = False  # have we entered the body's outer paren yet?
@@ -71,7 +80,23 @@ def _parse_xdo_candidates(content_str: str) -> list:
                 # XDOs in a single press body get concatenated.
                 if opened and depth == 0:
                     break
-            candidates.append({'tokens': xdo_tokens, 'type_flag': 0})
+            if negated:
+                xdo_tokens.append(')')
+
+            # Keep the exact TokenSeq for catalog equality, but also attach
+            # the decoded order record consumed by FUN_00426140's Python
+            # legitimacy scorer.  A NOT wrapper belongs to the catalog key;
+            # the underlying XDO order itself is what C validates.
+            parse_tokens = xdo_tokens
+            if negated:
+                parse_tokens = xdo_tokens[2:-1]
+            parsed = _parse_xdo_body_to_order(parse_tokens)
+            candidate = {'tokens': xdo_tokens, 'type_flag': int(negated)}
+            if parsed is not None:
+                power_idx, order_seq = parsed
+                candidate['power'] = power_idx
+                candidate['order_seq'] = order_seq
+            candidates.append(candidate)
         else:
             idx += 1
     return candidates
@@ -282,5 +307,3 @@ def _parse_xdo_body_to_order(xdo_tokens: list) -> "tuple[int, dict] | None":
         return power_idx, order
 
     return None
-
-

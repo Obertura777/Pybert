@@ -14,7 +14,6 @@ function-body import to avoid a circular-import risk with ``..heuristics``.
 
 from __future__ import annotations
 
-import copy
 import logging
 from typing import TYPE_CHECKING
 
@@ -182,7 +181,7 @@ def _evaluate_order_proposals_and_send_gof(
     Port of FUN_00457520 = EvaluateOrderProposalsAndSendGOF.
 
     Iterates g_own_proposal_map (Python: state.g_pos_analysis_list) looking for
-    entries whose proposed XDO orders are now all committed to the game board.
+    entries whose participants have all affirmatively acknowledged the proposal.
     For each newly-satisfied entry it runs CAL_MOVE on every associated press
     entry; if any CAL_MOVE returns truthy the GOF commit path fires
     (NormalizeInfluenceMatrix + send_GOF), otherwise ScheduledPressDispatch is
@@ -190,54 +189,38 @@ def _evaluate_order_proposals_and_send_gof(
 
     C layout (undefined4* offsets from BST node puVar5):
       +8        board_satisfied byte (0 = pending, 1 = done; outer gate)
-      +0xc/0xd  inner XDO sub-list (sentinel/head)
-      +0xf      unit/province field for GameBoard_GetPowerRec
-      [0x10]    expected power-token (equality check vs board result[1])
+      +0xc/0xd  participant-power map (map/head)
+      +0xf/0x10 affirmative-power map (map/head)
       [0x14]    type_flag (0 = external/received proposal)
       +0x15/16  press-entry sub-list (used for CAL_MOVE inner loop)
 
-    Board-satisfaction rule (C lines 59–101 in the decompile):
-      bVar3 starts True.  For each XDO sub-entry, call GameBoard_GetPowerRec;
-      if result[1] == node[0x10] (board already has the expected order token)
-      → bVar3 = False.  bVar3 True after full scan ⟹ board not yet committed
-      → entry is "satisfiable" and the GOF candidate path runs.
-
-    Python model note:
-      g_pos_analysis_list entries are inserted by receive_proposal with empty
-      sub_entries / press_entries, so the inner board-check loop never executes
-      (bVar3 stays True) and the press-entry loop also never executes (bVar4
-      stays False).  Result: ScheduledPressDispatch is always called.  The full
-      sub-list population path is preserved for future fidelity.
+    Readiness rule (C lines 59–101): for every key in the participant map,
+    GameBoard_GetPowerRec probes the affirmative map. If any lookup returns
+    its head sentinel, bVar3 becomes false. The record is actionable only
+    when every participant is present in the affirmative map.
     """
     from ..communications import dispatch_scheduled_press, cal_move
     from ..heuristics import normalize_influence_matrix
 
     bVar4 = False
-    board_orders = getattr(state, 'g_board_orders', {})
-
     for entry in getattr(state, 'g_pos_analysis_list', []):
         # C: if (*(char*)(puVar5 + 8) == '\0') — skip already-satisfied entries
-        if entry.get('board_satisfied', False) or entry.get('processed', False):
+        if (entry.get('board_satisfied', False)
+                or entry.get('processed', False)
+                or entry.get('processed_flag', 0) != 0):
             continue
 
-        # ── Board-satisfaction inner loop (node+0xc/0xd sub-list) ─────────────
-        # bVar3 starts True; cleared if any sub-entry is already on the board
-        # with the expected power-token (i.e. the proposed order is committed).
-        bVar3 = True
-        sub_entries   = entry.get('sub_entries', [])
-        expected_tok  = entry.get('order_type', -1)  # node[0x10]
-
-        for sub in sub_entries:
-            prov = sub.get('province', -1)
-            rec  = board_orders.get(prov, {})
-            # C: if (puVar8[1] == local_4c) bVar3 = false
-            if rec.get('order_type') == expected_tok:
-                bVar3 = False
+        # C starts bVar3 true and clears it when any participant lookup in the
+        # +0xf affirmative map returns that map's head (the not-found result).
+        participants = set(entry.get('participant_powers', set()))
+        affirmative = set(entry.get('role_b_set', set()))
+        bVar3 = participants.issubset(affirmative)
 
         if bVar3:
             # C: *(undefined1*)(puVar5 + 8) = 1
             entry['board_satisfied'] = True
-            entry['processed'] = True          # keep _fun_004117d0 in sync
+            entry['processed'] = True
+            entry['processed_flag'] = 1
 
             # C: if (puVar5[0x14] == 0) — external/received proposal
             if entry.get('type_flag', 0) == 0:
@@ -261,7 +244,7 @@ def _evaluate_order_proposals_and_send_gof(
                         state.g_dmz_order_list = []
                     state.g_dmz_order_list.clear()
                     state.g_dmz_order_list.extend(
-                        copy.deepcopy(sub) for sub in sub_entries
+                        {'owner_power': int(power)} for power in participants
                     )
                 except Exception:
                     logger.exception(

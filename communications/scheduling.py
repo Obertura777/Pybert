@@ -7,7 +7,7 @@ the 2026-04 structural refactor; behaviour preserved verbatim.
 Contents:
 
 - dispatch_scheduled_press   — main dispatch loop (port of FUN_004424e0)
-- _fun_004117d0              — g_pos_analysis_list order-match scanner
+- _fun_004117d0              — pending-proposal participant scanner
 - _press_gate_check          — thin alias used by ScheduledPressDispatch
 - _press_list_count          — per-power press-history size
 - _find_press_token          — per-power press-history token lookup
@@ -47,11 +47,9 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
 
     After dispatching, removes the entry from the list.
 
-    The C binary walks the linked list front-to-back in a do/while(true) loop,
-    calling AdvanceAndRemoveListNode after each dispatch.  Python materialises
-    the list up front and rebuilds the remainder, which is functionally
-    equivalent since dispatch callbacks never re-entrant-append to the same
-    list within a single flush cycle.
+    The C binary restarts its linked-list scan after removing each due entry.
+    Dispatch callbacks can append THN entries, so the Python loop likewise
+    mutates the live list instead of rebuilding it from a stale snapshot.
 
     Research.md §5271.
 
@@ -72,17 +70,24 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
     turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
     elapsed = _time.time() - turn_start
 
-    remaining: list = []
     # C: local_58 — accumulates target-power bytes across all dispatched SND
     # entries so that SendAllyPressByPower is called for every recipient seen
     # so far (not just the current entry's recipient).
     cumulative_snd_powers: list = []
 
-    for entry in list(getattr(state, 'g_master_order_list', [])):
-        scheduled_time = float(entry.get('scheduled_time', 0.0))
-        if elapsed < scheduled_time:
-            remaining.append(entry)
-            continue
+    master = getattr(state, 'g_master_order_list', [])
+    while True:
+        due_index = next(
+            (i for i, candidate in enumerate(master)
+             if elapsed >= float(candidate.get('scheduled_time', 0.0))),
+            None,
+        )
+        if due_index is None:
+            break
+
+        # C removes the node after executing it.  Pop first so callbacks see
+        # the live queue without this entry and any appended work is retained.
+        entry = master.pop(due_index)
 
         press_type = entry.get('press_type', '')
         data       = entry.get('data', [])
@@ -114,70 +119,36 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
             # ExecuteThennAction(param_1, *first_arg)
             if data:
                 _execute_then_action(state, int(data[0]), send_fn=_send)
-        # entry consumed — do NOT add to remaining
-
-    state.g_master_order_list = remaining
+        # entry consumed by the pop above
 
 
 def _fun_004117d0(state: InnerGameState, param_1: int) -> bool:
     """
     Port of FUN_004117d0 (0x004117d0).
 
-    Scans g_pos_analysis_list for any unprocessed node that has a matching order
-    on the game board.  param_1 governs the search mode:
-
-      param_1 == -1   Iterate every sub-entry in the node's inner sub-list.
-                      For each sub-entry's province key, look up the current
-                      board order via g_board_orders.  If the order_type matches
-                      the node's expected order_type ([0x10]), return True.
-
-      param_1 >= 0    Power index.  First check whether param_1 appears as a
-                      power_idx in the node's inner sub-list.  If so, look up
-                      the board order for that power index.  If the order_type
-                      matches the node's expected order_type, return True.
+    Scans g_pos_analysis_list for an unresolved proposal. ``param_1 == -1``
+    asks whether any proposal is pending; a non-negative value restricts the
+    search to proposals whose +0xc participant map contains that power.
 
     C node layout (undefined4* units; offsets in bytes in parens):
-      +8  (0x08)  processed flag — 0 = active, 1 = done; skip if set
-      +0xc/+0xd  (0x30/0x34)  inner sub-list sentinel/head
-      +0xf  (0x3c)  power-record field (second GameBoard_GetPowerRec target)
-      [0x10]  (0x40)  expected order-type field
+      +8        resolved flag — 0 = active, 1 = done
+      +0xc/0xd  participant-power map and head
 
-    Python model: sub_entries is populated by receive_proposal via
-    _parse_xdo_candidates (fixed 2026-04-20).  The guard now checks
-    sub_entries directly rather than the vestigial power_count field.
+    EvaluateOrderProposalsAndSendGOF marks a node resolved after every
+    participant appears in the +0xf affirmative map. Until then this gate
+    prevents another THN action for the same participant and keeps the
+    fallback GOF hold-back active.
     """
     for entry in getattr(state, 'g_pos_analysis_list', []):
         # C: if (*(char*)(puVar1+8) != '\0') → node already processed → skip
-        if entry.get('processed', False):
+        if (entry.get('processed', False)
+                or entry.get('board_satisfied', False)
+                or entry.get('processed_flag', 0) != 0):
             continue
 
-        sub_entries = entry.get('sub_entries', [])
-        if not sub_entries:
-            continue
-
-        # ── Sub-list is non-empty ─────────────────────────────────────────────
-        expected_type = entry.get('order_type', -1)
-        board_orders  = getattr(state, 'g_board_orders', {})
-
-        if param_1 == -1:
-            # C param_1==-1 path: iterate sub-list; for each sub-node check
-            # GameBoard_GetPowerRec(node+0xf, buf, sub_node+0xc); if result[1]
-            # == node[0x10] → local_55 = 1.
-            for sub in sub_entries:
-                prov = sub.get('province', -1)
-                rec  = board_orders.get(prov, {})
-                if rec.get('order_type') == expected_type:
-                    return True
-        else:
-            # C param_1!=−1 path: first pass — is param_1 in sub-list?
-            # GameBoard_GetPowerRec(node+0xc, buf, &param_1); if result[1] !=
-            # node[0xd] (head ptr) → power found.
-            if not any(s.get('power_idx') == param_1 for s in sub_entries):
-                continue
-            # Second pass — check power-record field at node+0xf.
-            rec = board_orders.get(param_1, {})
-            if rec.get('order_type') == expected_type:
-                return True
+        participants = set(entry.get('participant_powers', set()))
+        if participants and (param_1 == -1 or param_1 in participants):
+            return True
 
     return False
 
@@ -186,9 +157,8 @@ def _press_gate_check(state: InnerGameState, power: int) -> bool:
     """
     Port of FUN_004117d0((int)param_1) called from SendAllyPressByPower.
 
-    Returns True (non-zero) when any unprocessed g_pos_analysis_list entry has a
-    board order for *power* matching the entry's expected order type → caller
-    skips press dispatch for this power.  False means no match → proceed.
+    Returns True when an unresolved proposal includes *power*, causing the
+    caller to defer another press action for that power.
 
     """
     return _fun_004117d0(state, power)
@@ -296,7 +266,8 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
 
     # Gate 5: power not designated enemy
     #          (&DAT_004cf568)[power*2] == 0 && (&DAT_004cf56c)[power*2] == 0
-    if int(state.g_enemy_flag[power]) != 0:
+    if (int(state.g_enemy_flag[power]) != 0
+            or int(getattr(state, 'g_enemy_flag_hi', [0] * 7)[power]) != 0):
         return False
 
     # Gate 6 & 7: positive influence AND non-negative relation
@@ -425,12 +396,15 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
     #    raw[mutual_enemy, own] / (raw[own, mutual_enemy] + 1) < 4.5
     #    raw[mutual_enemy, own] > 5  OR  raw[own, mutual_enemy] > 5
     enemy_flag = int(state.g_enemy_flag[mutual_enemy])
+    enemy_flag_hi = int(
+        getattr(state, 'g_enemy_flag_hi', [0] * 7)[mutual_enemy]
+    )
     rank_own_mutual = int(state.g_influence_rank_flag[own, mutual_enemy])
     raw_mutual_own = float(state.g_influence_matrix_raw[mutual_enemy, own])
     raw_own_mutual = float(state.g_influence_matrix_raw[own, mutual_enemy])
     ratio = raw_mutual_own / (raw_own_mutual + 1.0)
     cond_c = (
-        (enemy_flag == 1) and
+        (enemy_flag == 1 and enemy_flag_hi == 0) and
         (rank_own_mutual < 4) and
         (ratio < 4.5) and
         (raw_mutual_own > 5.0 or raw_own_mutual > 5.0)

@@ -12,13 +12,13 @@ the server (ack, rejection, busy-wait, huh-error replay, stance queries):
   * ``process_try``          — parse an inbound TRY (stance query).
 
 Module-level deps: ``...state.InnerGameState``;
-``..tokens._token_seq_overlap`` for ``ack_matcher``.
+``..tokens._token_seq_equal`` for ``ack_matcher``.
 """
 
 from ...state import InnerGameState
 from ..tokens import (
     _TOK_ALY, _TOK_AND, _TOK_DMZ, _TOK_ORR, _TOK_PCE, _TOK_VSS, _TOK_XDO,
-    _token_seq_overlap,
+    _token_seq_equal,
 )
 
 
@@ -42,11 +42,9 @@ def ack_matcher(
     C semantics (from FRMHandler.md + daide_semantics_notes.md):
 
       For each node in DAT_00bb65c8 where ``node.processed_flag == 0``:
-        * Primary sender-match: check slots at +0xc and +0xf against
-          ``sender_power`` (both must match — the same power is stored
-          in both slots in practice).
-        * On non-YES acks (REJ / BWX), an additional check at +0x12 is
-          required to match.
+        * Primary sender-match: sender must occur in the participant map at
+          +0xc. The +0xf map is the affirmative role set and +0x12 is the
+          rejection/deviation role set.
         * If matched:
             - ``YES`` → StdMap_FindOrInsert into role-B sub-tree.
             - ``REJ`` / ``BWX`` → StdMap_FindOrInsert into role-C
@@ -61,10 +59,8 @@ def ack_matcher(
       Returns 1 if any node matched, 0 otherwise.
 
     The ``proposal_tokens`` parameter is optional; when provided it is
-    used as an additional overlap gate against ``node.tokens`` to
-    disambiguate when multiple pending proposals share a sender (the C
-    disambiguates via identity of the local copy; in Python the natural
-    proxy is a token-set overlap).
+    used as an additional exact-token gate against ``node.tokens`` to
+    disambiguate when multiple pending proposals share a sender.
     """
     import logging as _logging
     import time as _t
@@ -79,18 +75,14 @@ def ack_matcher(
         if entry.get('processed_flag', 0) != 0:
             continue
 
-        # Primary sender-power match (C: slots +0xc and +0xf).
-        if entry.get('sender_power') != sender_power:
+        # +0xc is the participant map. +0xf is populated by the YES path.
+        if sender_power not in set(entry.get('participant_powers', set())):
             continue
 
-        # Non-YES acks require the +0x12 secondary slot to also match
-        # (in Python ``sender_power`` already represents both slots, so
-        # the extra check is structural: we simply accept when the
-        # primary match holds).
-        # Optional token-set overlap gate for disambiguation.
+        # Optional exact token-sequence gate for disambiguation.
         if proposal_tokens is not None:
-            entry_tokens = entry.get('token_set') or frozenset(entry.get('tokens', []))
-            if not _token_seq_overlap(list(entry_tokens), list(proposal_tokens)):
+            entry_tokens = entry.get('tokens', [])
+            if not _token_seq_equal(entry_tokens, proposal_tokens):
                 continue
 
         # ── Role-set bookkeeping ──────────────────────────────────────────
@@ -106,9 +98,9 @@ def ack_matcher(
 
         # ── +10000-keyed event into g_alliance_msg_tree ─────────────────────
         # C: BuildAllianceMsg(&DAT_00bbf638, buf, elapsed_sec + 10000).
-        # elapsed_sec = current_time − _DAT_00ba2880 (g_session_start_time).
+        # elapsed_sec = current_time − _DAT_00ba2880 (turn start).
         state.g_alliance_msg_tree.add(
-            int(_t.time() - getattr(state, 'g_session_start_time', 0.0)) + 10000
+            int(_t.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
         )
 
         match_count += 1
