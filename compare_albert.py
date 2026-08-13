@@ -22,6 +22,7 @@ import copy
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections import Counter, defaultdict
@@ -44,6 +45,63 @@ from Pybert.dispatch import validate_and_dispatch_order
 
 
 POWERS = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+
+_REPLAYABLE_DAIDE_PRESS = re.compile(
+    r"^\s*\(?\s*(?:"
+    r"FRM\s*\(|"
+    r"(?:PRP|YES|REJ|BWX|HUH|NOT|HST|TRY)\s*\(|"
+    r"(?:DRW|SLO)\s*\)?\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_replayable_daide_press(message: object) -> bool:
+    """Return whether a stored message has unambiguous DAIDE press syntax.
+
+    Requiring an envelope/argument parenthesis is intentional: human game
+    logs commonly begin with words such as ``Yes``, ``Not``, ``Try``, or
+    ``Huh`` and must not be interpreted as protocol tokens.
+    """
+    return bool(_REPLAYABLE_DAIDE_PRESS.match(str(message or '').strip()))
+
+
+def _audit_press_inputs(albert_files: list[Path], games_dir: Path) -> dict:
+    """Summarize whether paired reference games contain replayable press."""
+    stats = {
+        'paired_games': 0,
+        'full_press_games': 0,
+        'no_press_games': 0,
+        'phase_messages': 0,
+        'replayable_daide_messages': 0,
+    }
+    for albert_path in albert_files:
+        full_path = games_dir / albert_path.name
+        if not full_path.exists():
+            continue
+        try:
+            reference = json.loads(albert_path.read_text())
+            full_game = json.loads(full_path.read_text())
+        except Exception:
+            continue
+        stats['paired_games'] += 1
+        if full_game.get('is_full_press') is True:
+            stats['full_press_games'] += 1
+        else:
+            stats['no_press_games'] += 1
+        reference_phases = {
+            name for name in reference
+            if name and name != 'COMPLETED'
+        }
+        for phase in full_game.get('phases', []):
+            if phase.get('name') not in reference_phases:
+                continue
+            for message in phase.get('messages', []) or []:
+                stats['phase_messages'] += 1
+                stats['replayable_daide_messages'] += int(
+                    _is_replayable_daide_press(message.get('message', ''))
+                )
+    return stats
 
 
 def _adjustment_candidate_sets(state, power: str) -> list[list[str]]:
@@ -99,6 +157,12 @@ def _retreat_candidate_sets(state_data: dict, power: str) -> list[list[str]]:
     per_unit: list[list[tuple[str, str | None]]] = []
     for unit, destinations in retreat_map.items():
         unit = _norm_order(unit)
+        # The Albert reference files omit units with no legal retreat: their
+        # disband is forced and therefore carries no decision information.
+        # Keep that convention in the coverage oracle instead of materializing
+        # an explicit ``D`` that can never appear in the reference set.
+        if not destinations:
+            continue
         choices = [(f"{unit} R {_norm_order(dst)}", _norm_order(dst))
                    for dst in (destinations or [])]
         choices.append((f"{unit} D", None))
@@ -365,6 +429,11 @@ def main() -> None:
              "candidate pools from seeds 0 through N-1. This does not change "
              "the submitted-order comparison. Default: 0 (no sweep).",
     )
+    parser.add_argument(
+        "--audit-press-inputs", action="store_true",
+        help="Report whether paired game logs contain structured DAIDE press "
+             "that can be replayed safely, then exit.",
+    )
     parser.add_argument("--out", default=None,
                         help="Optional path for per-(game,phase,power) JSON dump.")
     args = parser.parse_args()
@@ -381,6 +450,21 @@ def main() -> None:
         albert_files = [albert_dir / args.game]
     if args.max_games is not None:
         albert_files = albert_files[: args.max_games]
+
+    if args.audit_press_inputs:
+        stats = _audit_press_inputs(albert_files, games_dir)
+        print("Press-input audit:")
+        print(f"  Paired games: {stats['paired_games']}")
+        print(f"  Full-press games: {stats['full_press_games']}")
+        print(f"  No-press games: {stats['no_press_games']}")
+        print(f"  Messages in reference phases: {stats['phase_messages']}")
+        print("  Replayable structured DAIDE messages: "
+              f"{stats['replayable_daide_messages']}")
+        if (stats['phase_messages']
+                and stats['replayable_daide_messages'] == 0):
+            print("  Result: message history is human free text; it cannot "
+                  "reconstruct XDO/ALY/DMZ protocol state.")
+        return
 
     phase_suffixes = set(args.phase_types.upper())
 

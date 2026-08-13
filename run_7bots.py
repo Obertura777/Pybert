@@ -44,11 +44,23 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-# Keep SUB order output and DIAG visible (package name is "Pybert")
-logging.getLogger("Pybert.bot.client._press").setLevel(logging.INFO)
+# Keep INFO diagnostics visible on the console while allowing selected DEBUG
+# records to reach games/debug.log.  A handler's DEBUG level cannot resurrect
+# a record already rejected by its logger, which previously made every inbound
+# press/parser trace disappear from the file.
+for _console_handler in logging.getLogger().handlers:
+    _console_handler.setLevel(logging.INFO)
+
+# Keep SUB order output and DIAG visible (package name is "Pybert"), and retain
+# press lifecycle detail in the file handler added below.
+logging.getLogger("Pybert.bot.client._press").setLevel(logging.DEBUG)
 logging.getLogger("Pybert.bot.client._orders").setLevel(logging.INFO)
-logging.getLogger("Pybert.bot.client._lifecycle").setLevel(logging.INFO)
+logging.getLogger("Pybert.bot.client._lifecycle").setLevel(logging.DEBUG)
 logging.getLogger("Pybert.monte_carlo.trial").setLevel(logging.INFO)
+logging.getLogger("Pybert.communications.inbound.frm").setLevel(logging.DEBUG)
+logging.getLogger("Pybert.communications.inbound.gate").setLevel(logging.DEBUG)
+logging.getLogger("Pybert.communications.inbound.respond").setLevel(logging.DEBUG)
+logging.getLogger("Pybert.communications.scheduling").setLevel(logging.DEBUG)
 log = logging.getLogger("run_7bots")
 log.setLevel(logging.INFO)
 
@@ -229,11 +241,11 @@ async def main(
     watcher_task = asyncio.create_task(_phase_watcher(), name="pause_watcher")
 
     # ── 3. Launch bots on independent event loops ───────────────────────
-    # Each bot's Monte Carlo pipeline is synchronous and CPU-heavy.  Running
-    # all seven on this event loop can prevent every WebSocket from answering
-    # pings for more than a minute once unit counts grow.  Separate spawned
-    # processes give each bot an independent event loop while the lightweight
-    # admin watcher remains responsive here.
+    # Each bot gets an independent process and event loop. AlbertClient moves
+    # its synchronous Monte Carlo pass to that process's worker thread, which
+    # leaves the loop free to answer WebSocket pings while scoring; keeping the
+    # bots in separate processes also prevents one bot's CPU work from starving
+    # the lightweight admin watcher here.
     process_context = multiprocessing.get_context("spawn")
     processes: list[multiprocessing.Process] = []
     for power in POWERS:
@@ -269,8 +281,7 @@ async def main(
     else:
         power, exit_code = process_watcher.result()
         _mark(
-            f"bot {power} exited before pause phase "
-            f"(exit_code={exit_code}); aborting"
+            f"bot {power} exited before pause phase (exit_code={exit_code}); aborting"
         )
         if not watcher_task.done():
             watcher_task.cancel()
@@ -305,13 +316,12 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help="Seconds per phase (0 = wait for all orders). "
-        "Must be 0 when running 7 bots in one process, "
-        "since each bot blocks the event loop during MC.",
+        "Zero is recommended when scoring time should not cause civil disorder.",
     )
     p.add_argument(
         "--press",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable press (messaging) for all bots. "
         "Without this flag the game is created with NO_PRESS.",
     )
@@ -319,7 +329,7 @@ if __name__ == "__main__":
         "--pause-phase",
         default="W1904A",
         help="Short phase name (e.g. 'W1902A') at which to pause "
-        "the game and dump its state to games/. Default: W1902A.",
+        "the game and dump its state to games/. Default: W1904A.",
     )
     args = p.parse_args()
     asyncio.run(main(args.host, args.port, args.deadline, args.pause_phase, args.press))

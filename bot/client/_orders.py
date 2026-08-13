@@ -494,15 +494,9 @@ class _OrdersMixin:
         # score so MC's selector skips them.
         #
         # IMPORTANT: only fire when g_broadcast_list has actual received
-        # press.  It can contain both received-press entries and self-emitted
-        # XDO support proposals
-        # (written by emit_xdo_proposals_to_broadcast in step 5h.1).  The
-        # corroboration penalty must only fire when there's genuine received
-        # press from OTHER powers — not our own proposals.  In NO_PRESS mode
-        # (g_minimal_press_mode == 1 or g_history_counter == 0 with no
-        # incoming FRM messages) g_broadcast_list contains only self-emitted
-        # entries.  Use the watermark: register_received_press bumps it when
-        # real press arrives; self-emitted proposals do not.
+        # press. BuildSupportProposals records stay in g_ProposalHistoryMap,
+        # as in C, and never enter this tree. Use the watermark because
+        # register_received_press bumps it when real press arrives.
         _bl = getattr(self.state, 'g_broadcast_list', None)
         _wm = getattr(self.state, 'g_broadcast_list_watermark', 0)
         _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
@@ -556,31 +550,10 @@ class _OrdersMixin:
         if self.state.g_press_flag == 1:
             _compute_press(self.state)
 
-        # 5h.1 — Emit accumulated XDO support proposals into g_broadcast_list.
-        # build_support_proposals (called per MC trial in process_turn Step 5)
-        # accumulates proposals in g_xdo_press_proposals.  Emit them now so
-        # that BuildAndSendSUB's broadcast-list pass can see them, and so
-        # that future calls to score_order_candidates_from_broadcast pick
-        # them up.  This mirrors the C emission at BuildSupportProposals.c
-        # lines 396–427 (FUN_00466f80 + AppendList inside the proposal loop).
-        # Skip XDO emission in NO_PRESS mode — it pollutes g_broadcast_list
-        # with stale proposals that trigger the corroboration penalty and
-        # partial g_general_orders population in subsequent phases.
-        if (movement_phase
-                and not _no_press
-                and getattr(self.state, 'g_xdo_press_proposals', None)):
-            from ...communications import emit_xdo_proposals_to_broadcast
-            try:
-                n_emitted = emit_xdo_proposals_to_broadcast(self.state)
-                if n_emitted:
-                    logger.debug(
-                        "Emitted %d XDO support proposals to g_broadcast_list",
-                        n_emitted,
-                    )
-            except Exception:
-                logger.exception(
-                    "emit_xdo_proposals_to_broadcast raised; continuing"
-                )
+        # BuildSupportProposals has already populated its persistent proposal
+        # records.  C keeps those in g_ProposalHistoryMap; it does not insert
+        # them into the inbound/outbound broadcast-score tree. THN dispatch
+        # consumes the records directly in _execute_xdo.
 
         # 5i — alliance-active block
         # Gate: curr_sc_cnt[own_power] != 0 AND DAT_00baed33 == 0 (alliance debug flag off)

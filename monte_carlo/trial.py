@@ -2724,7 +2724,14 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
         # it is the band cutoff in that function's empty-province penalty pass.
         # Passed explicitly from 2026-08-12 (previously dropped, and the
         # callee substituted win_threshold).
-        evaluate_alliance_score(state, power, local_b08)
+        alliance_delta = int(evaluate_alliance_score(state, power, local_b08))
+        # Candidate field 8 is the live EvaluateOrderScore result and field 9
+        # is initialized from it before the alliance rounds. Preserve that
+        # candidate-specific component when applying the alliance evaluation;
+        # otherwise positions whose alliance delta is identical for every
+        # candidate collapse to insertion order (notably Germany's opening
+        # KIE-hold candidate).
+        new_score = int(c.get('base_score', c.get('score', 0))) + alliance_delta
 
         # ── Phase (i): store per-candidate result ─────────────────────────────
         # C: lines 1071–1101 — puVar5[9] = new_score; average with previous if
@@ -2732,8 +2739,6 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
         # For rounds after zero C averages the new result with candidate field
         # 9, i.e. the preceding live alliance score.
         old_score = int(c.get('score', 0))
-        new_score = (int(state.g_alliance_desirability[power])
-                     if power < len(state.g_alliance_desirability) else 0)
         avg_score = (old_score // 2 + new_score // 2) if trial_counter > 0 else new_score
         c['alliance_score'] = new_score
         c['alliance_score_avg'] = avg_score

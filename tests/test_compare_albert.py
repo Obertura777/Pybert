@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from compare_albert import (
     _adjustment_candidate_sets,
     _extend_candidate_seed_coverage,
+    _is_replayable_daide_press,
     _retreat_candidate_sets,
 )
 
@@ -44,6 +45,16 @@ def test_candidate_seed_sweep_does_not_run_when_primary_pool_covers():
 
     assert covered is True
     assert seeds == [42]
+
+
+def test_press_input_audit_does_not_parse_human_yes_as_daide():
+    assert not _is_replayable_daide_press('Yes, I can support you to Belgium.')
+    assert not _is_replayable_daide_press('Not sure yet.')
+    assert _is_replayable_daide_press('YES ( PRP ( PCE ( ENG FRA ) ) )')
+    assert _is_replayable_daide_press(
+        'FRM ( ENG ) ( FRA ) ( PRP ( DMZ ( ENG FRA ) ( ENG ) ) )'
+    )
+    assert _is_replayable_daide_press('DRW')
 
 
 def test_adjustment_coverage_preserves_army_and_fleet_at_coastal_build_site():
@@ -87,6 +98,22 @@ def test_retreat_coverage_includes_rto_and_disband_choices():
 
     assert _retreat_candidate_sets(state_data, 'ENGLAND') == [
         ['F NTH R EDI'], ['F NTH R NWG'], ['F NTH D'],
+    ]
+
+
+def test_retreat_coverage_omits_forced_disbands_like_reference_files():
+    state_data = {
+        'retreats': {
+            'RUSSIA': {
+                'A BUD': ['GAL'],
+                'F BLA': [],
+            },
+        },
+    }
+
+    assert _retreat_candidate_sets(state_data, 'RUSSIA') == [
+        ['A BUD R GAL'],
+        ['A BUD D'],
     ]
 
 

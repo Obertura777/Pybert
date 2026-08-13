@@ -220,6 +220,11 @@ class _PressMixin:
         schedule the coroutine on the running event loop via create_task().
         For local Game objects (tests), set_orders is synchronous (returns None).
         """
+        # generate_and_submit_orders() runs in a worker so the WebSocket loop
+        # remains responsive. NetworkGame itself must only be touched here on
+        # the loop that owns the connection.
+        if self._marshal_to_network_loop(self._schedule_set_orders, list(orders)):
+            return
         if self.game is None:
             return
         phase = getattr(self.game, "current_short_phase", "") or ""
@@ -240,13 +245,16 @@ class _PressMixin:
         Send DAIDE direct-message using python-diplomacy NetworkGame API.
 
         Per-power fan-out — Albert never broadcasts to ``GLOBAL``.  Even when
-        the underlying DAIDE press is logically a broadcast (GOF, BCC, an
-        XDO PRP intended for everyone), python-diplomacy treats GLOBAL as a
+        the underlying DAIDE press is logically a broadcast (BCC or an XDO PRP
+        intended for everyone), python-diplomacy treats GLOBAL as a
         "system / all observers" channel that bypasses the per-power inbox
         and shows up untargeted in the message log.  The C original always
         addressed press to a specific recipient power; reproducing that here
         means iterating ``self.game.powers`` and emitting one Message per
         non-self power.
+
+        GOF and NOT(GOF) are not press.  They map exclusively to the server's
+        per-power wait flag via ``game.no_wait()`` and ``game.wait()``.
 
         Three further things to get right:
 
@@ -266,6 +274,8 @@ class _PressMixin:
           where the server has already advanced past ``phase`` while
           Albert was scoring trials.
         """
+        if self._marshal_to_network_loop(self._send_dm, copy.deepcopy(msg)):
+            return
         logger.debug("SendDM: %r", msg)
         if self.game is None:
             return
@@ -278,11 +288,54 @@ class _PressMixin:
             _explicit_recipient = msg.get('recipient')
             msg = msg.get('message', '')
 
-        # GOF is a server-readiness signal, not a press message.  Set the
-        # wait flag to False instead of broadcasting to other powers.
+        # GOF and NOT(GOF) are server-readiness controls, never press messages.
+        # Canonicalize whitespace so both token-list and string callers hit the
+        # control path and can never fall through to per-power fan-out.
         body_str = ' '.join(str(t) for t in msg) if isinstance(msg, list) else str(msg)
-        if body_str.strip() == 'GOF':
+        control_body = ''.join(body_str.upper().split())
+
+        if control_body == 'NOT(GOF)':
             phase = getattr(self.game, "current_short_phase", "") or ""
+            try:
+                if hasattr(self.game, 'wait'):
+                    future = self.game.wait()
+                    self._track_request_future(
+                        future, f"wait for {self.power_name}", phase)
+                elif hasattr(self.game, 'set_wait'):
+                    # Offline/server Game fallback.  NetworkGame always uses
+                    # wait() above so the change is sent to the server.
+                    self.game.set_wait(self.power_name, True)
+                else:
+                    logger.warning(
+                        "NOT(GOF) ignored: game has no wait-control API")
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "wait for %s rejected for phase %s: %s: %s",
+                    self.power_name, phase, type(exc).__name__, exc,
+                )
+                return
+            logger.info(
+                "_send_dm: NOT(GOF) → wait() (wait=True) for %s",
+                self.power_name,
+            )
+            return
+
+        if control_body == 'GOF':
+            phase = getattr(self.game, "current_short_phase", "") or ""
+
+            # generate_and_submit_orders() calls _send_gof() from its worker
+            # before the event-loop-side inbound press queue has had its final
+            # response pass.  Releasing wait here can advance a deadline-0
+            # game and discard those proposals.  _run_game_update_async flushes
+            # this deferred GOF after it drains and answers current-turn press.
+            if getattr(self, '_generation_in_progress', False):
+                self._deferred_gof_phase = phase
+                logger.info(
+                    "_send_dm: GOF deferred until inbound press drains for %s",
+                    self.power_name,
+                )
+                return
 
             def _send_no_wait() -> None:
                 # Never release the wait flag for orders computed in a phase
@@ -434,6 +487,86 @@ class _PressMixin:
                         " phase=%r): %s: %s",
                         recipient, phase, type(exc).__name__, exc,
                     )
+
+
+    def _press_response_key(self, entry: dict) -> tuple:
+        """Identify duplicate two-pass records for one phase/proposal."""
+        phase = (
+            getattr(self.game, 'current_short_phase', '')
+            or self.current_phase
+            or (getattr(self.state, 'g_year', 0),
+                getattr(self.state, 'g_season', ''))
+        )
+        sender = int(entry.get('from_power_tok', 0)) & 0xff
+        content = repr(entry.get('sublist3', entry.get('press_content', [])))
+        return phase, sender, content
+
+
+    def _respond_to_received_press_entry(self, entry: dict) -> bool:
+        """Evaluate and queue one received proposal without regenerating orders."""
+        if not entry.get('received_flag') or entry.get('type_flag', 0) != 0:
+            return False
+
+        response_key = self._press_response_key(entry)
+        if response_key in self._responded_press_keys:
+            return False
+
+        from ...communications import (
+            receive_proposal as _receive_proposal,
+            respond as _respond,
+            evaluate_press as _evaluate_press,
+        )
+
+        from_tok = entry.get('from_power_tok', 0)
+        from_idx = from_tok & 0xff
+        proposal_tokens = entry.get(
+            'sublist3', entry.get('press_content', []))
+        response_type = _evaluate_press(self.state, entry)
+        participants = [
+            int(tok) & 0x7f
+            for tok in entry.get('sublist2', [])
+            if isinstance(tok, int)
+        ]
+        _receive_proposal(
+            self.state,
+            from_idx,
+            proposal_tokens,
+            participant_powers=participants,
+            send_fn=self._send_dm,
+        )
+        scheduled_time = entry.get('sched_time', 0)
+        _respond(
+            self.state,
+            press_list=entry,
+            response_type=response_type,
+            elapsed_lo=scheduled_time & 0xFFFFFFFF,
+            elapsed_hi=(scheduled_time >> 32) & 0xFFFFFFFF,
+            send_fn=self._send_dm,
+        )
+        # Mark only after RESPOND has successfully queued the answer.  If an
+        # evaluator or response builder raises, the duplicate registration
+        # record remains available for a later retry instead of being silently
+        # suppressed.
+        self._responded_press_keys.add(response_key)
+        _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
+        return True
+
+
+    def _respond_to_pending_press_entries(self) -> int:
+        """Answer all newly registered proposals and flush due replies."""
+        responded = sum(
+            self._respond_to_received_press_entry(entry)
+            for entry in list(self.state.g_broadcast_list)
+        )
+        if responded:
+            dispatch_scheduled_press(self.state, self._send_dm)
+            logger.info(
+                "Responded to %d inbound proposal(s) for %s in %s",
+                responded,
+                self.power_name,
+                getattr(self.game, 'current_short_phase', '') or self.current_phase,
+            )
+        return responded
 
 
     def _build_and_send_sub(self, best_orders: list) -> None:
@@ -640,18 +773,10 @@ class _PressMixin:
         # 1204–1211) after proposal-history processing when g_history_counter>19.
         # Python mirrors both the inner trial loop and outer press handling.
         _processed_ids: set = set()
-        # register_received_press inserts two entries per incoming proposal
-        # (pass-1 watermark=None, pass-2 watermark=size_before).  Both have
-        # received_flag=True/type_flag=0, so without dedup the loop calls
-        # respond() twice and sends duplicate YES/REJ messages.
-        _responded_proposals: set = set()
         _time_expired = False
         submitted_provs = {e[0] for e in order_pairs if e}
 
         from ...communications import (
-            receive_proposal    as _receive_proposal,
-            evaluate_press      as _evaluate_press,
-            respond             as _respond,
             send_alliance_press as _send_alliance_press,
         )
 
@@ -687,38 +812,7 @@ class _PressMixin:
                 # C lines 490–570: RECEIVE_PROPOSAL + EvaluatePress + RESPOND
                 # Only for received entries (received_flag==1, type_flag==0).
                 if _entry.get('received_flag') and _entry.get('type_flag', 0) == 0:
-                    _from_tok  = _entry.get('from_power_tok', 0)
-                    _from_idx  = _from_tok & 0xff
-                    _prop_toks = _entry.get('sublist3', _entry.get('press_content', []))
-                    _prop_key  = (_from_idx, tuple(_prop_toks))
-                    if _prop_key in _responded_proposals:
-                        continue
-                    _responded_proposals.add(_prop_key)
-                    _sVar2 = _evaluate_press(self.state, _entry)
-                    # C evaluates first; RECEIVE_PROPOSAL then copies
-                    # DAT_00bb65d4 (the accepted clauses) into the new ledger
-                    # node's press-entry tree.
-                    _participants = [
-                        int(tok) & 0x7f
-                        for tok in _entry.get('sublist2', [])
-                        if isinstance(tok, int)
-                    ]
-                    _receive_proposal(
-                        self.state, _from_idx, _prop_toks,
-                        participant_powers=_participants,
-                        send_fn=self._send_dm,
-                    )
-                    _st = _entry.get('sched_time', 0)
-                    _respond(
-                        self.state,
-                        press_list=_entry,
-                        response_type=_sVar2,
-                        elapsed_lo=_st & 0xFFFFFFFF,
-                        elapsed_hi=(_st >> 32) & 0xFFFFFFFF,
-                        send_fn=self._send_dm,
-                    )
-                    # C line 569: FUN_00457520 = EvaluateOrderProposalsAndSendGOF
-                    _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
+                    self._respond_to_received_press_entry(_entry)
 
                 # C lines 575–582: SendAllyPressByPower for own-entry nodes
                 # Condition: not a received entry AND g_history_counter > 0
@@ -812,6 +906,8 @@ class _PressMixin:
         The server defaults to neutral each phase, so we never need to
         explicitly send NO or NEUTRAL — only YES when we want it.
         """
+        if self._marshal_to_network_loop(self._submit_draw_vote):
+            return
         if self.game is None:
             return
         try:

@@ -478,6 +478,7 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                             for rec in phm:
                                 if rec.get('key') == key:
                                     rec['score'] = rec.get('score', 0) + priority
+                                    rec['priority'] = rec['score']
                                     break
                         continue
 
@@ -500,12 +501,20 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
                     if phm is not None:
                         phm.append({
                             'key':          key,
+                            'type':         'XDO_SUP',
                             'power':        power_idx,
                             'province':     own_prov,
                             'score':        priority,
+                            'priority':     priority,
                             'target_power': unit2_power,
                             'src_prov':     own_prov,
                             'dst_prov':     dest,
+                            'supporter_prov': unit2_prov,
+                            'supporter_power': unit2_power,
+                            'mover_prov':   own_prov,
+                            'dest':         dest,
+                            'from_power':   power_idx,
+                            'to_power':     unit2_power,
                         })
 
 

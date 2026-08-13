@@ -325,6 +325,7 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
       mutual_enemy = g_mutual_enemy_table[power]  (DAT_00b9fdd8[param_1])
 
       Gate 1: mutual_enemy >= 0  (valid)
+      Gate 1b: exact (own, target, mutual_enemy) proposal was not sent before
       Gate 2: g_ally_matrix[power, mutual_enemy] == 0  (no existing alliance)
 
       bVar3: scan all powers — any p where g_ally_matrix[p, mutual_enemy] == 1 (tentative)
@@ -341,6 +342,7 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
 
       If any condition fires:
         Send PRP ( ALY ( own power ) VSS ( mutual_enemy ) ) to power.
+        Record the exact triplet in persistent proposal history.
         g_ally_matrix[power, mutual_enemy] = -4  (cooling-off / proposal-sent marker)
         return True
 
@@ -364,6 +366,19 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
 
     # Gate 1: mutual enemy must be valid
     if mutual_enemy < 0:
+        return False
+
+    # g_pos_analysis_list only deduplicates within the current phase, while
+    # g_ally_matrix can be cleared by strategic recalculation.  Keep a separate
+    # game-lifetime record so the exact same ALY/VSS offer is not blindly
+    # reissued after either transient structure is reset.  A different target
+    # or mutual enemy has a different key and remains eligible.
+    proposal_key = (int(own), int(power), mutual_enemy)
+    aly_history = getattr(state, 'g_aly_proposal_history', None)
+    if aly_history is None:
+        aly_history = set()
+        state.g_aly_proposal_history = aly_history
+    if proposal_key in aly_history:
         return False
 
     # Gate 2: g_ally_matrix[power*21 + mutual_enemy] == 0  (neutral; not already allied)
@@ -436,6 +451,10 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
     if not sent:
         return False
 
+    # Persist only successful sends.  A transport/validation failure must not
+    # suppress a later legitimate retry.
+    aly_history.add(proposal_key)
+
     # Mark g_ally_matrix[power*21 + mutual_enemy] = 0xfffffffc = -4 (cooling-off)
     # C: (&g_ally_matrix)[(int)(puVar6 + iVar2)] = 0xfffffffc
     state.g_ally_matrix[power, mutual_enemy] = -4
@@ -447,19 +466,14 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     """
     Port of FUN_00433510(this, param_1) — param_1 = sender power index.
 
-    Searches g_broadcast_list for already-sent own proposals (type_flag==1,
-    sent==True, history_flag>0) whose board state no longer matches the
-    expected order (GameBoard_GetPowerRec check) and which have not yet been
-    submitted as an XDO proposal (g_xdo_proposal_list dedup).
+    Consumes the proposal records produced by BuildSupportProposals.  In C
+    those records live in g_ProposalHistoryMap; they are not broadcast-list
+    nodes.  A record is eligible when Albert is the proposed mover, ``power``
+    owns the requested supporting unit, its accumulated priority is positive,
+    and the support order still validates on the current board.
 
-    Scores each candidate via score_vector[own] and score_vector[power]
-    (C: node[0x12+power] − baseline[power] delta pair).  Accumulates all
-    candidates that strictly improve the running best total (score_own + score_sender
-    > best_score) with score_own > 0 and score_sender > −800.
-
-    After iteration: sends each accumulated PRP(XDO) via send_fn (PROPOSE macro)
-    and registers the token-sequence dedup key in g_xdo_proposal_list
-    (FUN_00419300 equivalent) to prevent re-sending the same proposal.
+    Sends each eligible PRP(XDO) through PROPOSE and records its exact token
+    key in g_xdo_proposal_list to prevent duplicate negotiation.
 
     Unchecked callees: FUN_00410980, FUN_00419300,
                        FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
@@ -473,100 +487,80 @@ def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
     )
 
     own: int = getattr(state, 'albert_power_idx', 0)
-    best_score: int = -20000          # local_a4
-
-    # Accumulators (local_4c = dedup keys, local_3c = PRP list).
-    accumulated_dedup_keys: list = []
-    accumulated_prp: list = []
-
-    # g_xdo_proposal_list — set of token-tuple keys already submitted as XDO
-    # proposals.  Mirrors C's FUN_00410980/FUN_00419300 full-key-sequence lookup.
-    # DAT_00bb6df4 / DAT_00bb6df8 sentinel.
+    # g_xdo_proposal_list — exact XDO token keys already submitted.
     xdo_sent: set = getattr(state, 'g_xdo_proposal_list', set())
+    id_to_prov = getattr(state, '_id_to_prov', {}) or {
+        v: k for k, v in getattr(state, 'prov_to_id', {}).items()
+    }
 
-    for node in getattr(state, 'g_broadcast_list', []):
-        # Gate 1: type_flag == 1  (node[7] == 1) — self-generated proposals only
-        if node.get('type_flag', 0) != 1:
+    eligible: list[tuple[int, tuple, list]] = []
+    records = list(getattr(state, 'g_xdo_press_proposals', []))
+    records.extend(getattr(state, 'g_proposal_history_map', []) or [])
+    seen_record_keys: set = set()
+    for record in records:
+        if record.get('type') != 'XDO_SUP':
+            continue
+        record_key = record.get('key')
+        if record_key is not None:
+            if record_key in seen_record_keys:
+                continue
+            seen_record_keys.add(record_key)
+        if int(record.get('from_power', -1)) != own:
+            continue
+        if int(record.get('to_power', -1)) != power:
+            continue
+        priority = int(record.get('priority', record.get('score', 0)))
+        if priority <= 0:
             continue
 
-        # Gate 2: history_flag > 0  (C: (int)node[0x27] > 0)
-        # node[0x27] = AllianceRecord+0x9c = history_flag in the Python model.
-        # Earlier port read 'count' (nonexistent field) → gate always failed.
-        if node.get('history_flag', 0) <= 0:
+        supporter = int(record.get('supporter_prov', -1))
+        mover = int(record.get('mover_prov', -1))
+        destination = int(record.get('dest', -1))
+        supporter_unit = state.unit_info.get(supporter)
+        mover_unit = state.unit_info.get(mover)
+        if not supporter_unit or not mover_unit:
+            continue
+        if int(supporter_unit.get('power', -1)) != power:
+            continue
+        if int(mover_unit.get('power', -1)) != own:
+            continue
+        if supporter not in id_to_prov or mover not in id_to_prov or destination not in id_to_prov:
             continue
 
-        # Gate 3: sent_flag == 1  (*(char*)(node+6) == '\x01')
-        if not node.get('sent', False):
-            continue
-
-        # Retrieve the XDO token sequence from order_candidates.
-        # C node stores the token list inline; Python mirrors it as
-        # order_candidates[0]['tokens'] (set by emit_xdo_proposals_to_broadcast).
-        candidates = node.get('order_candidates', [])
-        if not candidates:
-            continue
-        tokens: list = candidates[0].get('tokens', [])
-        if not tokens:
-            continue
-
-        # GameBoard_GetPowerRec check: skip when board already satisfies order.
-        # C: puVar4[1] != local_50 → board order for *power* changed since proposal.
-        # When 'order_match' is absent (no board-state snapshot in entry), the
-        # check is conservatively skipped so the proposal is always evaluated.
-        board_order = getattr(state, 'g_board_orders', {}).get(power)
-        expected    = node.get('order_match')
-        if board_order is not None and expected is not None and board_order == expected:
-            continue
-
-        # FUN_00410980: dedup against g_xdo_proposal_list using full token tuple.
+        supporter_type = 'FLT' if supporter_unit.get('type') == 'F' else 'AMY'
+        mover_type = 'FLT' if mover_unit.get('type') == 'F' else 'AMY'
+        tokens = [
+            'XDO', '(',
+            '(', _PN[power], supporter_type, id_to_prov[supporter], ')',
+            'SUP',
+            '(', _PN[own], mover_type, id_to_prov[mover], ')',
+            'MTO', id_to_prov[destination],
+            ')',
+        ]
         dedup_key = tuple(tokens)
         if dedup_key in xdo_sent:
             continue
+        order_seq = {
+            'type': 'SUP',
+            'unit': f"{'F' if supporter_type == 'FLT' else 'A'} {id_to_prov[supporter]}",
+            'target_unit': f"{'F' if mover_type == 'FLT' else 'A'} {id_to_prov[mover]}",
+            'target_dest': id_to_prov[destination],
+            'target_coast': '',
+        }
+        if validate_and_dispatch_order(
+                state, power, order_seq, commit=False) != 0:
+            continue
+        eligible.append((priority, dedup_key, tokens))
 
-        # Score computation from score_vector (C: node[power+0x12] − baseline[power]).
-        # Python uses legitimacy_gate scores stored per-power in score_vector.
-        score_vector: list = node.get('score_vector', [0] * 7)
-        score_own:    int  = score_vector[own]   if own   < len(score_vector) else 0
-        score_sender: int  = score_vector[power] if power < len(score_vector) else 0
-
-        # FUN_00422a90 (commit=False) gate — skip invalid orders.
-        order_seq_dict = candidates[0].get('order_seq')
-        if order_seq_dict is not None:
-            if validate_and_dispatch_order(state, own, order_seq_dict, commit=False) != 0:
-                continue
-
-        # Accumulate whenever this beats the running best combined score.
-        total: int = score_own + score_sender
-        if score_own > 0 and score_sender > -800 and total > best_score:
-            best_score = total
-            accumulated_dedup_keys.append(dedup_key)
-            accumulated_prp.append({
-                'tokens':      tokens,
-                'score_own':   score_own,
-                'score_sender': score_sender,
-            })
-
-    if not accumulated_prp:
-        return  # bVar1 == false
-
-    # bVar1 == true: send all accumulated PRP(XDO) proposals (PROPOSE macro).
-    # C: PROPOSE(local_9c) → build PRP ( XDO ( … ) ) and dispatch.
-    #    FUN_00419300 then registers the key in g_xdo_proposal_list.
-    # Route through propose() for proposal-tree dedup and game-state validation.
+    # Highest-priority requests go first; the C history map supplies the
+    # accumulated priority field used for this ordering.
+    eligible.sort(key=lambda item: item[0], reverse=True)
     from .senders import propose as _propose
-    sent_keys: list = []
-    for prp, dedup_key in zip(accumulated_prp, accumulated_dedup_keys):
-        msg = f"PRP ( {' '.join(str(t) for t in prp['tokens'])} )"
-        _log.debug(
-            "_execute_xdo: PRP(XDO) score_own=%d score_sender=%d",
-            prp['score_own'], prp['score_sender'],
-        )
+    for priority, dedup_key, tokens in eligible:
+        msg = f"PRP ( {' '.join(str(t) for t in tokens)} )"
+        _log.debug("_execute_xdo: PRP(XDO) priority=%d", priority)
         if _propose(state, msg, [power], send_fn=_send):
-            sent_keys.append(dedup_key)
-
-    # FUN_00419300: register proposed token-tuple keys in g_xdo_proposal_list.
-    for dedup_key in sent_keys:
-        xdo_sent.add(dedup_key)
+            xdo_sent.add(dedup_key)
     state.g_xdo_proposal_list = xdo_sent
 
 

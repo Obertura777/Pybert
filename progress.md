@@ -17,8 +17,9 @@ some unrelated candidate.
 
 ## Current verified checkpoint
 
-- `python -m pytest -q` passes: **104 tests**.
-- `py_compile` passes for the changed evaluator/state/trial/test modules.
+- `python -m pytest -q` passes: **135 tests**.
+- `py_compile` passes for the changed press, evaluator, oracle, state, trial,
+  and test modules.
 - `git diff --check` passes.
 - The offline oracle harness now suppresses only the NetworkGame-only GOF
   signal. It no longer reports every successful local `diplomacy.Game` run as
@@ -31,6 +32,17 @@ some unrelated candidate.
   six-order set, including `SEV-BUL VIA`, `BLA C SEV-BUL`, and
   `RUM S SEV-BUL`, occurs at seed 0. The union of seeds 1 and 0 contains 1,868
   legal candidates and reaches **6/6 as one complete candidate**.
+- Coverage-only seed sweep `{1,0,2}` now reaches **21/21** complete opening
+  power sets across games 10, 100, and 1000, and **7/7** complete midgame sets
+  in game 10 `S1902M`, with no Python failures.
+- The first three reference games' complete retreat/adjustment sweep reaches
+  **155/156** sets across 156 phase/power pairs. The sole miss is the known
+  inconsistent game 10 `S1904R` pair (`A ROM R VEN` in the reference while
+  the paired NOW state permits only `APU`).
+- `python compare_albert.py --audit-press-inputs` proves that the 63 paired
+  games contain 13,291 messages in reference phases but **zero** structured
+  DAIDE press messages. Their human free text cannot reconstruct received
+  XDO/ALY/DMZ state.
 
 ## Port bugs fixed in this checkpoint
 
@@ -376,7 +388,154 @@ some unrelated candidate.
      are generated. The sole miss is an inconsistent input pair: the supplied
      `S1904R` state restricts `A ROM` to `APU`, while the Albert output is
      `A ROM R VEN`; a generator correctly consuming that NOW state cannot emit
-     VEN. Full suite: **104 passed**.
+   VEN. Full suite: **104 passed**.
+
+25. Deterministic press-port fidelity
+
+   - Re-audited the recovered press functions against the C bodies without
+     changing PRNG-based decisions. Token-sequence helpers now implement exact
+     ordered equality; evaluator dispatch preserves nested DAIDE sublists and
+     NOT-XDO polarity; the PRP token is the recovered `0x4a13` value.
+   - PCE, DMZ, ALY, SLO, DRW, AND, CAL_VALUE, cancellation, scheduled dispatch,
+     and response timing now follow the recovered control flow and hidden
+     participant context.
+   - Reconstructed the proposal-analysis record correctly: `+0xc` is the
+     participant-power map, `+0xf` the affirmative map, and `+0x12` the
+     rejection/deviation map. Proposal dedup includes participant identity,
+     acknowledgements update the proper set, and GOF processing waits until
+     every participant has affirmed.
+   - Fifteen focused source-backed press regressions plus the integrated Albert
+     harness pass. No diff touches a recovered `_rand()` call site.
+
+26. Bounded movement candidate-coverage expansion
+
+   - Used the production candidate generator, full-row snapshot restorer,
+     serializer, and validator while bypassing only the selection rounds that
+     cannot affect candidate reachability.
+   - Games 10, 100, and 1000 `S1901M` reach **21/21** complete Albert sets
+     under the bounded seed order `{1,0,2}`. Most are present at seed 1;
+     game 100 Italy and Austria and game 1000 Russia and Austria require the
+     seed-0 follow-up pool.
+   - Game 10 `S1902M` reaches **7/7** complete sets under the same bounded
+     sweep. France, Italy, and Turkey are present at seed 1; England, Austria,
+     and Russia appear by seed 0; Germany appears by seed 2. There were no
+     generation failures.
+
+27. Expanded retreat and adjustment coverage
+
+   - Swept every retreat and adjustment reference pair in the first three
+     lexicographic games: 102 adjustment pairs and 54 retreat pairs.
+   - The reference format omits forced disbands for units with no legal retreat
+     destination. The oracle now follows that convention rather than inventing
+     an explicit `D`, raising complete-set coverage from **151/156** to
+     **155/156**.
+   - All **102/102** adjustment sets and **53/54** retreat sets are reachable.
+     The remaining retreat miss is the previously documented inconsistent
+     game 10 `S1904R` state/reference pair, not a legal generation gap.
+
+28. Full-press replay input audit
+
+   - Added `--audit-press-inputs` with a strict DAIDE syntax recognizer. It
+     requires protocol structure such as `FRM (...)` or `YES (...)`, so English
+     messages beginning with “Yes”, “Not”, “Try”, or “Huh” are never fed into
+     the DAIDE parser accidentally.
+   - Across all 63 paired references, 50 games are marked full press and 13 no
+     press. Their reference phases contain 13,291 messages, but none is a DAIDE
+     envelope or structured DAIDE body; every message is human free text.
+   - Consequently the current artifacts cannot reproduce Albert's received
+     XDO/ALY/DMZ constraints or historical press state. Board-only NO_PRESS
+   candidate coverage remains the only evidence-backed oracle until a DAIDE
+   history, Albert state snapshot, or deterministic human-to-DAIDE translator
+   is supplied.
+
+29. Long-turn WebSocket and reconnect resilience
+
+   - NetworkGame phase synchronization stays on the owning asyncio loop, while
+     CPU-heavy Monte Carlo/order generation runs in a worker thread. This lets
+     Tornado service WebSocket ping/pong traffic even when a turn takes longer
+     than the server's 60-second ping timeout.
+   - `set_orders`, GOF/`no_wait`, press messages, and draw votes are marshalled
+     back to the connection's owning loop; inbound phase and press callbacks
+     are serialized so the worker cannot race the next turn's state update.
+   - Stale queued phase notifications are discarded before synchronization and
+     generation, preventing an old scoring task from submitting into a newer
+     phase.
+   - The adjacent diplomacy server now atomically transfers a reconnecting
+     bearer token from its old WebSocket handler to the new one. A delayed
+     `on_close` for the old handler can no longer detach the replacement or
+     trigger the former `attach_connection_handler` assertion.
+   - Focused client and server concurrency regressions pass; the full Pybert
+     suite passes **129 tests**.
+
+30. Candidate alliance-score return path
+
+   - `EvaluateAllianceScore.c` returns the evaluated candidate's aggregate
+     score through its own-power accumulator; the per-opponent score array is
+     separate and deliberately does not write its own-power cell. Python
+     discarded the return value and read that zero cell, flattening every
+     candidate's alliance score to zero.
+   - The flattening made `RefreshOrderTable` fall back to candidate insertion
+     order. Germany's early KIE-hold candidate consequently won every movement
+     phase in game `ccBIQmLtvm9Gdz5m`, even though higher-scoring complete
+     candidates moved the unit.
+   - The evaluator now returns the aggregate score, and
+     `UpdateAllyOrderScore` combines it with the preserved field-8
+     `EvaluateOrderScore` component. On the standard-opening seed-1 regression,
+     Germany changes from `F KIE H` to `F KIE - BAL`; all three submitted
+     German orders are moves.
+
+31. In-turn press response lifecycle
+
+   - Inbound `GameMessageReceived` notifications that arrive during Monte Carlo
+     can no longer miss `BuildAndSendSUB` and then disappear when the next phase
+     clears `g_broadcast_list`. The client drains the live NetworkGame message
+     history after generation and runs a response-only pass before phase-ready.
+   - GOF/`no_wait()` is deferred while generation owns the bot state and is
+     released only after current-turn proposals have been parsed and answered.
+     Messages arriving while the bot is otherwise idle use the same serialized
+     response-only path immediately.
+   - `GOF` and `NOT(GOF)` are terminal server readiness controls in the client
+     adapter: `GOF` calls `NetworkGame.no_wait()` and `NOT(GOF)` calls
+     `NetworkGame.wait()`. Neither token can fall through to power-to-power
+     `send_game_message()` fan-out.
+   - Callback and history copies share a four-field message identity including
+     the body, while the two registration records for one proposal share a
+     phase-scoped response key. Each valid proposal is therefore answered once,
+     without losing distinct same-timestamp messages.
+   - `run_7bots.py` now records inbound parser, gate, scheduling, and outbound
+     press DEBUG events in `games/debug.log` while keeping console output at
+     INFO or above.
+   - Regression coverage proves a PRP received during generation is answered
+     before `no_wait()`, duplicate delivery is ignored, two-pass registration
+     produces one reply, and `PRP ( PCE ( ENG FRA ) )` produces a directed
+   `YES ( PRP ( PCE ( ENG FRA ) ) )` response.
+
+32. C-faithful outbound press reachability
+
+   - Audited every recovered outbound `SendDM`/`PROPOSE` call site. Server
+     controls remain server controls: SUB maps to `set_orders`, DRW maps to a
+     draw vote, and GOF/`NOT(GOF)` map to `no_wait()`/`wait()`. They are never
+     power-to-power communication messages.
+   - The negotiable outbound forms are `PRP(PCE)`, `PRP(ALY ... VSS ...)`,
+     `PRP(DMZ)`, and `PRP(XDO)`, plus directed YES/REJ/BWX/HUH replies. XDO is
+     a proposal body inside PRP, not a raw top-level wire message.
+   - Fixed the XDO producer/consumer disconnect. BuildSupportProposals records
+     now persist in the C-equivalent proposal-history map, THN dispatch selects
+     records for Albert's own proposed move and the recipient's supporting
+     unit, validates the order as that recipient power, and sends a directed,
+     tracked `PRP(XDO)`. The invented broadcast-record conversion is now a
+     compatibility no-op instead of manufacturing zero-score AllianceRecords.
+   - Fixed the DMZ record layout and gates: `g_order_list` now writes C's
+     node[5] power field, the three packed flags use their recovered meanings,
+     threshold comparison is strict, and `GameBoard_GetPowerRec` checks the
+     per-power counter-designation map rather than supply-center ownership.
+     DMZ sends now go through `PROPOSE`, so YES/REJ acknowledgements match the
+     same in-flight proposal ledger as PCE/ALY/XDO.
+   - A real standard-opening generation produces valid directed XDO requests
+     from Austria to Germany and Italy (`... MUN SUP VIE MTO TYR ...` and
+     `... VEN SUP VIE MTO TYR ...`) with no mocked score or serializer path.
+     Focused reachability and acknowledgement regressions pass; the complete
+     suite passes **135 tests**.
 
 ## Selection-context limitations (not generation blockers)
 
@@ -442,11 +601,13 @@ the original run context/RNG state is reproduced or captured.
 
 ## Next generation-logic work, in priority order
 
-1. Expand complete-candidate coverage across a bounded sample of opening and
-   midgame movement positions, sweeping seeds only after a primary-pool miss.
-2. Expand retreat and adjustment coverage beyond the verified game 10 smoke
-   cases; adjustment candidate enumeration now supports this directly.
-3. Audit full-press replay inputs independently of PRNG selection. Received
-   XDO/ALY/DMZ state may intentionally constrain generated movement candidates,
-   so coverage needs the matching message history rather than board-only
-   NO_PRESS reconstruction.
+1. Obtain a structured DAIDE message history or serialized Albert press-state
+   snapshot for at least one reference run. Human free text cannot be converted
+   into XDO/ALY/DMZ constraints without adding a non-source-backed semantic
+   model, so full-press replay is externally data-blocked.
+2. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
+   before treating 100% retreat coverage as a meaningful target.
+3. If broader statistical evidence is desired, run the same coverage-only
+   bounded seed sweep over a larger stratified movement sample. The completed
+   28-pair opening/midgame sample and 156-pair retreat/adjustment sample expose
+   no remaining legal candidate-generation defect.

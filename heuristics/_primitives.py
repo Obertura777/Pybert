@@ -259,12 +259,14 @@ def _float_to_int64(value: float) -> int:
 
 
 def evaluate_alliance_score(state: InnerGameState, own_power: int,
-                            trial_weight: int = 30) -> None:
+                            trial_weight: int = 30) -> int:
     """
     Port of EvaluateAllianceScore (FUN_0043bd20).
 
     Complex per-power desirability scoring using unit positions, trust levels,
-    threat assessment, and alliance history. Writes state.g_alliance_desirability[power].
+    threat assessment, and alliance history. Returns the evaluated candidate's
+    aggregate score and writes its per-opponent components to
+    ``state.g_alliance_desirability`` for diagnostics.
 
     Algorithm phases:
       0. Setup: initialize accumulators and weights based on NearEndGameFactor
@@ -536,6 +538,13 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
                     main_score[power] -= d
 
     # --- Phase 5: Final accumulation ---
+    # EvaluateAllianceScore.c keeps ``piVar5`` pointed at
+    # aiStack_10278[own_power].  That value is the function result consumed by
+    # UpdateAllyOrderScore; DAT_0062db58/g_alliance_desirability is separate
+    # per-opponent state.  The old port wrote only those opponent components,
+    # returned None, and its caller read the deliberately untouched own-power
+    # component (always zero), flattening every candidate score to zero.
+    aggregate_score = float(main_score[own_power])
     for power in range(num_powers):
         if power == own_power:
             continue
@@ -560,6 +569,7 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
            (trust_score == 1 and trust_hi == 0 and relation_score < 11):
             # Enemy scoring: pull toward 2000 baseline
             score_adj = (2000.0 - main_score[power]) * enemy_weight
+            aggregate_score += score_adj
         # Branch 2: trusted ally → ally weight
         # C: (trust_hi>=0 && (trust_hi>0 || trust!=0) && relation>0x13) ||
         #    (trust_hi>=0 && (trust_hi>0 || trust>2) && deceit_level>1)
@@ -582,7 +592,12 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
             else:
                 effective_weight = ally_weight
             score_adj = (main_score[power] - 2000.0) * effective_weight
+            # C assigns through *piVar5 in the trusted-ally arm, rather than
+            # adding as it does for the enemy arm.
+            aggregate_score = score_adj
         else:
             score_adj = 0.0
 
         state.g_alliance_desirability[power] = score_adj
+
+    return int(aggregate_score)

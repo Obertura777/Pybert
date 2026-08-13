@@ -98,6 +98,127 @@ class _LifecycleMixin:
         self.connection = None
         self.game = None
         self.current_phase = None
+        # NetworkGame and Connection are owned by play()'s event-loop thread.
+        # CPU-heavy order generation runs in a worker thread, so outbound API
+        # calls must be handed back to this loop (see _marshal_to_network_loop).
+        self._network_loop: asyncio.AbstractEventLoop | None = None
+        self._client_event_lock: asyncio.Lock | None = None
+        self._client_tasks: set[asyncio.Task] = set()
+        # Inbound notifications may arrive while the worker owns mutable bot
+        # state.  They are deduplicated against NetworkGame.messages and
+        # drained on the loop before GOF releases the phase.
+        self._seen_msg_ids: set[tuple] = set()
+        self._generation_in_progress = False
+        self._deferred_gof_phase: str | None = None
+        self._responded_press_keys: set[tuple] = set()
+
+
+    def _marshal_to_network_loop(
+        self, callback: Callable[..., None], *args: Any,
+    ) -> bool:
+        """Run ``callback`` on play()'s loop when called from a worker.
+
+        Returns True when the call was queued and False when the caller is
+        already on the owning loop (or play() has not established one).  This
+        keeps all python-diplomacy objects confined to their event-loop thread.
+        """
+        loop = self._network_loop
+        if loop is None or loop.is_closed():
+            return False
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            return False
+        loop.call_soon_threadsafe(callback, *args)
+        return True
+
+
+    def _queue_client_task(self, coroutine: Any, description: str) -> None:
+        """Schedule and observe a serialized notification task."""
+        loop = self._network_loop
+        if loop is None or loop.is_closed():
+            logger.warning("Cannot schedule %s: client loop is unavailable", description)
+            if asyncio.iscoroutine(coroutine):
+                coroutine.close()
+            return
+        task = loop.create_task(coroutine, name=f"albert:{description}")
+        self._client_tasks.add(task)
+
+        def _task_done(done_task: asyncio.Task) -> None:
+            self._client_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("%s failed", description)
+
+        task.add_done_callback(_task_done)
+
+
+    async def _run_game_update_async(
+        self, game_object: Any, expected_phase: str | None = None,
+    ) -> None:
+        """Synchronize a phase, then generate orders without blocking I/O."""
+        if self._client_event_lock is None:
+            self._client_event_lock = asyncio.Lock()
+        async with self._client_event_lock:
+            live_phase = _game_phase(game_object)
+            if expected_phase and live_phase != expected_phase:
+                logger.info(
+                    "Skipping stale phase update: queued=%s current=%s",
+                    expected_phase,
+                    live_phase,
+                )
+                return
+
+            self.game = game_object
+            self.state.synchronize_from_game(game_object)
+            self._drain_incoming_press(game_object)
+
+            if live_phase != 'COMPLETED' and _game_status(game_object) != 'completed':
+                # Monte Carlo regularly takes longer than the server's ping
+                # timeout.  A worker keeps Tornado/asyncio servicing WebSocket
+                # pings, notifications, and request responses in the meantime.
+                self._generation_in_progress = True
+                try:
+                    await asyncio.to_thread(self.generate_and_submit_orders)
+
+                    # NetworkGame is updated by its notification callbacks
+                    # while the worker is running.  Pull those messages into
+                    # Albert's state before releasing GOF: parsing them only in
+                    # the separately queued message task is too late because
+                    # BuildAndSendSUB has already returned and the next phase
+                    # synchronization clears g_broadcast_list.
+                    await asyncio.sleep(0)
+                    self._drain_incoming_press(game_object)
+                    self._respond_to_pending_press_entries()
+                finally:
+                    self._generation_in_progress = False
+
+                # _send_gof() runs in the worker.  _send_dm() records that GOF
+                # while generation is active instead of calling no_wait(), so
+                # all press received during the turn gets one response pass
+                # before this power declares itself ready.
+                if self._deferred_gof_phase is not None:
+                    deferred_phase = self._deferred_gof_phase
+                    self._deferred_gof_phase = None
+                    if deferred_phase == _game_phase(game_object):
+                        self._send_dm('GOF')
+
+
+    async def _run_message_async(
+        self, sender: str, body: str, msg_id: tuple | None = None,
+    ) -> None:
+        """Serialize inbound press, then run its response path immediately."""
+        if self._client_event_lock is None:
+            self._client_event_lock = asyncio.Lock()
+        async with self._client_event_lock:
+            if not self._ingest_message_once(sender, body, msg_id):
+                return
+            self._respond_to_pending_press_entries()
 
 
     async def play(self):
@@ -110,6 +231,8 @@ class _LifecycleMixin:
         poll remains as a safety net (catches missed notifications or
         server reconnects).
         """
+        self._network_loop = asyncio.get_running_loop()
+        self._client_event_lock = asyncio.Lock()
         self.connection = await connect(self.host, self.port)
         channel = await self.connection.authenticate(
             username=self.username,
@@ -146,10 +269,10 @@ class _LifecycleMixin:
                 return  # duplicate notification
             self.current_phase = phase
             logger.info(f"[notification] New phase: {phase}")
-            try:
-                self.on_game_update(game)
-            except Exception as exc:
-                logger.exception(f"on_game_update raised: {exc}")
+            self._queue_client_task(
+                self._run_game_update_async(game, phase),
+                f"phase update {phase}",
+            )
 
         def _on_game_status_update(game, notification):
             """Called when game status changes (completed, canceled, etc.)."""
@@ -168,10 +291,11 @@ class _LifecycleMixin:
                 return  # skip own messages
             body = getattr(msg, 'message', '') or ''
             logger.debug("[notification] press from %s: %r", sender, body)
-            try:
-                self.on_message_received(sender, body)
-            except Exception:
-                logger.exception("on_message_received raised for %r", body)
+            self._queue_client_task(
+                self._run_message_async(
+                    sender, body, self._message_identity(msg)),
+                f"press from {sender}",
+            )
 
         if hasattr(self.game, 'add_on_game_processed'):
             self.game.add_on_game_processed(_on_game_processed)
@@ -191,7 +315,7 @@ class _LifecycleMixin:
             self.current_phase = phase
             logger.info(f"Initial phase: {phase}")
             try:
-                self.on_game_update(self.game)
+                await self._run_game_update_async(self.game, phase)
             except Exception as exc:
                 logger.exception(f"on_game_update raised on initial phase: {exc}")
 
@@ -218,10 +342,10 @@ class _LifecycleMixin:
             if phase and phase != self.current_phase:
                 self.current_phase = phase
                 logger.info(f"Missed-notification catch-up: {phase}")
-                try:
-                    self.on_game_update(self.game)
-                except Exception as exc:
-                    logger.exception(f"on_game_update raised: {exc}")
+                self._queue_client_task(
+                    self._run_game_update_async(self.game, phase),
+                    f"heartbeat phase update {phase}",
+                )
 
         logger.info("Game finished — exiting Albert loop")
 
@@ -245,39 +369,59 @@ class _LifecycleMixin:
             self.generate_and_submit_orders()
 
 
-    def _drain_incoming_press(self, game_object) -> None:
+    @staticmethod
+    def _message_identity(message: Any) -> tuple:
+        """Return the same stable identity for callback and history drains."""
+        return (
+            getattr(message, 'time_sent', None),
+            getattr(message, 'sender', None),
+            getattr(message, 'recipient', None),
+            getattr(message, 'message', None),
+        )
+
+
+    def _ingest_message_once(
+        self, sender: str, body: str, msg_id: tuple | None = None,
+    ) -> bool:
+        """Parse one press message unless its callback/history copy was seen."""
+        if msg_id is not None:
+            if msg_id in self._seen_msg_ids:
+                return False
+            self._seen_msg_ids.add(msg_id)
+        self.on_message_received(sender, body)
+        return True
+
+
+    def _drain_incoming_press(self, game_object) -> int:
         """Walk new game.messages and dispatch each through on_message_received.
 
-        Tracks (time_sent, sender, recipient) tuples to dedupe across polls.
+        Tracks message identities to dedupe callback and poll/history copies.
         Skips messages we sent ourselves.
         """
-        if not hasattr(self, '_seen_msg_ids') or self._seen_msg_ids is None:
-            self._seen_msg_ids = set()
         msgs = getattr(game_object, 'messages', None)
         if msgs is None:
-            return
+            return 0
         try:
             seq = list(msgs.values()) if hasattr(msgs, 'values') else list(msgs)
         except Exception:
-            return
+            return 0
+        ingested = 0
         for m in seq:
-            msg_id = (
-                getattr(m, 'time_sent', None),
-                getattr(m, 'sender', None),
-                getattr(m, 'recipient', None),
-            )
+            msg_id = self._message_identity(m)
             if msg_id in self._seen_msg_ids:
                 continue
-            self._seen_msg_ids.add(msg_id)
             sender = getattr(m, 'sender', '') or ''
             if sender == self.power_name:
+                self._seen_msg_ids.add(msg_id)
                 continue
             body = getattr(m, 'message', '') or ''
             logger.debug("[albert<-press] from %s: %r", sender, body)
             try:
-                self.on_message_received(sender, body)
+                if self._ingest_message_once(sender, body, msg_id):
+                    ingested += 1
             except Exception:
                 logger.exception("on_message_received raised for %r", body)
+        return ingested
 
 
     def on_message_received(self, sender: str, msg: str) -> None:

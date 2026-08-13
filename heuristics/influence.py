@@ -228,17 +228,21 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                     flag3 = False
 
                     owner = int(state.g_sc_owner[prov])
-                    if owner == own_power:
-                        flag2 = False   # Albert owns province → unilateral
-                    # owner == power_b: flag3 stays False (contested, bilateral)
+                    # ApplyInfluenceScores.c packs these into node+0x1c:
+                    # byte 0 (flag1) is cleared when the other power owns the
+                    # province; byte 1 (flag2) is cleared when Albert owns it.
+                    if owner == power_b:
+                        flag1 = False
+                    elif owner == own_power:
+                        flag2 = False
 
                     unit = state.unit_info[prov]
                     if unit['type'] == 'A':
                         unit_power = unit['power']
                         if unit_power == own_power:
-                            flag2 = False            # Albert's unit → unilateral
+                            flag1 = False
                         elif unit_power == power_b:
-                            flag2 = True             # ally's unit → bilateral
+                            flag2 = False
 
                     # AppendOrder = std::map<int,OrderEntry>::insert keyed by sort_key
                     state.g_order_list.append({
@@ -246,6 +250,8 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                         'flag2': flag2,
                         'flag3': flag3,
                         'province': prov,
+                        'power': power_b,
+                        # Compatibility alias retained for older snapshots.
                         'ally_power': power_b,
                         'score': sort_key,
                         'done': False,

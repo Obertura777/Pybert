@@ -137,6 +137,28 @@ def test_ranker_probability_uses_following_adjusted_scores():
     assert math.isclose(second['weight'], 100.0 - first['weight'])
 
 
+def test_update_ally_score_uses_evaluator_return_not_own_component():
+    """The evaluator's own-power component is intentionally never written."""
+    state = InnerGameState()
+    state.g_unit_count[0] = 1
+    state.sc_count[0] = 1
+    candidate = _rank_record(1000, 500, 500)
+    candidate['power'] = 0
+    candidate['heat_scores'] = [0] * 7
+    state.g_candidate_record_list = [candidate]
+    state.g_current_best_order = {power: [[]] * 30 for power in range(7)}
+
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score',
+        return_value=4321,
+    ):
+        _trial._update_ally_order_score(state, 0)
+
+    assert state.g_alliance_desirability[0] == 0
+    assert candidate['alliance_score'] == 5321
+    assert candidate['score'] == 5321
+
+
 def test_ranker_raw_rank_slot_starts_at_one():
     state = InnerGameState()
     state.g_n_trials_completed = 0

@@ -7,7 +7,7 @@ Contents (by broad role):
 
 * Alliance / ordinary press senders
     - ``send_alliance_press``                    (FUN_00417db0)
-    - ``emit_xdo_proposals_to_broadcast``        (XDO_SUP → DAIDE wire tokens)
+    - ``emit_xdo_proposals_to_broadcast``        (deprecated compatibility no-op)
     - ``score_order_candidates_from_broadcast``  (broadcast-order scoring)
 
 * Per-turn proposals
@@ -87,8 +87,8 @@ def send_alliance_press(
                  entry (province_set, press_seq, power, …). Callers should
                  populate ``score_vector`` if the entry comes from inbound
                  gate.py (which computes per-power legitimacy scores).
-                 Self-generated entries should compute score_vector via
-                 legitimacy_gate as in emit_xdo_proposals_to_broadcast.
+                 Self-generated support requests belong in
+                 ``g_proposal_history_map``, not this broadcast tree.
 
     Returns
     -------
@@ -139,26 +139,21 @@ def send_alliance_press(
 
 def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
     """
-    Convert accumulated g_xdo_press_proposals into g_broadcast_list entries.
+    Deprecated compatibility shim; returns zero without changing state.
 
-    In the C binary, BuildSupportProposals (FUN_0043e370) both builds the
-    proposal records AND emits them as XDO(SUP(...)) token sequences into the
-    broadcast list (via FUN_00466f80(&XDO, ...) + AppendList, lines 396–427).
-    The Python port splits these concerns: ``build_support_proposals``
-    populates ``g_xdo_press_proposals`` and this function performs the emission.
+    ``BuildSupportProposals.c`` inserts its XDO request into
+    ``g_ProposalHistoryMap``. It does not create an AllianceRecord in
+    ``g_broadcast_list``; the prior Python implementation conflated those two
+    C containers and manufactured unusable all-zero score vectors. THN/XDO
+    dispatch now reads the proposal-history record directly.
 
-    Each proposal dict has::
-
-        {'type': 'XDO_SUP', 'supporter_prov': int, 'supporter_power': int,
-         'mover_prov': int, 'dest': int, 'from_power': int, 'to_power': int,
-         'priority': int, 'key': int}
-
-    We convert these into g_broadcast_list entries with ``order_candidates``
-    lists whose tokens follow the DAIDE XDO(SUP ...) pattern that
-    ``_parse_xdo_body_to_order`` can consume downstream.
-
-    Returns the number of proposals emitted.
+    Kept temporarily for callers importing the old helper name.
     """
+    return 0
+
+    # Historical implementation retained below until downstream imports have
+    # migrated. It is intentionally unreachable; do not revive it without a
+    # recovered C writer proving that g_broadcast_list is the target.
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
@@ -412,15 +407,15 @@ def propose_dmz(state: InnerGameState,
 
     Three message types (ProposeDMZ.c):
       ≥2 contested  → PRP ( DMZ ( own ally ) prov1 prov2 … )
-      1 bilateral   → PRP ( DMZ ( own ally ) prov )   (flag3=1, flag2=0)
+      1 bilateral   → PRP ( DMZ ( own ally ) prov )   (flag2=1, flag3=0)
       1 unilateral  → PRP ( DMZ ally prov )            (flag3=0, flag2=0)
 
     g_dmz_aggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
 
     First pass (lines 65–163):
-      Collects provinces where ally_power owns the SC (GameBoard_GetPowerRec
-      check, ProposeDMZ.c:89–101), the territory is not already under an
-      active DMZ (*(char*)(iVar6+0x12)=='\0', line 111), flag1==1, flag3==1,
+      Collects provinces absent from ally_power's counter-designation map
+      (GameBoard_GetPowerRec returns its end sentinel, lines 89–101), where
+      the territory is not already under an active DMZ, flag1==1, flag2==1,
       and the (ally_power, province) pair has NOT yet been recorded in
       g_sent_proposals.
 
@@ -430,7 +425,7 @@ def propose_dmz(state: InnerGameState,
       the matching g_order_list entry as done.
 
     Second pass (lines 168–244, triggered when first pass yields <2):
-      flag3=1, flag2=0 (bilateral)  → LAB_00432ff0
+      flag3=0, flag2=1 (bilateral)  → LAB_00432ff0
       flag3=0, flag2=0 (unilateral) → LAB_00433254
       Both paths check g_sent_proposals count < 2 before sending.
     """
@@ -440,7 +435,7 @@ def propose_dmz(state: InnerGameState,
 
     own_power   = getattr(state, 'albert_power_idx', 0)
     threshold   = int(getattr(state, 'g_dmz_aggressiveness', 0))
-    sc_own      = getattr(state, 'g_sc_ownership', None)   # np.array (7, 256)
+    counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
     active_dmz  = getattr(state, 'g_active_dmz_map', {})  # {province: power}
     sent_props  = getattr(state, 'g_sent_proposals', {})
     order_list  = getattr(state, 'g_order_list', [])
@@ -450,6 +445,20 @@ def propose_dmz(state: InnerGameState,
     own_tok  = _PN[own_power]  if 0 <= own_power  < len(_PN) else str(own_power)
     ally_tok = _PN[ally_power] if 0 <= ally_power < len(_PN) else str(ally_power)
 
+    def _counter_designates(province: int) -> bool:
+        """Whether DAT_00bb7028[ally_power] already contains province."""
+        for record in counter_map.get(ally_power, []):
+            if isinstance(record, dict):
+                value = record.get('dest_prov', record.get('province', -1))
+            else:
+                value = record
+            if int(value) == province:
+                return True
+        return False
+
+    def _entry_power(entry: dict) -> int:
+        return int(entry.get('power', entry.get('ally_power', -1)))
+
     # ── First pass: collect provinces where ally owns the SC and flag3==1 ──────
     # C: puVar1[5]==power_index, !done, score>threshold, SC ownership,
     #    flag1==1, flag3==1, not already in g_sent_proposals.
@@ -458,21 +467,21 @@ def propose_dmz(state: InnerGameState,
     for entry in order_list:
         if entry.get('done', False):
             continue
-        if int(entry.get('power', -1)) != ally_power:
+        if _entry_power(entry) != ally_power:
             continue
         province = int(entry.get('province', -1))
         if province < 0:
             continue
         score = int(entry.get('score', 0))
-        if score < threshold:
+        if score <= threshold:
             continue
         # SC ownership validation (GameBoard_GetPowerRec check, lines 89-101):
         # only contest provinces ally_power owns as a supply center.
-        if sc_own is not None and not sc_own[ally_power, province]:
+        if _counter_designates(province):
             continue
         if not entry.get('flag1', False):
             continue
-        if not entry.get('flag3', False):
+        if not entry.get('flag2', False):
             continue
         # Active-DMZ exclusion (*(char*)(iVar6+0x12)=='\0', line 111):
         # skip territories already under an accepted DMZ.
@@ -483,7 +492,7 @@ def propose_dmz(state: InnerGameState,
             continue
         contested.append({'province': province, 'entry': entry,
                           'flag2': bool(entry.get('flag2', False)),
-                          'flag3': True})
+                          'flag3': bool(entry.get('flag3', False))})
 
     if len(contested) >= 2:
         # ── Multi-province marking loop (lines 246–287) ───────────────────────
@@ -497,7 +506,7 @@ def propose_dmz(state: InnerGameState,
 
         prov_str = ' '.join(id_to_prov.get(c['province'], str(c['province'])) for c in contested)
         msg = f"PRP ( DMZ ( {own_tok} {ally_tok} ) {prov_str} )"
-        _send(msg)
+        propose(state, msg, [ally_power], send_fn=_send)
         _log.debug("ProposeDMZ: multi-province (%d provinces) to power %d",
                    len(contested), ally_power)
         return True
@@ -507,23 +516,23 @@ def propose_dmz(state: InnerGameState,
     for entry in order_list:
         if entry.get('done', False):
             continue
-        if int(entry.get('power', -1)) != ally_power:
+        if _entry_power(entry) != ally_power:
             continue
         province = int(entry.get('province', -1))
         if province < 0:
             continue
         score = int(entry.get('score', 0))
-        if score < threshold:
+        if score <= threshold:
             continue
         # SC ownership check (same as first pass, lines 191-204).
-        if sc_own is not None and not sc_own[ally_power, province]:
+        if _counter_designates(province):
             continue
         if not entry.get('flag1', False):
             continue
         flag3 = bool(entry.get('flag3', False))
         flag2 = bool(entry.get('flag2', False))
-        if flag2:
-            continue   # flag2 must be 0 for both second-pass branches
+        if flag3:
+            continue   # both single-province branches require flag3 == 0
         # Count cap: both LAB_00432ff0 and LAB_00433254 check count < 2.
         key = (ally_power, province)
         if sent_props.get(key, 0) >= 2:
@@ -536,15 +545,15 @@ def propose_dmz(state: InnerGameState,
         entry['done'] = True
 
         prov_tok = id_to_prov.get(province, str(province))
-        if flag3:
+        if flag2:
             # LAB_00432ff0 bilateral: PRP ( DMZ ( own ally ) province )
             msg = f"PRP ( DMZ ( {own_tok} {ally_tok} ) {prov_tok} )"
         else:
             # LAB_00433254 unilateral: PRP ( DMZ ally province )
             msg = f"PRP ( DMZ {ally_tok} {prov_tok} )"
-        _send(msg)
+        propose(state, msg, [ally_power], send_fn=_send)
         _log.debug("ProposeDMZ: single-province %d to power %d (bilateral=%s)",
-                   province, ally_power, flag3)
+                   province, ally_power, flag2)
         return True
 
     return False
@@ -817,8 +826,9 @@ def cancel_prior_press(state: InnerGameState,
     """
     Port of CancelPriorPress (FUN_0040e8e0).
 
-    Sends the fixed DAIDE message NOT(GOF).  Guarded by
-    g_cancel_press_sent (once-per-turn flag).
+    Emits the fixed NOT(GOF) readiness-control token to the client adapter.
+    The NetworkGame adapter maps it to ``game.wait()``; it must never be sent
+    as power-to-power press. Guarded by g_cancel_press_sent (once-per-turn).
     Fires when:
       - curr_sc_cnt[own_power] > 0, OR
       - unit_pending count > 0 (param_1+8+0x24bc in original; reset each

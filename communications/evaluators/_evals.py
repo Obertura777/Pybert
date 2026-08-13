@@ -421,9 +421,9 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
     See docs/funcs/CAL_VALUE.md for the full spec. This port implements the
     control-flow skeleton faithfully with full per-power score vector support:
     score vectors are computed for inbound entries via register_received_press
-    (gate.py lines 365–378) and for self-generated entries via
-    emit_xdo_proposals_to_broadcast, enabling accurate delta-score classification
-    into YES/REJ/BWX/HUH verdict bands.
+    (gate.py lines 365–378), enabling delta-score classification into
+    YES/REJ/BWX/HUH verdict bands. Self-generated support requests live in
+    g_ProposalHistoryMap, a separate C container.
 
     High-level flow (mirrors C):
 

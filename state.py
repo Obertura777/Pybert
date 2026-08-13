@@ -215,6 +215,12 @@ class InnerGameState:
         self.g_alliance_score = np.zeros((7, 7), dtype=np.float64)
         self.g_ally_trust_score = np.zeros((7, 7), dtype=np.float64)
         self.g_ally_matrix = np.zeros((7, 7), dtype=np.int32)
+        # Exact ALY/VSS triplets already proposed by this bot.  Unlike
+        # g_pos_analysis_list (per phase) and g_ally_matrix (which strategic
+        # recalculation may clear), this set persists for the game so an
+        # unchanged alliance proposal is not blindly repeated every phase.
+        # Keys are (own_power, target_power, mutual_enemy).
+        self.g_aly_proposal_history: set[tuple[int, int, int]] = set()
         
         # Buffers for Heat Diffusion
         self.g_candidate_scores = np.zeros((7, 256), dtype=np.float64)

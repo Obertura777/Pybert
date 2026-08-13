@@ -220,6 +220,222 @@ def test_cancel_prior_press_sends_fixed_not_gof_without_synthetic_token():
     assert state.g_cancel_press_sent == 1
 
 
+def test_execute_aly_vss_deduplicates_exact_offer_across_phase_resets():
+    state = InnerGameState()
+    state.albert_power_idx = 2  # FRA
+    state.g_press_flag = 1
+    state.g_mutual_enemy_table[3] = 5  # GER target, RUS enemy
+    state.g_influence_rank_flag[2, 3] = 0
+    sent = []
+
+    assert _scheduling_mod._execute_aly_vss(state, 3, send_fn=sent.append)
+    assert sent == [{
+        'message': 'PRP ( ALY ( FRA GER ) VSS ( RUS ) )',
+        'recipient': 'GERMANY',
+    }]
+    assert state.g_aly_proposal_history == {(2, 3, 5)}
+
+    # Simulate the transient structures being reset for a later phase.  The
+    # persistent exact-offer history must still suppress the blind repeat.
+    state.g_pos_analysis_list.clear()
+    state.g_ally_matrix.fill(0)
+
+    assert not _scheduling_mod._execute_aly_vss(state, 3, send_fn=sent.append)
+    assert len(sent) == 1
+
+
+def test_execute_aly_vss_allows_changed_mutual_enemy():
+    state = InnerGameState()
+    state.albert_power_idx = 2  # FRA
+    state.g_press_flag = 1
+    state.g_influence_rank_flag[2, 3] = 0
+    state.g_mutual_enemy_table[3] = 5
+    sent = []
+
+    assert _scheduling_mod._execute_aly_vss(state, 3, send_fn=sent.append)
+
+    state.g_pos_analysis_list.clear()
+    state.g_ally_matrix.fill(0)
+    state.g_mutual_enemy_table[3] = 6  # strategic enemy changed to TUR
+
+    assert _scheduling_mod._execute_aly_vss(state, 3, send_fn=sent.append)
+    assert [entry['message'] for entry in sent] == [
+        'PRP ( ALY ( FRA GER ) VSS ( RUS ) )',
+        'PRP ( ALY ( FRA GER ) VSS ( TUR ) )',
+    ]
+    assert state.g_aly_proposal_history == {(2, 3, 5), (2, 3, 6)}
+
+
+def test_execute_xdo_consumes_support_history_and_validates_recipient_power():
+    state = InnerGameState()
+    state.albert_power_idx = 2  # FRA
+    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
+    state.unit_info = {
+        10: {'power': 3, 'type': 'A'},
+        11: {'power': 2, 'type': 'A'},
+    }
+    state.g_xdo_press_proposals[:] = [{
+        'type': 'XDO_SUP', 'priority': 4,
+        'from_power': 2, 'to_power': 3,
+        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
+    }]
+    sent = []
+
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ) as validate:
+        _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+
+    validate.assert_called_once_with(
+        state,
+        3,
+        {
+            'type': 'SUP', 'unit': 'A KIE',
+            'target_unit': 'A BUR', 'target_dest': 'MUN',
+            'target_coast': '',
+        },
+        commit=False,
+    )
+    assert sent == [{
+        'message': (
+            'PRP ( XDO ( ( GER AMY KIE ) SUP '
+            '( FRA AMY BUR ) MTO MUN ) )'
+        ),
+        'recipient': 'GERMANY',
+    }]
+    assert state.g_pos_analysis_list[0]['participant_powers'] == {2, 3}
+
+
+def test_execute_xdo_rejects_other_movers_and_wrong_recipient():
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
+    state.unit_info = {
+        10: {'power': 3, 'type': 'A'},
+        11: {'power': 0, 'type': 'A'},
+    }
+    state.g_xdo_press_proposals[:] = [{
+        'type': 'XDO_SUP', 'priority': 4,
+        'from_power': 0, 'to_power': 3,
+        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
+    }]
+    sent = []
+    _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+    assert sent == []
+
+    state.g_xdo_press_proposals[0]['from_power'] = 2
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ) as validate:
+        _scheduling_mod._execute_xdo(state, 1, send_fn=sent.append)
+    validate.assert_not_called()
+    assert sent == []
+
+
+def test_then_action_reaches_generated_xdo_for_strong_trust_pair():
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state.g_history_counter = 20
+    state.g_press_history = {3: {_scheduling_mod._TOK_XDO}}
+    state.g_ally_trust_score[2, 3] = 3
+    state.g_ally_trust_score[3, 2] = 3
+    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
+    state.unit_info = {
+        10: {'power': 3, 'type': 'A'},
+        11: {'power': 2, 'type': 'A'},
+    }
+    state.g_xdo_press_proposals[:] = [{
+        'type': 'XDO_SUP', 'priority': 4,
+        'from_power': 2, 'to_power': 3,
+        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
+    }]
+    sent = []
+
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ):
+        _scheduling_mod._execute_then_action(state, 3, send_fn=sent.append)
+
+    assert sent == [{
+        'message': (
+            'PRP ( XDO ( ( GER AMY KIE ) SUP '
+            '( FRA AMY BUR ) MTO MUN ) )'
+        ),
+        'recipient': 'GERMANY',
+    }]
+
+
+def test_execute_xdo_survives_staging_clear_via_persistent_history():
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
+    state.unit_info = {
+        10: {'power': 3, 'type': 'A'},
+        11: {'power': 2, 'type': 'A'},
+    }
+    state.g_xdo_press_proposals.clear()
+    state.g_proposal_history_map = [{
+        'key': 10011012,
+        'type': 'XDO_SUP', 'score': 4,
+        'from_power': 2, 'to_power': 3,
+        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
+    }]
+    sent = []
+
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ):
+        _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+
+    assert sent[0]['recipient'] == 'GERMANY'
+    assert sent[0]['message'].startswith('PRP ( XDO')
+
+
+def test_propose_dmz_decodes_c_flags_and_tracks_the_proposal():
+    state = InnerGameState()
+    state.albert_power_idx = 2  # FRA
+    state._id_to_prov = {10: 'BUR', 11: 'MUN'}
+    state.g_dmz_aggressiveness = 0
+    state.g_order_list[:] = [
+        {
+            'power': 3, 'province': 10, 'score': 2, 'done': False,
+            'flag1': True, 'flag2': True, 'flag3': False,
+        },
+        {
+            'power': 3, 'province': 11, 'score': 3, 'done': False,
+            'flag1': True, 'flag2': True, 'flag3': False,
+        },
+    ]
+    sent = []
+
+    assert _senders_mod.propose_dmz(state, 3, send_fn=sent.append)
+
+    assert sent == [{
+        'message': 'PRP ( DMZ ( FRA GER ) BUR MUN )',
+        'recipient': 'GERMANY',
+    }]
+    assert all(entry['done'] for entry in state.g_order_list)
+    assert state.g_pos_analysis_list[0]['tokens'] == (
+        'PRP ( DMZ ( FRA GER ) BUR MUN )'.split()
+    )
+
+
+def test_propose_dmz_excludes_existing_counter_designation():
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'BUR'}
+    state.g_dmz_aggressiveness = 0
+    state.g_ally_counter_list = {3: [{'dest_prov': 10}]}
+    state.g_order_list[:] = [{
+        'ally_power': 3, 'province': 10, 'score': 2, 'done': False,
+        'flag1': True, 'flag2': True, 'flag3': False,
+    }]
+    sent = []
+
+    assert not _senders_mod.propose_dmz(state, 3, send_fn=sent.append)
+    assert sent == []
+
+
 def test_scheduled_dispatch_retains_callback_appended_thn_entry():
     state = InnerGameState()
     state.g_turn_start_time = 100.0
