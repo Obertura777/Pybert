@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import random
 import time
 from typing import Any, Callable
 
@@ -234,9 +233,9 @@ class _LifecycleMixin:
 
         Also drains inbound game.messages and feeds each new one to
         on_message_received between synchronize_from_game and order generation.
-        synchronize_from_game intentionally does NOT clear g_broadcast_list
-        (matching the C binary's accumulate-forever semantics), so press
-        registered here survives into the translator/corroboration pass.
+        synchronize_from_game clears the prior turn's g_broadcast_list like
+        GenerateAndSubmitOrders.c, then this method drains the new phase's
+        queued messages so current-turn press survives into translation.
         """
         self.game = game_object
         self.state.synchronize_from_game(game_object)

@@ -11,7 +11,7 @@ token constants from ``..tokens``.
 """
 
 import re as _re
-import random as _random
+from ... import rng as _random
 import time as _time
 
 from ...state import InnerGameState

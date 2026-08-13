@@ -21,7 +21,7 @@ are kept local to avoid tightening the communications ↔ bot coupling.
 """
 
 import logging
-import random
+from .. import rng as random
 
 import numpy as np
 
@@ -37,8 +37,7 @@ logger = logging.getLogger(__name__)
 
 def _rand_stride() -> int:
     """C stride: first rand() picks loop count (4..23), remaining calls burned;
-    only the last result (mod 100) is returned.  Not bitwise-reproducible vs MSVC
-    rand() (different PRNG), but preserves the 5..24-call advance per invocation."""
+    only the last result (mod 100) is returned."""
     n = random.randrange(20)
     val = 0
     for _ in range(n + 4):

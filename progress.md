@@ -4,28 +4,33 @@ Last updated: 2026-08-13
 
 ## Goal and oracle
 
-Make the Python port produce the same orders as the original Albert C bot.
-The authoritative behavioral oracle is `all_games_albert/`, paired with board
-states in `all_games/`. Existing decompiles in `Source/` are used to diagnose
-logic. Additional x87 assembly for the candidate ranker has resolved its
-probability operand order and zero-completed-trials threshold. Exact selection
-parity still has the narrower assembly gaps described below.
+Make the Python port reproduce Albert's order-generation logic. Exact selected
+orders are not required when the difference is caused by an unavailable PRNG
+seed/call offset. The structural behavioral oracle is therefore complete legal
+candidate-set reachability in `all_games_albert/`, paired with board states in
+`all_games/`; submitted-order equality remains diagnostic only.
 
-Exact parity is not yet achieved. Keep this work active until broad reference
-comparison proves exact move equality rather than merely legal/similar orders.
+Existing decompiles in `Source/` are authoritative for control flow, writers,
+and data ownership. Candidate coverage must prove that Albert's complete order
+combination can be produced, not merely that every component order appears in
+some unrelated candidate.
 
 ## Current verified checkpoint
 
-- `.venv/bin/python -m pytest -q` passes: **86 tests**.
+- `python -m pytest -q` passes: **104 tests**.
 - `py_compile` passes for the changed evaluator/state/trial/test modules.
 - `git diff --check` passes.
 - The offline oracle harness now suppresses only the NetworkGame-only GOF
   signal. It no longer reports every successful local `diplomacy.Game` run as
   `PYBERT FAILED` because local games lack `no_wait()`.
-- Reference smoke test `game_10.json`, `S1901M`, seed 42: **8/22 exact unit
-  orders**, **0/7 exact power order sets**, **0 Python failures**. Albert's
-  complete set occurs in Python's legal candidate pool for **7/7 powers**.
-  This is a checkpoint, not evidence of full fidelity.
+- Generation smoke test `game_10.json`, `S1901M`, after removing invented
+  self-proposals: Albert's complete set occurs in the seed-1 legal candidate
+  pool for **7/7 powers** (699 complete legal candidates total), with **0
+  Python failures**.
+- Hard combination test `game_10.json`, `S1902M`, Russia: the complete Albert
+  six-order set, including `SEV-BUL VIA`, `BLA C SEV-BUL`, and
+  `RUM S SEV-BUL`, occurs at seed 0. The union of seeds 1 and 0 contains 1,868
+  legal candidates and reaches **6/6 as one complete candidate**.
 
 ## Port bugs fixed in this checkpoint
 
@@ -142,12 +147,32 @@ comparison proves exact move equality rather than merely legal/similar orders.
      ranking/refresh failures.
    - Exact `--phase` and `--power` filters make expensive late-game traces
      bounded and reproducible.
+   - `--candidate-seed-count N` can now union legal candidate pools from CRT
+     seeds `0..N-1` only after the primary seed misses. Submitted-order output
+     remains tied to `--seed`; the report records every tried seed. This
+     separates a structural generation failure from finite Monte-Carlo sample
+     coverage instead of conflating the two.
+   - Coverage-only follow-up seeds bypass BuildAndSendSUB's 30 scoring rounds
+     because ProcessTurn has already materialized the complete candidate
+     snapshots. The serializer reuses one isolated state and clears all own
+     order rows between records rather than deep-copying the full analysis
+     state per candidate. On Russia `S1902M`, generation now takes about 2.2s
+     per seed instead of roughly 130s for the former end-to-end diagnostic.
 
 13. BuildAndSendSUB chronology
 
-   - The final `RankCandidatesForPower(flag=0)` and `UpdateScoreState` pass now
-     runs before slot zero is read and submitted, matching
-     `BuildAndSendSUB.c:287-317` before C:593-614.
+   - Restored the complete per-broadcast proposal loop. Each node resumes its
+     own `trial_count`; each iteration sets `g_n_trials_completed`, executes
+     round-zero `RankCandidatesForPower(flag=0)`/refresh exactly once, runs
+     `UpdateScoreState`, snapshots candidate field `0x71` into `0x17+round`,
+     dispatches scheduled press, and only then increments the counter.
+   - Slot zero is read and submitted after the primary node reaches the trial
+     cap, matching `BuildAndSendSUB.c:217-373` before C:593-614. Empty
+     no-press Python broadcast lists use an ephemeral equivalent of C's base
+     SUB node without persisting stale press state.
+   - MTL interruption leaves a node at its last completed round so a later
+     call resumes rather than restarting. Regression tests cover chronology,
+     history writes, resume behavior, and timeout.
    - Removed an extra pre-submit refresh and an invented reciprocal-MTO-to-HLD
      swap breaker with no C counterpart.
 
@@ -158,6 +183,13 @@ comparison proves exact move equality rather than merely legal/similar orders.
    - Slots are grouped by their C heat-score sum; equal sums share a
      representative slot and multiplicity instead of collapsing everything
      into slot zero.
+   - Ported `DAT_0062e4b4`'s selected-slot accumulator and `DAT_0062e45c`'s
+     duplicate-group accumulator, plus the three BuildAndSendSUB per-round
+     diagnostic arrays and their previous-value snapshots.
+   - Vectorized the fixed 7×7×256 threat aggregation in
+     `EvaluateAllianceScore`. This preserves C's eligible-row max/sum while
+     reducing a bounded opening-power run from 32.1 seconds under profiling
+     to 3.7 seconds in the normal harness.
 
 15. RefreshOrderTable rejection walk
 
@@ -242,32 +274,132 @@ comparison proves exact move equality rather than merely legal/similar orders.
      cutoff as `int(1 + call_count * (1 - call_count/(call_count+3000)))`.
    - Added focused regression fixtures for dominance erasure, field-19 margin
      selection, following-key probability, raw rank initialization, and the
-     recovered threshold schedule. Full suite: **86 passed**.
-   - Seed-42 oracle after the source-backed ranker rewrite: game 10 `S1901M`
+     recovered threshold schedule.
+   - Pre-CRT seed-42 oracle after the source-backed ranker rewrite: game 10 `S1901M`
      is **8/22** per-unit, **0/7** exact, with Albert's complete set generated
      for **7/7** powers; Turkey `S1907M` remains **2/3**, with the exact Albert
      set present among all 66 candidates. This is a behavioral regression from
      the old inferred opening ranker (9/22), but the removed behaviors directly
      contradicted the supplied C body.
 
-## Remaining exact-parity blockers
+20. Process-global MSVC CRT random stream
+
+   - Replaced Python's Mersenne Twister at every recovered C `_rand()` site
+     with the shared MSVC recurrence
+     `state = state*214013 + 2531011 (mod 2^32)`, returning
+     `(state >> 16) & 0x7fff`.
+   - Direct C expressions retain their exact `(rand()/0x17) % N`
+     transformation. The `RandUpTo(n)` call in `RESPOND.c` is half-open
+     `0..n-1`, not Python's former inclusive `randint(0,n)`.
+   - The recovered source set has no `srand` call. The compatibility stream
+     therefore defaults to the MSVC CRT's seed 1, with explicit
+     seed/getstate/setstate hooks for captured-trace replay and the oracle.
+   - All board, Monte-Carlo, refresh, hold-support, hostility, and reconstructed
+     press call sites consume one process-global stream. Known CRT outputs for
+     seed 1 (`41, 18467, 6334, 26500, 19169`) and state replay have regression
+     tests.
+
+21. Signed-int64 evaluator edges
+
+   - `g_attack_count` (`DAT_006040e8/ec`) and `g_attack_history`
+     (`DAT_005a48e8/ec`) are now stored as `np.int64`, matching their C
+     two-dword representation. Their writers already produce integer weights
+     or `FloatToInt64` results; the former float64 arrays could not preserve
+     arbitrary low dwords once values exceeded `2^53`.
+   - `EvaluateOrderScore.c:610-660`'s high/low-word history test reduces
+     exactly to signed-int64 `history < 11`; the Fall destination test reduces
+     to signed-int64 `attack_count <= 0`. Python now compares integers without
+     a float conversion.
+   - Boundary fixtures cover history `-1`, `10`, `11`, and `2^32`, plus a
+     negative destination attack count on the narrow Fall MTO/CTO keep path.
+     Full suite: **96 passed** at that checkpoint.
+
+22. Movement-turn broadcast lifecycle
+
+   - `GenerateAndSubmitOrders.c:92-101` destroys and reinitializes the
+     `DAT_00bb65ec/f0/f4` broadcast tree at function entry. This disproves the
+     earlier accumulate-forever assumption. Python now clears prior-phase
+     nodes during `synchronize_from_game`, before `_drain_incoming_press`
+     registers the current phase's messages.
+   - The C routine explicitly inserts a fresh key-zero base SUB record before
+     hostility. Python now creates that real node instead of relying on an
+     ephemeral BuildAndSendSUB substitute.
+   - `send_GOF.c:170-267` normalization is ported: every key-zero record is
+     rebuilt as unsent SUB at trial zero (including clearing its received
+     byte and score/history payload); type-1 self proposals retire as
+     `type_flag=-1`, `trial_count=cap`, `sent=true`; unsent received type-0
+     records rewind to trial zero.
+   - A regression fixture covers all node classes. The production seed-1
+     opening remains **8/22** unit matches with no Python failures and runs in
+     21.7 seconds. Full suite: **97 passed**.
+
+23. Removed synthetic no-press proposal injection
+
+   - Writer tracing proves `GenerateOrders.c` only initializes and finally
+     serializes its local order tree; it never inserts into that tree or the
+     per-power proposal globals. `ScoreOrderCandidates.c` clears those globals
+     and repopulates them only from its press order-list inputs.
+   - The Python-only `generate_self_proposals` path greedily preassigned moves
+     to other powers in NO_PRESS games. That changed the simulated board and
+     could suppress combinations that C's ProcessTurn Phase 2 would otherwise
+     generate. Production no longer calls or exports it.
+   - Proposal preparation is now a tested boundary: it destroys stale general,
+     alliance, and candidate records, translates current received press when
+     enabled, and leaves both proposal trees empty in NO_PRESS mode.
+   - Source-backed generation checks pass: standard opening complete-set
+     reachability is **7/7** at seed 1, and Russia `S1902M`'s previously rare
+     six-order convoy/support combination is complete at seed 0. Full suite:
+     **98 passed**.
+
+24. WIN adjustment candidate identity and coverage
+
+   - `ScoreOrderCandidates_OwnPower.c` iterates candidate keys containing a
+     province at `+0x10` and an AMY/FLT coast token at `+0x14`. Python had
+     collapsed this to province only and then forced every coastal build to a
+     fleet, making Albert army builds at TRI, SEV, PAR, and MAR unreachable.
+   - Build generation now preserves the full `(province, unit type, coast)`
+     identity: every eligible home centre admits an army, coastal centres also
+     admit fleets, and multi-coast fleet variants remain distinct. Complete
+     sets still prohibit two builds in one province.
+   - WIN candidate membership is now separate from its signed strategic score.
+     The old `score > 0` proxy silently dropped valid zero/negative build or
+     removal nodes even though C's ordered-set node exists independently of its
+     score payload.
+   - Corrected reversed symbol attribution: `send_GOF.c` calls
+     `FUN_0044bd40` for builds and `FUN_00442040` for removals.
+   - `compare_albert.py --candidate-coverage` now enumerates complete legal
+     adjustment and retreat sets as well as movement snapshots. On game 10 `W1901A`, all
+     four reference power sets are reachable (**4/4**) despite selected-build
+     differences; Russia `W1903A` removal generation and selection are exact
+     (**2/2 orders**). Retreat smoke `S1902R` is also exact.
+   - Across every game 10 retreat/adjustment reference, **30/31** complete sets
+     are generated. The sole miss is an inconsistent input pair: the supplied
+     `S1904R` state restricts `A ROM` to `APU`, while the Albert output is
+     `A ROM R VEN`; a generator correctly consuming that NOW state cannot emit
+     VEN. Full suite: **104 passed**.
+
+## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
   threshold schedule. `004afd98` is double `0.6`, `004afda0` is `0.078`, and
   `004afdb0` is `0.05`; rounds 1–7 use
   `int(base + call_count*integer_gate*(0.6 - trials*0.078))` and rounds 8+
   retain `base = int(0.05*call_count + 5)`.
-- Python collapses `BuildAndSendSUB.c`'s proposal/broadcast outer loop to one
-  pass. Consequently `g_n_trials_completed` (`DAT_0062cc64`) stays at zero,
-  while C increments it after every completed proposal round. Restoring that
-  loop is required for round-indexed EMA, score history, and RNG parity.
-- No Albert binary, assembly listing, Ghidra project, or RNG trace is present
-  in the repository. Final exact slot selection remains seed/trace-sensitive
-  even where the exact Albert order set is already generated.
+- No Albert binary, assembly listing, Ghidra project, reference-generation
+  script, or RNG-state trace is present in the repository. The 63 external
+  `all_games_albert` files are ignored by Git and contain only phase/power
+  order lists. Their paired source games contain board states and human press,
+  but no Albert seed or serialized bot state.
+- The PRNG algorithm is now source-faithful, but final slot selection still
+  depends on the reference process's call history. `send_GOF.c` also consumes
+  a sleep-jitter draw only on positive-time-limit phase branches; that draw
+  must be replayed from actual TME/timing state, not burned unconditionally by
+  the stateless offline harness.
 
 ## Reference evidence after convoy repair
 
-Seed 42, selected movement positions from `all_games_albert/game_10.json`:
+Pre-CRT seed 42, selected movement positions from
+`all_games_albert/game_10.json`:
 
 - `S1902M FRANCE`: Python now emits a coherent convoy pair
   `F MAO C A POR - SPA` + `A POR - SPA VIA`; Albert chose NAF instead. Unit
@@ -285,16 +417,20 @@ All three positions now submit one legal order per unit. These results prove
 that convoy paths are reachable and serialized; they do not prove ranking
 fidelity.
 
-Bounded candidate-coverage runs, seed 42:
+Historical single-pool candidate-coverage runs, pre-CRT seed 42:
 
 - `game_10.json`, `S1901M`: Albert set generated **7/7**; submitted result
   was **0/7 exact sets**, **9/22 unit orders** after the evaluator rewrite;
-  after the supplied ranker body it is **0/7**, **8/22**. The unchanged 7/7
-  coverage isolates selection/ranking and missing proposal/RNG context.
+  after the supplied ranker body and restored 30-round proposal loop it is
+  **0/7**, **8/22**. The unchanged 7/7 coverage isolates selection/RNG and
+  missing reference context. The full opening checkpoint runs in 23.0 seconds.
 - First three lexicographic games, `S1901M`: Albert set generated **19/21**;
   submitted result **1/21 exact sets**, **21/66 unit orders**. The two missing
-  sets still have complete individual-order coverage and differ from the
-  closest Python candidate by one unit.
+  sets still had complete individual-order coverage and differed from the
+  closest Python candidate by one unit. A controlled follow-up disproved these
+  as structural gaps: `game_100` Italy's complete set occurs at seed 0 and
+  `game_1000` Russia's at seed 2. The new multi-seed coverage mode reports both
+  as generated while leaving primary-seed submission unchanged.
 
 Oracle limitation: these three files contain the same standard opening board,
 but their Albert opening orders differ. The harness reconstructs phase board
@@ -304,19 +440,13 @@ those varying rows a deterministic exact-output oracle. Candidate coverage is
 still useful, and exact final-order comparison becomes meaningful only after
 the original run context/RNG state is reproduced or captured.
 
-## Next work, in priority order
+## Next generation-logic work, in priority order
 
-1. Restore `BuildAndSendSUB`'s proposal/broadcast outer loop so
-   `g_n_trials_completed` advances at the C site and round-indexed ranker/ally
-   state is actually exercised.
-2. Recover the Albert reference-generation procedure: C RNG seed/call sequence,
-   press/history replay, and any persistent-game state used when producing
-   `all_games_albert/`. Without that metadata, varying expected outputs for an
-   identical opening board cannot be reproduced by a stateless fixed-seed run.
-3. Trace the two opening exact-set coverage misses and
-   Russia `S1902M` as candidate-combination bugs; their individual orders are
-   already reachable.
-4. Validate the remaining signed-int64 edge cases in
-   `EvaluateOrderScore.c:610-660`; focused SC/non-SC, Spring/Fall, history, and
-   attack-count fixtures cover the normal values, but unusual negative/high
-   dword states have no corpus oracle.
+1. Expand complete-candidate coverage across a bounded sample of opening and
+   midgame movement positions, sweeping seeds only after a primary-pool miss.
+2. Expand retreat and adjustment coverage beyond the verified game 10 smoke
+   cases; adjustment candidate enumeration now supports this directly.
+3. Audit full-press replay inputs independently of PRNG selection. Received
+   XDO/ALY/DMZ state may intentionally constrain generated movement candidates,
+   so coverage needs the matching message history rather than board-only
+   NO_PRESS reconstruction.

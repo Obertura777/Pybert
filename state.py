@@ -192,9 +192,9 @@ class InnerGameState:
         
         # 2. Heuristics & Map Variables
         # DAT_006040e8[pow*0x800+prov*8] — int64[pow*256+prov]
-        self.g_attack_count = np.zeros((7, 256), dtype=np.float64)
+        self.g_attack_count = np.zeros((7, 256), dtype=np.int64)
         # DAT_005a48e8[pow*0x800+prov*8] — int64[pow*256+prov]; >10 = danger zone
-        self.g_attack_history = np.zeros((7, 256), dtype=np.float64)
+        self.g_attack_history = np.zeros((7, 256), dtype=np.int64)
         # g_defense_score was a second binding of DAT_0055b0e8, which is
         # already bound to g_max_prov_score_per_power (see below).  Nothing
         # wrote it, so every reader saw zeros.  Removed 2026-08-12; readers
@@ -420,6 +420,12 @@ class InnerGameState:
         # Python represents the whole BST as a list of DAIDE order strings.
         # Populated by WIN handler (ComputeWinterBuilds); cleared by ResetPerTrialState.
         self.g_build_order_list: list = []
+        # WIN build candidates preserve C's full key: province plus unit/coast
+        # token.  A province-only set cannot represent both A MAR B and
+        # F MAR B, or STP's two fleet coasts.
+        self.g_adjustment_build_candidates: list[dict] = []
+        self.g_adjustment_candidate_scores: dict[tuple, float] = {}
+        self.g_adjustment_candidate_provinces: set[int] = set()
         # this+0x247c — BST _Mysize counter; explicit in C (ResetPerTrialState line 62).
         # Python equivalent: always equals len(g_build_order_list); reset to 0 in sync.
         self.g_build_order_list_size: int = 0
@@ -857,6 +863,9 @@ class InnerGameState:
         self.g_score_baseline: int = 0
         # DAT_0062e4b4 — alternative score accumulator
         self.g_score_alt: int = 0
+        # DAT_0062e45c — duplicate slot-group accumulator maintained beside
+        # g_score_alt by UpdateAllyOrderScore (diagnostic/delta tracking).
+        self.g_score_group_duplicates: int = 0
 
         # ScoreProvinces weights — Albert ctor @ 0x00425e03–0x00425e3d.
         # Passed as uint64 (lo/hi dword pair); hi halves are always 0.
@@ -907,6 +916,10 @@ class InnerGameState:
         self.g_trial_score_a: list = []
         self.g_trial_score_b: list = []
         self.g_trial_score_c: list = []
+        # _DAT_00baed4c / _DAT_00baed50 — previous accumulator snapshots used
+        # to derive BuildAndSendSUB's per-trial delta arrays.
+        self.g_trial_prev_score_alt: int = 0
+        self.g_trial_prev_score_baseline: int = 0
         # DAT_00bbf690/94[pow*0x3c] — current best order sequence per-power
         self.g_current_best_order: dict = {}
         # DAT_00bc0a40/44[pow*0xf0] — backup of best orders at best-trial point
@@ -1331,15 +1344,16 @@ class InnerGameState:
         self.g_xdo_press_sent.fill(0)
         self.g_xdo_press_proposals.clear()
         self.g_pos_analysis_list.clear()
+        # DAT_00bb65ec/f0/f4 — broadcast-record tree, header, and size.
+        # GenerateAndSubmitOrders.c:92-101 destroys and reinitializes this
+        # tree on every call.  synchronize_from_game runs before the client
+        # drains the new phase's queued messages, so current-turn press is
+        # registered after this clear while prior-phase nodes are discarded.
+        self.g_broadcast_list.clear()
 
-        # ── DO NOT clear: the following globals accumulate forever in C. ──
+        # ── DO NOT clear: the following globals persist in C. ──
         # Wiping them in Python would break multi-phase commitment semantics
         # and re-emit dedup'd alliance/proposal events on every phase.
-        #
-        # g_broadcast_list     (DAT_00bb65ec) — received DAIDE press; the only
-        #     write site is register_received_press, no destructor. An XDO
-        #     announced in S1901M must still penalise contradicting
-        #     candidates in F1901M+ until superseded.
         #
         # g_alliance_msg_tree   (DAT_00bbf638) — set of alliance-event keys
         #     used by BuildAllianceMsg/CheckAndInsertAllianceTreeEntry as a

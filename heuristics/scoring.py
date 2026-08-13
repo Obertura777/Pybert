@@ -1287,9 +1287,17 @@ def score_order_candidates_own_power(state: InnerGameState,
     local_max = 0.0
     scores: dict = {}
 
-    for prov in range(num_provinces):
-        if not state.candidate_set_contains(own_power, prov):
-            continue
+    is_win = str(getattr(state, 'g_season', '')).upper().startswith('WIN')
+    if is_win:
+        candidate_provinces = sorted(
+            getattr(state, 'g_adjustment_candidate_provinces', set())
+        )
+    else:
+        candidate_provinces = [
+            prov for prov in range(num_provinces)
+            if state.candidate_set_contains(own_power, prov)
+        ]
+    for prov in candidate_provinces:
         score = 0.0
         for i, w in enumerate(weight_vector[:10]):
             score += w * state.get_candidate_score(own_power, prov, i)
@@ -1318,3 +1326,18 @@ def score_order_candidates_own_power(state: InnerGameState,
     # Write back into g_candidate_scores for own power
     for prov, val in scores.items():
         state.g_candidate_scores[own_power, prov] = float(val)
+
+    # WIN build candidates are keyed by (province, unit/coast token), not just
+    # province. Preserve that identity through the army-dithering pass.
+    adjustment_scores: dict[tuple, float] = {}
+    for candidate in getattr(state, 'g_adjustment_build_candidates', []):
+        prov = int(candidate['province'])
+        unit_type = str(candidate['unit_type'])
+        coast = str(candidate.get('coast', ''))
+        value = float(scores.get(prov, 0.0))
+        if unit_type == 'AMY':
+            maximum = float(state.g_max_prov_score_per_power[own_power, prov])
+            if value < maximum:
+                value = maximum - value
+        adjustment_scores[(prov, unit_type, coast)] = value
+    state.g_adjustment_candidate_scores = adjustment_scores

@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import random
 import time
 from typing import Any, Callable
 
@@ -77,6 +76,84 @@ from ..strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
+    """Insert/reset the base SUB record before movement BuildAndSendSUB.
+
+    ``GenerateAndSubmitOrders.c`` inserts a key-zero SUB record immediately
+    before HOSTILITY.  ``send_GOF.c:170-267`` then normalizes the complete
+    persistent broadcast tree:
+
+    * key zero: rebuild as an unsent base SUB at trial zero;
+    * self-generated type 1: retire as type -1, sent at the trial cap;
+    * unsent received type 0: rewind to trial zero.
+    """
+    cap = max(int(getattr(state, 'g_press_proposals_cap', 30)), 0)
+    base = {
+        'key': 0,
+        'base_sub': True,
+        'sent': False,
+        'type_flag': 0,
+        'trial_count': 0,
+        'score_vector': [0] * 7,
+        'history_flag': 0,
+        'order_candidates': [{'tokens': ['SUB'], 'type_flag': 0}],
+    }
+    entries = state.g_broadcast_list
+    insert_at = next(
+        (i for i, entry in enumerate(entries)
+         if int(entry.get('key', 0)) >= 0),
+        len(entries),
+    )
+    entries.insert(insert_at, base)
+
+    for entry in entries:
+        if int(entry.get('key', 0)) == 0:
+            entry['trial_count'] = 0
+            entry['type_flag'] = 0
+            entry['sent'] = False
+            entry['received_flag'] = False
+            entry['score_vector'] = [0] * 7
+            entry['history_flag'] = 0
+            entry['order_candidates'] = [
+                {'tokens': ['SUB'], 'type_flag': 0}
+            ]
+        elif int(entry.get('type_flag', 0)) == 1:
+            entry['type_flag'] = -1
+            entry['trial_count'] = cap
+            entry['sent'] = True
+        elif (int(entry.get('type_flag', 0)) == 0
+              and not entry.get('sent', False)):
+            entry['trial_count'] = 0
+    return base
+
+
+def _prepare_proposal_orders_for_turn(state: InnerGameState) -> None:
+    """Rebuild ProcessTurn's proposal trees from current received press.
+
+    ``ScoreOrderCandidates`` destroys all per-power trees before translating
+    its press inputs.  With no press it leaves those trees empty; ordinary
+    order variation is generated later by ProcessTurn's Phase 2 walk.
+    """
+    for power in range(7):
+        _destroy_candidate_tree(state.g_general_orders.get(power))
+    state.g_general_orders = {}
+    state.g_alliance_orders = {}
+    state.g_candidate_record_list = []
+    state.__dict__.pop('_candidate_key_map', None)
+
+    if getattr(state, 'g_minimal_press_mode', 0) == 1:
+        return
+
+    from ...communications import score_order_candidates_from_broadcast
+    try:
+        score_order_candidates_from_broadcast(state)
+    except Exception:
+        logger.exception(
+            "score_order_candidates_from_broadcast raised; continuing"
+            " with empty g_general_orders/g_alliance_orders"
+        )
 
 
 class _OrdersMixin:
@@ -141,6 +218,12 @@ class _OrdersMixin:
         # Step 2 — reset per-turn scalar flags
         # Mirrors: DAT_0062cc64 / ba2858 / ba285c / baed46 / baed5e / baed47 = 0
         self.state.g_n_trials_completed = 0  # DAT_0062cc64
+        self.state.g_cum_score = 0            # g_CumScore
+        self.state.g_trial_score_a.clear()
+        self.state.g_trial_score_b.clear()
+        self.state.g_trial_score_c.clear()
+        self.state.g_trial_prev_score_alt = 0
+        self.state.g_trial_prev_score_baseline = 0
         # send_GOF.c:104 resets DAT_00b9fe88 once per power immediately before
         # the movement proposal passes begin.
         self.state.g_power_call_count.fill(0)
@@ -321,87 +404,22 @@ class _OrdersMixin:
         # C: for each power, FUN_00410cf0(root) post-order frees the RB-tree,
         # then resets the sentinel.  Python: clear each power's g_general_orders
         # list via _destroy_candidate_tree, then reset the flat record list.
-        if hasattr(self.state, 'g_general_orders'):
-            for _p in range(num_powers):
-                _destroy_candidate_tree(self.state.g_general_orders.get(_p))
-            self.state.g_general_orders = {}
-        # Mirror the wipe for g_alliance_orders — ScoreOrderCandidates' C
-        # writer (Source/ScoreOrderCandidates.c lines 79–85) reconstructs all
-        # four sibling 21×12B arrays per call, so a fresh translator pass needs
-        # an empty alliance set too.
-        if hasattr(self.state, 'g_alliance_orders'):
-            self.state.g_alliance_orders = {}
-        self.state.g_candidate_record_list = []
-        self.state.__dict__.pop('_candidate_key_map', None)
-
         # Translate inbound press registry → per-power general / alliance order
         # sets so MC sub-pass 1c can dispatch received-XDO orders.  Without
         # this call the binary's press-driven MTO/SUP path is unreachable in
-        # Python (g_general_orders stays empty → 1c second pass is a no-op →
-        # MC produces only default-HLD output).  See communications.py for the
+        # Python; ProcessTurn still generates ordinary candidates through its
+        # Phase 2 adjacency walk.  See communications.py for the
         # ScoreOrderCandidates writer-loop port.
-        # The C binary never clears DAT_00bb65ec (g_broadcast_list), so received
-        # press accumulates for the lifetime of the game and the translator
-        # rebuilds g_general_orders / g_alliance_orders from the accumulated set
-        # on every call.  That, plus the per-phase wipe above, is what gives
-        # press its multi-phase commitment semantics — no separate archive
-        # needed.  See state.synchronize_from_game for the matching no-clear
-        # rationale.
+        # GenerateAndSubmitOrders clears DAT_00bb65ec at call entry. The client
+        # drains the current phase's queued messages after synchronization, so
+        # this list contains only press registered for the active generation
+        # window; longer-term commitment lives in the dedicated history maps.
         # In NO_PRESS mode, g_broadcast_list only contains self-emitted XDO
         # support proposals from prior phases.  Reading them back via
         # score_order_candidates_from_broadcast would partially populate
-        # g_general_orders with stale proposals (wrong positions), then
-        # prevent generate_self_proposals from firing.  Skip entirely.
+        # g_general_orders with stale proposals (wrong positions).  Skip it.
+        _prepare_proposal_orders_for_turn(self.state)
         _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
-        if not _no_press:
-            from ...communications import score_order_candidates_from_broadcast
-            try:
-                score_order_candidates_from_broadcast(self.state)
-            except Exception:
-                logger.exception(
-                    "score_order_candidates_from_broadcast raised; continuing"
-                    " with empty g_general_orders/g_alliance_orders"
-                )
-
-        # Self-proposal fallback: when g_broadcast_list is empty (NO_PRESS
-        # or standalone mode), generate MTO proposals from final_score_set
-        # and inject them into g_general_orders so MC Phase 1c can dispatch
-        # non-hold orders.  This replaces the press round-trip that normally
-        # populates these tables via score_order_candidates_from_broadcast.
-        #
-        # In NO_PRESS mode, the C binary's Phase 1c dispatches nothing for
-        # the OWN power — all own-power order variation comes from Phase 2's
-        # adjacency walk.  But other powers DO need proposals for scoring
-        # context (evaluate_order_score reads all units' orders).
-        # generate_self_proposals is called with skip_power=own_power so
-        # that the own power's units enter Phase 2 (the MC randomization
-        # path) while other powers get reasonable pre-assigned orders.
-        if movement_phase and (_no_press or not self.state.g_general_orders):
-            from ...heuristics import generate_self_proposals
-            try:
-                n_self = generate_self_proposals(
-                    self.state, own_power_idx,
-                    skip_power=own_power_idx if _no_press else -1,
-                )
-                # HOLD-DBG: log self-proposal output so we can see what MC gets to work with.
-                _gen_ord_by_power = {
-                    p: [(o.get('type'), o.get('unit'), o.get('target'))
-                        for o in orders]
-                    for p, orders in self.state.g_general_orders.items()
-                } if hasattr(self.state, 'g_general_orders') else {}
-                logger.info(
-                    "HOLD_DBG[%s] self_proposals generated=%s  "
-                    "skip_power=%s  g_general_orders_by_power=%s",
-                    self.power_name,
-                    n_self,
-                    own_power_idx if _no_press else -1,
-                    _gen_ord_by_power,
-                )
-            except Exception:
-                logger.exception(
-                    "generate_self_proposals raised; continuing without "
-                    "self-proposals"
-                )
 
         # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_unit_count)
         # g_TrialScale = DAT_004c6bb8 = difficulty*2+60 (default difficulty=100 → 260)
@@ -476,13 +494,8 @@ class _OrdersMixin:
         # score so MC's selector skips them.
         #
         # IMPORTANT: only fire when g_broadcast_list has actual received
-        # press — NOT when g_general_orders was populated by
-        # generate_self_proposals.  Self-proposals are synthetic guidance
-        # to give MC some MTO candidates; penalising everything else would
-        # collapse the candidate set and re-produce all-holds.
-        #
-        # g_broadcast_list accumulates forever (matching C).  It can contain
-        # BOTH received-press entries AND self-emitted XDO support proposals
+        # press.  It can contain both received-press entries and self-emitted
+        # XDO support proposals
         # (written by emit_xdo_proposals_to_broadcast in step 5h.1).  The
         # corroboration penalty must only fire when there's genuine received
         # press from OTHER powers — not our own proposals.  In NO_PRESS mode
@@ -590,6 +603,7 @@ class _OrdersMixin:
 
         # 5j — submit orders and draw vote (movement) OR retreat handling
         if movement_phase:
+            _prepare_broadcast_nodes_for_movement(self.state)
             _hostility(self.state)
             _phase_handler(self.state, 3)
             self._build_and_send_sub(best_orders)
@@ -614,9 +628,12 @@ class _OrdersMixin:
                 # WIN build/remove candidate pipeline — mirrors send_GOF WIN branch:
                 #   ResetPerTrialState → ScoreProvinces →
                 #   populate candidates → ScoreOrderCandidates_OwnPower →
-                #   FUN_00442040 (builds) or FUN_0044bd40 (removes)
+                #   FUN_0044bd40 (builds) or FUN_00442040 (removes)
                 self.state.g_build_order_list.clear()        # ResetPerTrialState
                 self.state.g_build_order_list_size = 0
+                self.state.g_adjustment_build_candidates.clear()
+                self.state.g_adjustment_candidate_scores.clear()
+                self.state.g_adjustment_candidate_provinces.clear()
                 self.state.g_waive_count = 0
 
                 # Save real SC ownership before score_provinces clobbers it.

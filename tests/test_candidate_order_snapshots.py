@@ -237,6 +237,18 @@ def test_spring_low_history_move_keeps_selected_score():
     assert state.g_order_table[province, _F_SELECTED_SCORE_LO] == 100
 
 
+def test_negative_signed_history_keeps_selected_score():
+    state, province = _selected_score_state(-1)
+    evaluate_order_score(0, state)
+    assert state.g_order_table[province, _F_SELECTED_SCORE_LO] == 100
+
+
+def test_positive_high_dword_history_clears_selected_score():
+    state, province = _selected_score_state(1 << 32)
+    evaluate_order_score(0, state)
+    assert state.g_order_table[province, _F_SELECTED_SCORE_LO] == 0
+
+
 def test_spring_sc_source_clears_selected_score_even_with_low_history():
     state, province = _selected_score_state(10)
     state.sc_provinces.add(province)
@@ -252,6 +264,16 @@ def test_fall_sc_move_keeps_selected_score_on_narrow_validity_path():
     state.g_order_table[province, _F_TARGET_PROV] = 1
     state.g_order_table[destination, _F_TARGET_PROV] = 2
     state.g_order_table[destination, _F_INCOMING_MOVE] = 1
+    evaluate_order_score(0, state)
+    assert state.g_order_table[province, _F_SELECTED_SCORE_LO] == 100
+
+
+def test_fall_sc_move_treats_negative_signed_attack_count_as_unopposed():
+    state, province = _selected_score_state(11)
+    destination = int(state.g_order_table[province, _F_DEST_PROV])
+    state.g_season = 'FAL'
+    state.sc_provinces.add(destination)
+    state.g_attack_count[0, destination] = -1
     evaluate_order_score(0, state)
     assert state.g_order_table[province, _F_SELECTED_SCORE_LO] == 100
 

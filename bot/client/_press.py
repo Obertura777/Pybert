@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import random
 import time
 from typing import Any, Callable
 
@@ -30,6 +29,7 @@ from ...state import InnerGameState
 from ...monte_carlo import (
     process_turn,
     update_score_state,
+    _refresh_order_table,
     check_time_limit,
     restore_order_entry,
     _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
@@ -73,6 +73,92 @@ from ..strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _set_round_value(values: list, index: int, value: int) -> None:
+    """Store into a C-style fixed round array represented by a Python list."""
+    while len(values) <= index:
+        values.append(0)
+    values[index] = int(value)
+
+
+def _advance_broadcast_proposal_trials(
+        state: InnerGameState,
+        entry: dict,
+        trial_cap: int,
+        dispatch_fn: Callable[[], None] | None = None,
+) -> bool:
+    """Run BuildAndSendSUB's inner proposal-trial loop for one broadcast node.
+
+    Returns ``True`` when the node reaches ``trial_cap`` and ``False`` when an
+    MTL check interrupts it.  This is C ``004579f3–00457d71``: the node owns its
+    completed-trial counter, which is copied to ``DAT_0062cc64`` at the start
+    of every iteration and incremented only after score/history snapshots and
+    scheduled-press dispatch.
+    """
+    trial_cap = max(int(trial_cap), 0)
+    completed = max(int(entry.get('trial_count', 0)), 0)
+    num_powers = len(state.g_unit_count)
+
+    while completed < trial_cap:
+        if check_time_limit(state):
+            return False
+
+        state.g_n_trials_completed = completed
+
+        # C's round-zero block ranks/refreshes each active, stale power before
+        # the first UpdateScoreState call and adds its accepted-proposal count
+        # to g_CumScore. Subsequent rounds use the flag=1 ranker tail invoked by
+        # UpdateAllyOrderScore.
+        if completed == 0:
+            for power in range(num_powers):
+                if int(state.g_unit_count[power]) <= 0:
+                    continue
+                if state.g_power_round_record.get(power, 0) == state.g_current_round:
+                    continue
+                _rank_candidates_for_power(state, power, flag=0)
+                _refresh_order_table(state, power)
+                state.g_cum_score += int(state.g_power_call_count[power])
+
+        _set_round_value(
+            state.g_trial_score_a,
+            completed,
+            int(state.g_cum_score) - int(state.g_score_baseline),
+        )
+
+        update_score_state(state)
+
+        previous_alt = int(getattr(state, 'g_trial_prev_score_alt', 0))
+        previous_baseline = int(
+            getattr(state, 'g_trial_prev_score_baseline', 0))
+        _set_round_value(
+            state.g_trial_score_b,
+            completed,
+            int(state.g_score_alt) - previous_alt,
+        )
+        _set_round_value(
+            state.g_trial_score_c,
+            completed,
+            int(state.g_score_baseline) - previous_baseline,
+        )
+        state.g_trial_prev_score_alt = int(state.g_score_alt)
+        state.g_trial_prev_score_baseline = int(state.g_score_baseline)
+
+        # candidate[0x17 + round] = candidate[0x71]
+        for candidate in state.g_candidate_record_list:
+            history = candidate.setdefault('output_score_history', [])
+            while len(history) <= completed:
+                history.append(0.0)
+            history[completed] = float(candidate.get('output_score', 0.0))
+
+        if dispatch_fn is not None:
+            dispatch_fn()
+
+        completed += 1
+        state.g_n_trials_completed = completed
+        entry['trial_count'] = completed
+
+    return True
 
 
 class _PressMixin:
@@ -419,15 +505,41 @@ class _PressMixin:
             logger.warning("MTL expired before BuildAndSendSUB — skipping SUB")
             return
 
-        # BuildAndSendSUB.c ranks each active power and refreshes its 30-slot
-        # table before the later SUB block dereferences slot zero
-        # (C:287-317 precede C:593-614).  The old Python order was reversed:
-        # it submitted the slot produced by the flag=1 ally-score pass, then
-        # ran this final flag=0 rank/refresh after game.set_orders, when it
-        # could no longer affect the submitted move set.
-        for power_i in range(n_powers):
-            _rank_candidates_for_power(self.state, power_i)
-        update_score_state(self.state)
+        # send_GOF.c resets these after its ten ProcessTurn passes and before
+        # entering BuildAndSendSUB. They are proposal-round diagnostics, not
+        # movement-phase lifetime accumulators.
+        self.state.g_score_alt = 0
+        self.state.g_score_group_duplicates = 0
+        self.state.g_score_baseline = 0
+        self.state.g_trial_score_a.clear()
+        self.state.g_trial_score_b.clear()
+        self.state.g_trial_score_c.clear()
+        self.state.g_trial_prev_score_alt = 0
+        self.state.g_trial_prev_score_baseline = 0
+
+        # ── 3. First proposal node's complete inner trial loop ─────────
+        # C submits after the first unprocessed broadcast node reaches its
+        # cap. Standalone/no-press Python runs do not materialise the implicit
+        # base SUB node, so use an ephemeral node with the same counter.
+        press_cap = int(getattr(self.state, 'g_press_proposals_cap', 30))
+        _trial_entries = [
+            entry for entry in self.state.g_broadcast_list
+            if not entry.get('sent', False)
+        ]
+        _primary_trial_entry = (
+            _trial_entries[0] if _trial_entries else {'trial_count': 0}
+        )
+        if not _advance_broadcast_proposal_trials(
+            self.state,
+            _primary_trial_entry,
+            press_cap,
+            dispatch_fn=lambda: dispatch_scheduled_press(
+                self.state, self._send_dm),
+        ):
+            logger.warning("MTL expired during BuildAndSendSUB trials — skipping SUB")
+            return
+        if _trial_entries:
+            _primary_trial_entry['sent'] = True
 
         # C submits the complete order list referenced by slot zero in
         # DAT_00bbf690/694.  The rank/refresh immediately above populated the
@@ -526,9 +638,7 @@ class _PressMixin:
         # entries (lines 490–570), per-node SendAllyPressByPower for own
         # entries (lines 575–582), and a restart (goto LAB_004579a9, lines
         # 1204–1211) after proposal-history processing when g_history_counter>19.
-        # Python: MC already ran so inner trial sub-loop is elided; the outer
-        # structure, time checks, and restart logic are preserved.
-        press_cap = getattr(self.state, 'g_press_proposals_cap', 30)
+        # Python mirrors both the inner trial loop and outer press handling.
         _processed_ids: set = set()
         # register_received_press inserts two entries per incoming proposal
         # (pass-1 watermark=None, pass-2 watermark=size_before).  Both have
@@ -559,10 +669,20 @@ class _PressMixin:
                     break
 
                 _processed_ids.add(id(_entry))
-                _entry['trial_count'] = press_cap
 
-                # C line 342: ScheduledPressDispatch inside inner trial sub-loop
-                dispatch_scheduled_press(self.state, self._send_dm)
+                # C lines 217–373: each unsent node owns an independent trial
+                # counter and runs the complete score/update/history loop.
+                if not _entry.get('sent', False):
+                    if not _advance_broadcast_proposal_trials(
+                        self.state,
+                        _entry,
+                        press_cap,
+                        dispatch_fn=lambda: dispatch_scheduled_press(
+                            self.state, self._send_dm),
+                    ):
+                        _time_expired = True
+                        break
+                    _entry['sent'] = True
 
                 # C lines 490–570: RECEIVE_PROPOSAL + EvaluatePress + RESPOND
                 # Only for received entries (received_flag==1, type_flag==0).

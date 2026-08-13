@@ -22,7 +22,7 @@ Module-level deps: ``bisect``, ``logging``, ``numpy``, ``random``, ``..state.Inn
 
 import bisect
 import logging
-import random
+from .. import rng as random
 
 import numpy as np
 
@@ -458,4 +458,3 @@ def assign_hold_supports(state: InnerGameState, candidates) -> None:
         r = random.randint(0, 32767)          # MSVC _rand() ∈ [0, 0x7fff]
         score = (r // 0x17) % 0x7c17 + 500   # range [500, 1924]
         score_convoy_fleet(state, prov, score)
-

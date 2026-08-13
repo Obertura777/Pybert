@@ -472,7 +472,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     # ── Phase 4c: normal enemy selection (LAB_00429317, lines 1091-1455) ──────
     # Full decision tree ported from C decompile.
     if not bVar26:
-        import random as _random
+        from .. import rng as _random
         g_stabbed = int(getattr(state, 'g_stabbed_flag', 0))
         g_opening_sticky = int(getattr(state, 'g_opening_sticky_mode', 0))
         g_deceit = int(getattr(state, 'g_deceit_level', 0))

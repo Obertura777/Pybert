@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import logging
-import random
 import time
 
 import numpy as np

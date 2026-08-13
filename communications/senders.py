@@ -29,7 +29,7 @@ the senders slice is fully self-contained with respect to other submodules in
 ``albert.communications``.
 """
 
-import random as _random
+from .. import rng as _random
 import re
 import time as _time
 
@@ -1196,5 +1196,4 @@ def propose(
         build_alliance_msg(state, pwr)
 
     return True
-
 

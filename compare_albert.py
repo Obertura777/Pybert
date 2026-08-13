@@ -10,7 +10,7 @@ Reports per-power match rate and per-game / global aggregates.
 Usage::
 
     cd ~/Downloads/work/Pybert
-    uv run compare_albert.py                       # all games, default seed
+    uv run compare_albert.py                       # all games, CRT seed 1
     uv run compare_albert.py --max-games 5         # smoke test
     uv run compare_albert.py --phase-types M       # movement only
     uv run compare_albert.py --game game_10.json   # single game
@@ -22,10 +22,10 @@ import copy
 import json
 import logging
 import os
-import random
 import sys
 import time
 from collections import Counter, defaultdict
+from itertools import combinations
 from pathlib import Path
 
 # Make the Pybert package importable when running from the repo dir.
@@ -37,12 +37,86 @@ if str(_PARENT) not in sys.path:
 from diplomacy import Game
 
 from Pybert.bot.client import AlbertClient
+from Pybert import rng as random
 from Pybert.monte_carlo import restore_order_entry
 from Pybert.bot.orders import _build_order_seq_from_table
 from Pybert.dispatch import validate_and_dispatch_order
 
 
 POWERS = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+
+
+def _adjustment_candidate_sets(state, power: str) -> list[list[str]]:
+    """Enumerate complete legal WIN sets from the generated candidate keys."""
+    own_idx = POWERS.index(power)
+    delta_record = state.g_build_delta.get(own_idx, {'flag': 0, 'delta': 0})
+    delta = max(int(delta_record.get('delta', 0)), 0)
+    if delta == 0:
+        return [[]]
+
+    if int(delta_record.get('flag', 0)) == 1:
+        atomic: list[tuple[int, str]] = []
+        for candidate in state.g_adjustment_build_candidates:
+            prov = int(candidate['province'])
+            name = state._id_to_prov.get(prov, str(prov))
+            unit_type = str(candidate['unit_type'])
+            coast = str(candidate.get('coast', ''))
+            if unit_type == 'FLT':
+                name += coast
+            letter = 'F' if unit_type == 'FLT' else 'A'
+            atomic.append((prov, f"{letter} {name} B"))
+
+        distinct_provinces = {prov for prov, _ in atomic}
+        build_count = min(delta, len(distinct_provinces))
+        result: list[list[str]] = []
+        for choice in combinations(atomic, build_count):
+            if len({prov for prov, _ in choice}) != build_count:
+                continue
+            # The reference JSONs omit implicit WAIVE orders, so candidate
+            # identity contains only explicit builds.
+            result.append([order for _, order in choice])
+        return result
+
+    atomic = []
+    for prov, unit in state.unit_info.items():
+        if int(unit.get('power', -1)) != own_idx:
+            continue
+        name = state._id_to_prov.get(prov, str(prov))
+        coast = str(unit.get('coast', ''))
+        if coast and not name.endswith(coast):
+            name += coast if coast.startswith('/') else '/' + coast
+        letter = 'F' if unit.get('type') == 'F' else 'A'
+        atomic.append(f"{letter} {name} D")
+    return [list(choice) for choice in combinations(atomic, min(delta, len(atomic)))]
+
+
+def _retreat_candidate_sets(state_data: dict, power: str) -> list[list[str]]:
+    """Enumerate complete legal RTO/DSB combinations from NOW retreat data."""
+    retreat_map = (state_data.get('retreats') or {}).get(power, {}) or {}
+    if not retreat_map:
+        return [[]]
+
+    per_unit: list[list[tuple[str, str | None]]] = []
+    for unit, destinations in retreat_map.items():
+        unit = _norm_order(unit)
+        choices = [(f"{unit} R {_norm_order(dst)}", _norm_order(dst))
+                   for dst in (destinations or [])]
+        choices.append((f"{unit} D", None))
+        per_unit.append(choices)
+
+    complete: list[list[str]] = [[]]
+    complete_dests: list[set[str]] = [set()]
+    for choices in per_unit:
+        next_complete: list[list[str]] = []
+        next_dests: list[set[str]] = []
+        for orders, used in zip(complete, complete_dests):
+            for order, dest in choices:
+                if dest is not None and dest in used:
+                    continue
+                next_complete.append(orders + [order])
+                next_dests.append(used | ({dest} if dest is not None else set()))
+        complete, complete_dests = next_complete, next_dests
+    return complete
 
 
 def _build_game(state_data: dict, phase_name: str) -> Game:
@@ -70,7 +144,8 @@ def _build_game(state_data: dict, phase_name: str) -> Game:
 
 def _capture_orders_for_power(state_data: dict, phase_name: str,
                               power: str, seed: int,
-                              capture_candidates: bool = False
+                              capture_candidates: bool = False,
+                              run_submission: bool = True,
                               ) -> list[str] | tuple[list[str], list[list[str]]] | None:
     """Run Pybert as `power` on the given state, return submitted orders.
 
@@ -90,6 +165,12 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
     # outbound protocol traffic so a successful order-generation run is not
     # misreported as a Pybert failure after its orders have been produced.
     client._send_dm = lambda _msg: None
+    if not run_submission:
+        # Coverage-only seed sweeps need the ProcessTurn snapshots, not
+        # BuildAndSendSUB's 30 ranking/update rounds.  The candidate records
+        # are complete before that call, so bypassing submission changes no
+        # coverage evidence and cuts a six-unit seed from ~130s to ~2s.
+        client._build_and_send_sub = lambda _best_orders: None
 
     try:
         client.state.synchronize_from_game(g)
@@ -111,7 +192,14 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
             submitted = list(g.get_orders(power))
         except Exception:
             pass
-    if not capture_candidates or not phase_name.endswith("M"):
+    if not capture_candidates:
+        return submitted
+
+    if phase_name.endswith("A"):
+        return submitted, _adjustment_candidate_sets(client.state, power)
+    if phase_name.endswith("R"):
+        return submitted, _retreat_candidate_sets(state_data, power)
+    if not phase_name.endswith("M"):
         return submitted
 
     # Keep candidate coverage separate from final selection.  A candidate is
@@ -120,11 +208,20 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
     # order table and submitted list, so use a deep copy per record.
     candidate_sets: list[list[str]] = []
     own_idx = POWERS.index(power)
+    # One isolated state is sufficient: every complete candidate snapshot
+    # overwrites all own-unit rows before validation.  Deep-copying the full
+    # 7×256 analysis state for every record made six-unit pools spend minutes
+    # in diagnostics after generation itself had finished in seconds.
+    candidate_state = copy.deepcopy(client.state)
+    own_provinces = [
+        prov for prov, unit in candidate_state.unit_info.items()
+        if int(unit.get('power', -1)) == own_idx
+    ]
     for candidate in client.state.g_candidate_record_list:
         if int(candidate.get("power", -1)) != own_idx:
             continue
-        candidate_state = copy.deepcopy(client.state)
         candidate_state.g_submitted_orders = []
+        candidate_state.g_order_table[own_provinces, :] = 0.0
         valid = True
         for entry in candidate.get("orders", []):
             prov = restore_order_entry(
@@ -182,6 +279,50 @@ def _compare_orders(albert: list[str], pybert: list[str]) -> dict:
     }
 
 
+def _candidate_set_key(orders: list[str]) -> frozenset[str]:
+    """Return the normalized, order-insensitive identity of one candidate."""
+    return frozenset(_norm_order(order) for order in orders)
+
+
+def _extend_candidate_seed_coverage(
+        candidate_sets: list[list[str]], albert_orders: list[str],
+        state_data: dict, phase_name: str, power: str, primary_seed: int,
+        seed_count: int, capture_fn=None,
+        ) -> tuple[bool, list[int]]:
+    """Optionally union candidate pools from a deterministic seed range.
+
+    The caller has already captured ``primary_seed``; additional pools are
+    evaluated only until the reference set is found.  Submitted orders are
+    intentionally not returned or changed by this diagnostic helper.
+    """
+    if capture_fn is None:
+        capture_fn = _capture_orders_for_power
+    target = _candidate_set_key(albert_orders)
+    seen = {_candidate_set_key(orders) for orders in candidate_sets}
+    seeds_tried = [primary_seed]
+    if target in seen:
+        return True, seeds_tried
+
+    for candidate_seed in range(seed_count):
+        if candidate_seed == primary_seed:
+            continue
+        extra_capture = capture_fn(
+            state_data, phase_name, power, seed=candidate_seed,
+            capture_candidates=True, run_submission=False)
+        seeds_tried.append(candidate_seed)
+        if extra_capture is None:
+            continue
+        _extra_orders, extra_sets = extra_capture
+        for orders in extra_sets:
+            key = _candidate_set_key(orders)
+            if key not in seen:
+                seen.add(key)
+                candidate_sets.append(orders)
+        if target in seen:
+            return True, seeds_tried
+    return False, seeds_tried
+
+
 def _phase_state(game_full: dict, phase_name: str) -> dict | None:
     for ph in game_full.get("phases", []):
         if ph.get("name") == phase_name:
@@ -206,18 +347,29 @@ def main() -> None:
     parser.add_argument("--phase-types", default="M",
                         help="Phase suffixes to compare (e.g. 'M', 'MR', 'MAR'). "
                              "Default 'M' (movement only).")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed (passed to random.seed before each run).")
+    parser.add_argument(
+        "--seed", type=int, default=1,
+        help="MSVC CRT srand state reset before each run. The recovered source "
+             "contains no srand call, so the CRT default is 1.",
+    )
     parser.add_argument("--verbose", action="store_true",
                         help="Print each phase/power result.")
     parser.add_argument(
         "--candidate-coverage", action="store_true",
-        help="For movement phases, also report whether Albert's complete order "
-             "set exists among Pybert's generated legal candidates.",
+        help="For movement, retreat, and adjustment phases, report whether Albert's "
+             "complete order set exists among Pybert's generated legal candidates.",
+    )
+    parser.add_argument(
+        "--candidate-seed-count", type=int, default=0, metavar="N",
+        help="When candidate coverage misses at --seed, additionally union "
+             "candidate pools from seeds 0 through N-1. This does not change "
+             "the submitted-order comparison. Default: 0 (no sweep).",
     )
     parser.add_argument("--out", default=None,
                         help="Optional path for per-(game,phase,power) JSON dump.")
     args = parser.parse_args()
+    if args.candidate_seed_count < 0:
+        parser.error("--candidate-seed-count must be non-negative")
 
     # Silence the bot's noisy loggers; we only care about returned orders.
     logging.basicConfig(level=logging.CRITICAL)
@@ -293,7 +445,8 @@ def main() -> None:
                     if args.verbose:
                         print(f"  [{phase_name}] {power}: PYBERT FAILED")
                     continue
-                if args.candidate_coverage and phase_name.endswith("M"):
+                if (args.candidate_coverage
+                        and phase_name.endswith(("M", "R", "A"))):
                     pybert_orders, candidate_sets = capture
                 else:
                     pybert_orders = capture
@@ -313,12 +466,27 @@ def main() -> None:
                 candidate_best_unit_match = None
                 candidate_unit_coverage = None
                 closest_candidate = None
-                if args.candidate_coverage and phase_name.endswith("M"):
+                candidate_seeds_tried: list[int] = []
+                if (args.candidate_coverage
+                        and phase_name.endswith(("M", "R", "A"))):
                     albert_norm = {_norm_order(o) for o in albert_orders}
-                    candidate_covered = any(
-                        {_norm_order(o) for o in orders} == albert_norm
-                        for orders in candidate_sets
-                    )
+                    # A single finite Monte-Carlo pool is not a structural
+                    # generation oracle.  If requested, union additional
+                    # deterministic pools while leaving ``pybert_orders``
+                    # tied exclusively to --seed.
+                    if phase_name.endswith("M"):
+                        candidate_covered, candidate_seeds_tried = (
+                            _extend_candidate_seed_coverage(
+                                candidate_sets, albert_orders, state, phase_name,
+                                power, args.seed, args.candidate_seed_count)
+                        )
+                    else:
+                        target = _candidate_set_key(albert_orders)
+                        candidate_covered = any(
+                            _candidate_set_key(orders) == target
+                            for orders in candidate_sets
+                        )
+                        candidate_seeds_tried = [args.seed]
                     candidate_diffs = [
                         _compare_orders(albert_orders, orders)
                         for orders in candidate_sets
@@ -349,6 +517,7 @@ def main() -> None:
                           f" albert={diff['albert_count']} pybert={diff['pybert_count']}"
                           + (f" candidate={'yes' if candidate_covered else 'no'}"
                              f"/{len(candidate_sets)}"
+                             f" seeds={','.join(map(str, candidate_seeds_tried))}"
                              f" best={candidate_best_unit_match}/{diff['unit_total']}"
                              f" unit-coverage={candidate_unit_coverage}/{len(albert_orders)}"
                              if candidate_covered is not None else ""))
@@ -375,6 +544,7 @@ def main() -> None:
                         "pybert": pybert_orders,
                         "candidate_covered": candidate_covered,
                         "candidate_count": len(candidate_sets),
+                        "candidate_seeds_tried": candidate_seeds_tried,
                         "candidate_best_unit_match": candidate_best_unit_match,
                         "candidate_unit_coverage": candidate_unit_coverage,
                         **{k: v for k, v in diff.items()

@@ -38,7 +38,7 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     CAL_VALUE (FUN_004266b6): wired to _cal_value() for multi-XDO AND coherence.
     FUN_0042c040 = _eval_single_xdo: type dispatcher (PCE/DMZ/ALY/XDO/SLO/DRW/NOT/SUB).
     """
-    import random as _random
+    from ... import rng as _random
     import logging as _logging
     _log = _logging.getLogger(__name__)
 

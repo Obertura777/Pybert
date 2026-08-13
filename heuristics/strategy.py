@@ -1,11 +1,9 @@
-"""Draw-vote, move-history post-processing, self-proposal generation,
-and press-pressure computation.
+"""Draw-vote, move-history post-processing, and press-pressure computation.
 
 Split from heuristics.py during the 2026-04 refactor.
 
 - ``compute_draw_vote``    — Nash-stability check for the DRW vote
 - ``post_process_orders``  — decay + update move-history matrix
-- ``generate_self_proposals`` — seed g_general_orders when no press arrives
 - ``compute_press``        — per-power adjacency pressure matrix
 
 Stab/deviate detection lives in bot.strategy (_stabbed, _deviate_move).
@@ -292,9 +290,13 @@ def post_process_orders(state: InnerGameState) -> None:
 
 # ── Self-proposal generator ──────────────────────────────────────────────────
 
-def generate_self_proposals(state: InnerGameState, own_power: int,
+def _legacy_generate_self_proposals(state: InnerGameState, own_power: int,
                             *, skip_power: int = -1) -> int:
-    """Generate MTO proposals for all powers from candidate scoring tables.
+    """Deprecated synthetic proposal generator, retained for archaeology.
+
+    This is intentionally private and unused. GenerateOrders never inserts
+    these proposals in the C binary; proposal trees are populated only from
+    actual press before ProcessTurn performs its ordinary adjacency walk.
 
     Mirrors the C bot's SerializeOrders → RegisterProposalOrders flow:
     for each unit, the best-scored reachable adjacent province becomes

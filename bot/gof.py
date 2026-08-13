@@ -63,10 +63,10 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
       this+0x2480 (int) = waive count → state.g_waive_count.
       this+0x2488 (char) = build/remove flag — encoded in g_build_order_list strings
         (each entry already contains 'BLD' or 'REM').
-      g_build_order_list is populated by compute_win_builds (FUN_00442040) or
-      compute_win_removes (FUN_0044bd40) before _send_gof is called.
+      g_build_order_list is populated by compute_win_builds (FUN_0044bd40) or
+      compute_win_removes (FUN_00442040) before _send_gof is called.
       Unit-type (AMY/FLT): coastal → FLT, inland → AMY (confirmed by
-      FUN_00442040 / FUN_00461010 decompile; see docs/funcs/ComputeWinBuilds_Populate.md).
+      WIN candidate-set writers and ScoreOrderCandidates_OwnPower decompiles).
     """
     phase = getattr(state, 'g_season', 'SPR')
     own_power = getattr(state, 'albert_power_idx', 0)
@@ -289,5 +289,3 @@ def _evaluate_order_proposals_and_send_gof(
         _send_gof(state, send_dm)
     else:
         dispatch_scheduled_press(state, send_dm)
-
-

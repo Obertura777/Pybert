@@ -35,7 +35,6 @@ from .win import (
 from .strategy import (
     compute_draw_vote,
     post_process_orders,
-    generate_self_proposals,
     compute_press,
 )
 from .snapshot import snapshot_province_state

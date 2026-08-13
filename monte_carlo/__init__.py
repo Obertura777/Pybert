@@ -1,5 +1,4 @@
 import copy
-import random
 import numpy as np
 from ..state import InnerGameState
 from ..heuristics import score_order_candidates_all_powers

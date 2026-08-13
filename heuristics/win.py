@@ -107,6 +107,9 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     Albert+0x4e50; limit (delta) at Albert+0x4e54.
     """
     home_provs = state.home_centers.get(own_power, frozenset())
+    state.g_adjustment_build_candidates = []
+    state.g_adjustment_candidate_scores = {}
+    state.g_adjustment_candidate_provinces = set()
     for prov in range(256):
         is_eligible = (
             prov in home_provs
@@ -115,8 +118,28 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
         )
         if not is_eligible:
             state.g_candidate_bfs[own_power, :, prov] = 0.0
-        elif state.g_candidate_bfs[own_power, 0, prov] == 0.0:
-            state.g_candidate_bfs[own_power, 0, prov] = 1.0
+            continue
+        state.g_adjustment_candidate_provinces.add(prov)
+
+        # ScoreOrderCandidates_OwnPower iterates keys containing both the
+        # province and the AMY/FLT coast token. Armies are legal at every home
+        # centre; fleets are additional candidates at coastal centres.
+        state.g_adjustment_build_candidates.append({
+            'province': prov, 'unit_type': 'AMY', 'coast': '',
+        })
+        coast_keys = sorted(
+            coast for (pid, coast) in state.fleet_coast_adj
+            if pid == prov
+        )
+        if coast_keys:
+            for coast in coast_keys:
+                state.g_adjustment_build_candidates.append({
+                    'province': prov, 'unit_type': 'FLT', 'coast': coast,
+                })
+        elif state.fleet_adj_matrix.get(prov):
+            state.g_adjustment_build_candidates.append({
+                'province': prov, 'unit_type': 'FLT', 'coast': '',
+            })
 
 
 def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
@@ -132,6 +155,9 @@ def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
     C: candidate set lives at Albert+own_power*0x78+0x361c; count at
     Albert+0x4df8; limit (delta) at Albert+0x4dfc.
     """
+    state.g_adjustment_build_candidates = []
+    state.g_adjustment_candidate_scores = {}
+    state.g_adjustment_candidate_provinces = set()
     for prov in range(256):
         is_eligible = (
             prov in state.unit_info
@@ -139,12 +165,12 @@ def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
         )
         if not is_eligible:
             state.g_candidate_bfs[own_power, :, prov] = 0.0
-        elif state.g_candidate_bfs[own_power, 0, prov] == 0.0:
-            state.g_candidate_bfs[own_power, 0, prov] = 1.0
+        else:
+            state.g_adjustment_candidate_provinces.add(prov)
 
 
 def compute_win_builds(state: InnerGameState, delta: int) -> None:
-    """Port of FUN_00442040 — select top `delta` build candidates and emit BLD orders.
+    """Port of FUN_0044bd40 — select top `delta` build candidates and emit BLD orders.
 
     Called from send_GOF when unit_count < sc_count (BUILD phase).
 
@@ -155,13 +181,8 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
       4. For each selected province determine unit type:
            FLT — if province is coastal (any adjacent province is a water province).
            AMY — otherwise (inland).
-         Type-determination chain (confirmed by FUN_00461010 decompile):
-           FUN_00442040 outer loop calls UnitList_FindOrInsert(inner+0x2450, prov)
-           which creates the unit record and sets type at node+20 based on province
-           coastal status.  FUN_00461010 then finds that record, reads the type
-           from node+0x14 (+20), and inserts {prov_ptr, type, 0} into the build
-           BST at inner+0x2474 via FUN_00404ef0.  The coastal heuristic below
-           mirrors UnitList_FindOrInsert's initialization logic.
+         Candidate identity preserves province plus AMY/FLT coast token; coastal
+         home centres therefore admit both army and fleet builds.
       5. Append '( POWER AMY/FLT PROV ) BLD' to state.g_build_order_list.
       6. Set state.g_waive_count = delta - len(selected).
 
@@ -177,32 +198,33 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
     id_to_prov = state._id_to_prov
 
     candidates: list = []
-    for prov in range(256):
-        if not state.candidate_set_contains(own_power, prov):
-            continue
-        score = float(state.g_candidate_scores[own_power, prov])
-        candidates.append((score, prov))
+    for candidate in state.g_adjustment_build_candidates:
+        prov = int(candidate['province'])
+        unit_type = str(candidate['unit_type'])
+        coast = str(candidate.get('coast', ''))
+        key = (prov, unit_type, coast)
+        score = float(state.g_adjustment_candidate_scores.get(
+            key, state.g_candidate_scores[own_power, prov]))
+        # AMY (0x4200) precedes FLT (0x4201) on an otherwise equal C key.
+        type_tie = 1 if unit_type == 'AMY' else 0
+        candidates.append((score, prov, type_tie, unit_type, coast))
 
     candidates.sort(reverse=True)
-    selected = candidates[:delta]
+    selected: list[tuple] = []
+    selected_provinces: set[int] = set()
+    for candidate in candidates:
+        prov = int(candidate[1])
+        if prov in selected_provinces:
+            continue
+        selected.append(candidate)
+        selected_provinces.add(prov)
+        if len(selected) == delta:
+            break
 
-    for _, prov in selected:
-        is_coastal = any(adj in state.water_provinces
-                         for adj in state.adj_matrix.get(prov, []))
-        unit_type = 'FLT' if is_coastal else 'AMY'
+    for _, prov, _, unit_type, coast_suffix in selected:
         prov_name = id_to_prov.get(prov, str(prov))
-
-        # For fleet builds at multi-coast provinces (BUL, SPA, STP), append
-        # the coast suffix.  C's UnitList_FindOrInsert keys by base province ID
-        # only and default-constructs the node on first hit, so the coast is
-        # determined by whichever coast entry appears first in the adjacency
-        # BST — not by score.  Mirror that by taking the first matching key.
-        if unit_type == 'FLT':
-            coast_suffix = next(
-                (ck for (pid, ck) in state.fleet_coast_adj if pid == prov), ''
-            )
-            if coast_suffix:
-                prov_name = prov_name + coast_suffix
+        if unit_type == 'FLT' and coast_suffix:
+            prov_name = prov_name + coast_suffix
 
         state.g_build_order_list.append(f'( {power_name} {unit_type} {prov_name} ) BLD')
         state.g_build_order_list_size += 1
@@ -211,14 +233,14 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
 
 
 def compute_win_removes(state: InnerGameState, delta: int) -> None:
-    """Port of FUN_0044bd40 — select bottom `delta` remove candidates and emit REM orders.
+    """Port of FUN_00442040 — select bottom `delta` remove candidates and emit REM orders.
 
     Called from send_GOF when unit_count > sc_count (REMOVE phase).
 
     Algorithm:
       1. Collect all provinces in the candidate set (candidate_set_contains).
       2. Sort by g_candidate_scores ascending (lowest strategic value first — remove those first).
-         Confirmed by decompile of FUN_0044bd40: BuildOrderSpec uses score+0x7d
+         Confirmed by decompile of FUN_00442040: BuildOrderSpec uses score+0x7d
          and the first element popped (lowest) is the one removed.
       3. Take up to `delta` provinces.
       4. Unit type is read directly from unit_info[prov]['type'].
@@ -234,9 +256,7 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     id_to_prov = state._id_to_prov
 
     candidates: list = []
-    for prov in range(256):
-        if not state.candidate_set_contains(own_power, prov):
-            continue
+    for prov in state.g_adjustment_candidate_provinces:
         score = float(state.g_candidate_scores[own_power, prov])
         candidates.append((score, prov))
 

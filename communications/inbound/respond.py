@@ -289,7 +289,7 @@ def respond(
       LOCK / UNLOCK                    → absorbed
     """
     import logging as _logging
-    import random as _random
+    from ... import rng as _random
 
     _log = _logging.getLogger(__name__)
 
@@ -421,7 +421,7 @@ def respond(
 
             if press_mode:
                 # C: DAT_00baed68 == '\x01': RandUpTo(n)(0x14) + aggressiveness < 0x47
-                r2 = _random.randint(0, 20)
+                r2 = _random.randrange(20)
                 rand_check2 = r2 + aggressiveness < 71
                 random_passes = rand_check1 and rand_check2
             else:

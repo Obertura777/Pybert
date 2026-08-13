@@ -478,10 +478,10 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
                         and float(ot[dest, _F_TARGET_PROV]) > 0.0):
                     src_is_attacked = (
                         float(ot[prov, _F_INCOMING_MOVE]) > 0.0
-                        and float(state.g_attack_count[power_idx, prov]) > 0.0
+                        and int(state.g_attack_count[power_idx, prov]) > 0
                     )
                     dest_is_unopposed = (
-                        float(state.g_attack_count[power_idx, dest]) <= 0.0
+                        int(state.g_attack_count[power_idx, dest]) <= 0
                         and float(ot[dest, _F_INCOMING_MOVE])
                         <= float(ot[dest, _F_TARGET_PROV])
                     )
@@ -492,14 +492,14 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
                 # low/high dwords.  The C tests on DAT_005a48ec (signed high)
                 # plus g_AttackHistory (unsigned low) reduce to these signed
                 # comparisons for the values represented by this port.
-                history = float(state.g_attack_history[power_idx, prov])
-                if history < 11.0:
+                history = int(state.g_attack_history[power_idx, prov])
+                if history < 11:
                     clear_selected = False
                 elif (season == 'FAL'
                         and order_type in (_ORDER_MTO, _ORDER_CTO)):
                     clear_selected = not (
                         dest_is_sc
-                        and float(state.g_attack_count[power_idx, dest]) <= 0.0
+                        and int(state.g_attack_count[power_idx, dest]) <= 0
                     )
                 elif (season != 'SPR'
                         or order_type not in (_ORDER_MTO, _ORDER_CTO)):

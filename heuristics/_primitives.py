@@ -340,25 +340,39 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     # maximum over single inner values, it does not max against their sum.  It
     # also skips any inner power whose relation with outer is >= 10.
     # Corrected 2026-08-12: both the relation gate and the max-vs-sum shape.
-    for prov in range(num_provinces):
-        for outer_power in range(num_powers):
-            for inner_power in range(num_powers):
-                if inner_power == outer_power:
-                    continue
-                if int(state.g_relation_score[outer_power, inner_power]) >= 10:
-                    continue
-                if have_mc:
-                    inner_threat = (float(state.g_mc_province_pressure[inner_power, prov]) +
-                                    float(state.g_mc_fleet_pressure[inner_power, prov]))
-                else:
-                    inner_threat = (float(state.g_own_reach_score[inner_power, prov]) +
-                                    float(state.g_enemy_reach_score[inner_power, prov]))
+    if have_mc:
+        pressure_rows = (
+            state.g_mc_province_pressure[:, :num_provinces].astype(
+                np.float64, copy=False)
+            + state.g_mc_fleet_pressure[:, :num_provinces].astype(
+                np.float64, copy=False)
+        )
+    else:
+        pressure_rows = (
+            state.g_own_reach_score[:, :num_provinces].astype(
+                np.float64, copy=False)
+            + state.g_enemy_reach_score[:, :num_provinces].astype(
+                np.float64, copy=False)
+        )
 
-                if near_end_factor <= 5.0:
-                    if inner_threat > threat_score[outer_power, prov]:
-                        threat_score[outer_power, prov] = inner_threat
-                else:
-                    threat_score[outer_power, prov] += inner_threat
+    # C's inner contribution depends only on inner_power/province; the outer
+    # loop merely selects eligible rows via relation<10 and inner!=outer.
+    # Apply that fixed 7-row selection in NumPy. Max is bit-identical; sums are
+    # exact for these bounded integer-valued pressure arrays in float64.
+    for outer_power in range(num_powers):
+        eligible = [
+            inner_power for inner_power in range(num_powers)
+            if inner_power != outer_power
+            and int(state.g_relation_score[outer_power, inner_power]) < 10
+        ]
+        if not eligible:
+            continue
+        selected = pressure_rows[eligible]
+        if near_end_factor <= 5.0:
+            threat_score[outer_power] = np.maximum(
+                np.max(selected, axis=0), 0.0)
+        else:
+            threat_score[outer_power] = np.sum(selected, axis=0)
 
     # --- Phase 3a: empty-province pressure penalty (C:264-289) ---
     # C runs this over provinces with NO unit (province_record+3 == '\0'; the

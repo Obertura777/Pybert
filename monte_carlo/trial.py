@@ -23,7 +23,7 @@ three enumerators from ``..moves``, ``evaluate_order_proposal`` from
 import collections
 import copy
 import logging
-import random
+from .. import rng as random
 
 import numpy as np
 
@@ -1670,11 +1670,10 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
         # 1g.5  Default-hold backfill ─────────────────────────────────────────
         # Units that pass through 1c–1g without acquiring an explicit order
         # default to HLD.  The C binary's resolver treats _F_ORDER_TYPE == 0
-        # the same as HLD; we set it explicitly so evaluate_order_proposal
-        # sees real candidates.  g_general_orders is populated by
-        # generate_self_proposals (no-press) or score_order_candidates_from_broadcast
-        # (press), so 1c fires and produces MTO orders — but units that
-        # nothing touches still need this seed.
+        # the same as HLD; we set it explicitly so evaluate_order_proposal sees
+        # real candidates. Received press may populate g_general_orders and
+        # make 1c produce explicit orders, but units that nothing touches still
+        # need this seed before Phase 2's adjacency walk.
         for prov, unit in state.unit_info.items():
             if unit['power'] != power_index:
                 continue
@@ -2550,6 +2549,14 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
                 slot_groups[slot_score][1] += 1
             else:
                 slot_groups[slot_score] = [slot, 1]
+
+        # UpdateAllyOrderScore.c:265/282. The first accumulator counts every
+        # selected slot examined for every candidate; the second counts only
+        # duplicates collapsed into an existing score-key group.
+        state.g_score_alt += local_b08
+        state.g_score_group_duplicates += sum(
+            group_weight - 1 for _, group_weight in slot_groups.values()
+        )
 
         for _slot_score in sorted(slot_groups):
             r, group_weight = slot_groups[_slot_score]
