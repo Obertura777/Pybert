@@ -18,6 +18,7 @@ Module-level deps: ``..state.InnerGameState``, ``.support.assign_support_order``
 """
 
 import logging
+from collections.abc import Iterable
 
 from ..state import InnerGameState
 from .support import assign_support_order
@@ -267,16 +268,32 @@ def populate_convoy_routes(state: InnerGameState, power_idx: int) -> None:
         if unit_data.get('type') != 'A':
             continue
 
-        chains_by_dst = _enumerate_convoy_chains_for_src(state, src_prov)
-        if not chains_by_dst:
-            # No viable chain - clear any stale entry from prior trials.
-            state.g_convoy_route.pop(src_prov, None)
-            continue
+        _populate_convoy_routes_for_src(state, src_prov)
 
-        state.g_convoy_route[src_prov] = {
+
+def _populate_convoy_routes_for_src(
+    state: InnerGameState,
+    army_src: int,
+    eligible_fleets: Iterable[int] | None = None,
+) -> dict[int, tuple[int, ...]]:
+    """Replace one army's route table with the current ProcessTurn BFS.
+
+    ProcessTurn resets its five-int route record before constructing each
+    unit's candidate tree.  Replacing, rather than merging, the Python entry
+    prevents a route from an earlier trial (or from the generation pre-pass)
+    surviving after its fleet has acquired an order.
+    """
+    chains_by_dst = _enumerate_convoy_chains_for_src(
+        state, army_src, eligible_fleets=eligible_fleets
+    )
+    if chains_by_dst:
+        state.g_convoy_route[army_src] = {
             dst: {'fleet_count': len(chain), 'fleets': list(chain)}
             for dst, chain in chains_by_dst.items()
         }
+    else:
+        state.g_convoy_route.pop(army_src, None)
+    return chains_by_dst
 
 
 def _get_convoy_route(state: InnerGameState, src_prov: int, dst_prov: int):
@@ -306,85 +323,89 @@ def _get_convoy_route(state: InnerGameState, src_prov: int, dst_prov: int):
 def _enumerate_convoy_chains_for_src(
     state: InnerGameState,
     army_src: int,
-    eligible_fleets: set[int] | None = None,
-) -> dict:
+    eligible_fleets: Iterable[int] | None = None,
+) -> dict[int, tuple[int, ...]]:
     """
-    BFS over fleet chains starting from fleets adjacent to ``army_src``.
-    Returns ``{dst_prov: chain}`` where ``dst_prov`` is a non-fleet,
-    non-source landing province and ``chain`` is the *shortest* fleet
+    Port ProcessTurn.c:1674-1940's source-ordered fleet-chain walk.
+
+    Returns ``{dst_prov: chain}`` where ``dst_prov`` is a non-water,
+    non-source landing province and ``chain`` is the first shortest fleet
     tuple (1..3 elements) that convoys ``army_src`` to ``dst_prov``.
 
-    Depth-1 seeds are fleets directly adjacent to the army.  At each
-    chain step we record every landing reachable via the terminal
-    fleet (only the first — i.e. shortest — chain per dst wins, so a
-    longer chain that also reaches the same dst does NOT overwrite).
-    The BFS caps at 3 fleets, matching the C struct's three convoy-leg
-    slots at +0x218, +0x21c, +0x220.
+    C does not expand a generic graph frontier.  At each depth it walks the
+    current ``g_convoy_fleet_candidates`` tree in iterator order; a fleet takes
+    the first adjacent route of depth ``n-1`` and then exposes all of its land
+    neighbours.  ``eligible_fleets`` preserves that order.  The generation
+    pre-pass may omit it, in which case unit insertion order is the best
+    deterministic approximation; ProcessTurn always supplies the live tree.
+
+    Direct army destinations already have route depth zero in C and cannot be
+    overwritten by convoy propagation.  Occupancy is deliberately irrelevant
+    for a landing: C checks the province terrain byte only, so an enemy fleet
+    on a coastal land province does not remove that legal attack candidate.
     """
     MAX_CHAIN = 3
 
-    # Fixed 2026-04-20 (audit #2): army-type filter for initial fleet search.
     army_power = state.unit_info.get(army_src, {}).get('power')
-    depth_1_fleets = [
-        # This is not an army movement adjacency: C scans the army province's
-        # board adjacency for an occupying own fleet, so sea neighbours must
-        # remain visible here.
-        adj for adj in state.get_unit_adjacencies(army_src)
-        if state.get_unit_type(adj) == 'F'
-        and state.unit_info.get(adj, {}).get('power') == army_power
-        # ProcessTurn C:1706 tests the province terrain byte for zero before
-        # admitting a fleet into the convoy BFS.  Fleets on coastal land
-        # provinces can move at sea but cannot convoy an army.
-        and adj in state.water_provinces
-        and (eligible_fleets is None or adj in eligible_fleets)
-    ]
-    if not depth_1_fleets:
+    if army_power is None:
         return {}
 
-    result: dict = {}                           # dst -> shortest chain
-    frontier = [(f,) for f in depth_1_fleets]
-    visited_fleets = set(depth_1_fleets)
+    if eligible_fleets is None:
+        ordered_candidates = list(state.unit_info)
+    else:
+        ordered_candidates = list(eligible_fleets)
+
+    # A std::map/tree cannot expose the same unit twice.  Preserve the first
+    # occurrence in case a synthetic fixture supplies duplicates.
+    ordered_fleets: list[int] = []
+    seen: set[int] = set()
+    for prov in ordered_candidates:
+        prov = int(prov)
+        if prov in seen:
+            continue
+        seen.add(prov)
+        unit = state.unit_info.get(prov, {})
+        if (unit.get('power') == army_power
+                and unit.get('type') in ('F', 'FLT')
+                and prov in state.water_provinces):
+            ordered_fleets.append(prov)
+    if not ordered_fleets:
+        return {}
+
+    direct_or_source = set(_filtered_adj(state, army_src, 'A'))
+    direct_or_source.add(army_src)
+    route_by_fleet: dict[int, tuple[int, ...]] = {}
+    result: dict[int, tuple[int, ...]] = {}
 
     for depth in range(1, MAX_CHAIN + 1):
-        next_frontier: list = []
-        for chain in frontier:
-            terminal = chain[-1]
-            # Record every landing square reachable from this terminal.
-            # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
-            for adj in _filtered_adj(state, terminal, 'F'):
-                if adj == army_src:
-                    continue
-                # A convoy destination must be a land/coastal province.  An
-                # unoccupied sea has no unit type, so testing only for a fleet
-                # unit incorrectly admitted empty water as a landing square.
-                if adj in state.water_provinces:
-                    continue
-                if state.get_unit_type(adj) == 'F':
-                    continue
-                # First chain reaching this dst wins (BFS order →
-                # shortest by fleet count).
-                if adj not in result:
-                    result[adj] = chain
+        added_this_depth = False
+        for fleet in ordered_fleets:
+            if fleet in route_by_fleet:
+                continue
+            fleet_adj = _filtered_adj(state, fleet, 'F')
+            parent_route: tuple[int, ...] | None = None
+            if depth == 1:
+                if army_src in fleet_adj:
+                    parent_route = ()
+            else:
+                for adjacent in fleet_adj:
+                    route = route_by_fleet.get(adjacent)
+                    if route is not None and len(route) == depth - 1:
+                        parent_route = route
+                        break
+            if parent_route is None:
+                continue
 
-            # Extend the chain through another fleet — but only if we
-            # haven't hit the max chain length yet.
-            if depth < MAX_CHAIN:
-                for adj in _filtered_adj(state, terminal, 'F'):
-                    if state.get_unit_type(adj) != 'F':
-                        continue
-                    if state.unit_info.get(adj, {}).get('power') != army_power:
-                        continue
-                    if adj not in state.water_provinces:
-                        continue
-                    if eligible_fleets is not None and adj not in eligible_fleets:
-                        continue
-                    if adj in visited_fleets:
-                        continue
-                    visited_fleets.add(adj)
-                    next_frontier.append(chain + (adj,))
-        if not next_frontier:
+            chain = parent_route + (fleet,)
+            route_by_fleet[fleet] = chain
+            added_this_depth = True
+            for adjacent in fleet_adj:
+                if (adjacent in state.water_provinces
+                        or adjacent in direct_or_source):
+                    continue
+                result.setdefault(adjacent, chain)
+        if not added_this_depth:
             break
-        frontier = next_frontier
 
     return result
 
@@ -392,14 +413,19 @@ def _enumerate_convoy_chains_for_src(
 def score_convoy_fleet(state: InnerGameState, prov: int, score: int) -> None:
     """Port of ScoreConvoyFleet (FUN_00419790).
 
-    BST insert into g_convoy_fleet_candidates keyed by score.  The C code
-    traverses an MSVC std::map RB-tree to find the insertion point
-    (lower-bound walk), then calls FUN_00413ba0 (RB-tree node alloc + link)
-    and writes the returned node's two data fields into the caller's buffer.
-    In Python the sorted list + bisect.insort is the exact equivalent.
+    BST insert into ``g_convoy_fleet_candidates`` keyed by score.  The C
+    comparator is ``std::greater<int>``: a larger key descends left, while a
+    smaller or equal key descends right.  Iteration from ``head->_Left`` is
+    therefore descending, and equal-score nodes retain insertion order.
+
+    Plain ``bisect.insort((score, province))`` was doubly wrong: it put the
+    lowest score first and used province as an invented equal-key tiebreaker.
     """
     import bisect
-    bisect.insort(state.g_convoy_fleet_candidates, (score, prov))
+    descending_keys = [-int(existing_score)
+                       for existing_score, _ in state.g_convoy_fleet_candidates]
+    position = bisect.bisect_right(descending_keys, -int(score))
+    state.g_convoy_fleet_candidates.insert(position, (int(score), int(prov)))
 
 
 def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, dst_prov: int, coast: int = 0) -> None:
@@ -450,9 +476,31 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     # inverting the C behaviour.
     state.g_order_table[dst_prov, _F_INCOMING_MOVE] = 1.0
 
-    # Army inherits score from OrderedSet (via get_candidate_score), stored
-    # against the destination (C: g_ConvoyChainScore[army_province * 0x1e]).
-    score = state.get_candidate_score(power_idx, dst_prov, 0)
+    # Army inherits the destination's score, stored against the destination
+    # (C: g_ConvoyChainScore[army_province * 0x1e], where the Ghidra local
+    # `army_province` is the destination — see the note above).
+    #
+    # C (BuildConvoyOrders.c:42-44):
+    #     ppiVar4 = OrderedSet_FindOrInsert(this + power*0xc + 0x4000, &dst);
+    #     g_ConvoyChainScore[dst * 0x1e] = *ppiVar4;
+    # `this + power*0xc + 0x4000` is the per-power province SCORE map — bound
+    # here as state.final_score_set — the same set BuildOrder_MTO.c:29 reads
+    # for a plain move.
+    #
+    # Fixed 2026-08-18: this read `get_candidate_score(power, dst, 0)`, which
+    # is the BFS ROUND-0 set at `this + power*0x78 + 0x361c` — a different
+    # container holding the RAW, UNNORMALIZED seed
+    # (attack_count*build_weight + build_order_pending*move_weight), values in
+    # the tens or hundreds of thousands.  final_score_set is normalized to
+    # roughly 0-1000 by score_order_candidates_all_powers Pass 2.
+    #
+    # Measured consequence: in an F1902 France position, convoy destination BRE
+    # carried convoy-chain score 420000 where the plain-move path gave 954.
+    # evaluate_order_score sums this field, so EVERY convoy candidate scored
+    # ~591000 against ~3700 for the best hold and ~4800 for the best move —
+    # a ~600x thumb on the scale that made all seven bots convoy nearly every
+    # turn and made an army abandon a neutral centre it had just captured.
+    score = float(state.final_score_set[power_idx, dst_prov])
     state.g_convoy_chain_score[dst_prov] = score
     state.g_order_score_hi[dst_prov] = score
 
@@ -461,6 +509,9 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     for fleet_i in route:
         # C: g_ConvoyChainScore[fleet] = g_MaxProvinceScore[power*0x100+fleet]
         # — the per-power array, not the 1-D cross-power maximum.
+        # ScoreOrderCandidates_AllPowers.c:193-201 stores the maximum across
+        # every (province, token) key in this one province-indexed table.  It
+        # does not keep a second fleet-only maximum.
         max_score = float(state.g_max_prov_score_per_power[power_idx, fleet_i])
         state.g_convoy_chain_score[fleet_i] = max_score
         state.g_order_score_hi[fleet_i] = max_score

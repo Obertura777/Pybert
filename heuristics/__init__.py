@@ -5,6 +5,7 @@ from ._primitives import (
     BuildOrderSpec, build_candidate_list_find,
     evaluate_province_score, compute_winter_builds,
     _safe_pow, _float_to_int64, evaluate_alliance_score,
+    evaluate_alliance_scores_batch,
 )
 from .board import cal_board
 from .influence import (

@@ -362,7 +362,7 @@ def _legacy_generate_self_proposals(state: InnerGameState, own_power: int,
                 # than the raw BFS heat + giant SC bonus, which overwrote the
                 # BFS signal and caused every enemy to always target the nearest
                 # unowned SC regardless of actual strategic context.
-                score = float(state.final_score_set[power, adj])
+                score = state.fss(power, adj, unit_type)
 
                 # Fallback when final_score_set is zero (province outside BFS
                 # coverage): revert to BFS heat + SC bonus so we always have

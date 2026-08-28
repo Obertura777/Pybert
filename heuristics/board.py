@@ -16,6 +16,386 @@ import numpy as np
 from ..state import InnerGameState
 
 
+def _fear_weighted_threshold(
+    influence_1: float,
+    trust_divisor_1: int,
+    influence_2: float,
+    trust_divisor_2: int,
+) -> int:
+    """Return Albert's x87 weighted random-selection threshold.
+
+    The decompiler lost the floating-point expression passed through
+    ``FloatToInt64``. Disassembly of Albert.exe at 0x429a25-0x429a58 and
+    0x42a827-0x42a865 shows ``100*a/(a+b)``, where each ``a``/``b`` is the
+    feared power's influence divided by its trust tier. FloatToInt64 then
+    truncates toward zero.
+    """
+    weighted_1 = float(influence_1) / int(trust_divisor_1)
+    weighted_2 = float(influence_2) / int(trust_divisor_2)
+    total = weighted_1 + weighted_2
+    if total == 0.0:
+        return 0
+    return int((weighted_1 * 100.0) / total)
+
+
+def _populate_enemy_rank_matrix(
+    state: InnerGameState,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Build CAL_BOARD's enemy counts and ``DAT_00633780`` matrix.
+
+    C first counts each row's live enemies.  It then writes that count to
+    every non-enemy cell and ``count - 1`` to each enemy cell.  The matrix is
+    therefore an enemy-count-with-this-power-excluded table, not the separate
+    1-indexed influence ranking stored at ``DAT_006340c0``.
+    """
+    enemy_gate = np.zeros((num_powers, num_powers), dtype=np.int8)
+    state.g_enemy_count.fill(0)
+
+    for row in range(num_powers):
+        for col in range(num_powers):
+            trust_lo = int(state.g_ally_trust_score[row, col])
+            trust_hi = int(trust_hi_mat[row, col])
+            is_enemy = (
+                row != col
+                and trust_hi < 1
+                and (trust_hi < 0 or trust_lo < 2)
+                and float(state.g_influence_matrix[row, col]) > 0.0
+                and int(state.g_target_sc_cnt[col]) > 2
+            )
+            if is_enemy:
+                enemy_gate[row, col] = 1
+                state.g_enemy_count[row] += 1
+
+    for row in range(num_powers):
+        enemy_count = int(state.g_enemy_count[row])
+        for col in range(num_powers):
+            state.g_rank_matrix[row, col] = (
+                enemy_count - int(enemy_gate[row, col])
+            )
+
+
+def _apply_distressed_ally_rescue(
+    state: InnerGameState,
+    own_power: int,
+    top_enemy_1: int,
+    top_enemy_2: int,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Port CAL_BOARD.c:2077-2166's distressed-ally enemy selection.
+
+    ``DAT_00633f18`` is the inverse influence ranking populated by
+    ComputeInfluenceMatrix. C tests each distressed ally's rank-1/rank-2
+    powers against our rank-3/rank-4 powers, then applies the
+    ``DAT_00633780 < 3`` enemy-exclusion gate. The outer threshold reads
+    ``DAT_00634e90`` (relation score), not either trust word.
+    """
+    relation_gate = (
+        int(state.g_relation_score[own_power, top_enemy_1]) > 30
+        or int(state.g_relation_score[own_power, top_enemy_2]) > 30
+    )
+    if not relation_gate:
+        return
+
+    own_later_ranks = (
+        int(state.g_ally_pref_ranking[own_power, 3]),
+        int(state.g_ally_pref_ranking[own_power, 4]),
+    )
+    enemy_hi_arr = getattr(state, 'g_enemy_flag_hi', None)
+
+    for ally in range(num_powers):
+        enemy_hi = int(enemy_hi_arr[ally]) if enemy_hi_arr is not None else 0
+        if (int(state.g_ally_distress_flag[ally]) != 1
+                or int(state.g_enemy_flag[ally]) != 0
+                or enemy_hi != 0):
+            continue
+        for rank in (1, 2):
+            neighbor = int(state.g_ally_pref_ranking[ally, rank])
+            if (not 0 <= neighbor < num_powers
+                    or neighbor == own_power
+                    or neighbor not in own_later_ranks
+                    or int(state.g_rank_matrix[own_power, neighbor]) >= 3):
+                continue
+
+            state.g_ally_trust_score[own_power, neighbor] = 0
+            trust_hi_mat[own_power, neighbor] = 0
+            state.g_enemy_flag[neighbor] = 1
+            if enemy_hi_arr is not None:
+                enemy_hi_arr[neighbor] = 0
+
+            # C clears the reverse one-point trust marker as well.
+            if (int(state.g_ally_trust_score[neighbor, own_power]) == 1
+                    and int(trust_hi_mat[neighbor, own_power]) == 0):
+                state.g_ally_trust_score[neighbor, own_power] = 0
+                trust_hi_mat[neighbor, own_power] = 0
+
+
+def _apply_late_gang_up(
+    state: InnerGameState,
+    own_power: int,
+    top_enemy_1: int,
+    top_enemy_2: int,
+    top_enemy_3: int,
+    top_enemy_4: int,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Port CAL_BOARD.c:1925-2076's symmetric gang-up block.
+
+    A trusted top-two feared power can point us at feared power three or four,
+    provided the other top-two power is already hostile, the enemy-exclusion
+    count is below three, and the candidate pressures us more than we pressure
+    it. The C block tries rank three before rank four.
+    """
+    raw = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
+    enemy_hi_arr = getattr(state, 'g_enemy_flag_hi', None)
+
+    def _hostile(source: int, target: int) -> bool:
+        return (
+            int(state.g_ally_trust_score[source, target]) == 0
+            and int(trust_hi_mat[source, target]) == 0
+        )
+
+    def _good_ally(power: int) -> bool:
+        trust_lo = int(state.g_ally_trust_score[own_power, power])
+        trust_hi = int(trust_hi_mat[own_power, power])
+        return trust_hi >= 0 and (trust_hi > 0 or trust_lo > 3)
+
+    def _candidate_works(ally: int, target: int) -> bool:
+        if not (0 <= target < num_powers) or target == own_power:
+            return False
+        if not _hostile(ally, target):
+            return False
+        return (
+            float(raw[target, own_power])
+            / (float(raw[own_power, target]) + 1.0)
+            > 1.0
+        )
+
+    def _try_side(ally: int, opposing_top: int) -> bool:
+        if not (0 <= ally < num_powers and 0 <= opposing_top < num_powers):
+            return False
+        if (not _good_ally(ally)
+                or not _hostile(own_power, opposing_top)
+                or int(state.g_rank_matrix[own_power, opposing_top]) >= 3):
+            return False
+
+        for target in (top_enemy_3, top_enemy_4):
+            if not _candidate_works(ally, target):
+                continue
+            state.g_ally_trust_score[own_power, target] = 0
+            trust_hi_mat[own_power, target] = 0
+            state.g_enemy_flag[target] = 1
+            if enemy_hi_arr is not None:
+                enemy_hi_arr[target] = 0
+            return True
+        return False
+
+    # The two source branches are mutually exclusive: one requires top one to
+    # be trusted and top two hostile, while the other requires the reverse.
+    if not _try_side(top_enemy_1, top_enemy_2):
+        _try_side(top_enemy_2, top_enemy_1)
+
+
+def _apply_validated_top3_gang_up(
+    state: InnerGameState,
+    own_power: int,
+    top_enemy_1: int,
+    top_enemy_2: int,
+    opening_best_ally: int,
+    trust_hi_mat,
+) -> None:
+    """Port the gang-up checks immediately after C validates feared #3.
+
+    This is CAL_BOARD.c:1493-1557, a separate site from the later symmetric
+    rank-three/rank-four block. It can add feared #2 through a strong #1 ally,
+    or add feared #1 through a strong #2 ally.
+    """
+    raw = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
+    enemy_hi_arr = getattr(state, 'g_enemy_flag_hi', None)
+
+    def _hostile(source: int, target: int) -> bool:
+        return (
+            int(state.g_ally_trust_score[source, target]) == 0
+            and int(trust_hi_mat[source, target]) == 0
+        )
+
+    def _mark(target: int) -> None:
+        state.g_enemy_flag[target] = 1
+        if enemy_hi_arr is not None:
+            enemy_hi_arr[target] = 0
+        state.g_ally_trust_score[own_power, target] = 0
+        trust_hi_mat[own_power, target] = 0
+
+    top1_lo = int(state.g_ally_trust_score[own_power, top_enemy_1])
+    top1_hi = int(trust_hi_mat[own_power, top_enemy_1])
+    top2_lo = int(state.g_ally_trust_score[own_power, top_enemy_2])
+    top2_hi = int(trust_hi_mat[own_power, top_enemy_2])
+
+    reverse_to_top1 = (
+        top2_hi >= 0
+        and (top2_hi > 0 or top2_lo >= 7)
+        and opening_best_ally != top_enemy_1
+        and int(state.g_rank_matrix[own_power, top_enemy_1]) <= 1
+    )
+    if reverse_to_top1:
+        if (_hostile(top_enemy_1, top_enemy_2)
+                and top_enemy_1 != own_power
+                and float(raw[top_enemy_1, own_power])
+                / (float(raw[own_power, top_enemy_1]) + 1.0) > 1.0):
+            _mark(top_enemy_1)
+        return
+
+    if (top1_hi >= 0
+            and (top1_hi > 0 or top1_lo > 6)
+            and opening_best_ally != top_enemy_2
+            and int(state.g_rank_matrix[own_power, top_enemy_2]) < 2
+            and _hostile(top_enemy_2, top_enemy_1)
+            and top_enemy_2 != own_power
+            and float(raw[top_enemy_2, own_power])
+            / (float(raw[own_power, top_enemy_2]) + 1.0) > 1.0):
+        _mark(top_enemy_2)
+
+
+def _is_weak_influence_target(
+    state: InnerGameState,
+    own_power: int,
+    target: int,
+) -> bool:
+    """Return CAL_BOARD's directional 4.5x weak-power predicate."""
+    raw = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
+    return (
+        float(state.g_influence_matrix[own_power, target]) > 0.0
+        and target != own_power
+        and float(raw[target, own_power])
+        / (float(raw[own_power, target]) + 1.0) > 4.5
+        and float(state.g_influence_matrix[target, own_power]) > 10.0
+    )
+
+
+def _apply_weak_elimination_and_sc_grab(
+    state: InnerGameState,
+    own_power: int,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Port CAL_BOARD.c:2168-2283's per-power enemy pass."""
+    deceit = int(getattr(state, 'g_deceit_level', 0))
+    own_sc = int(state.g_target_sc_cnt[own_power])
+    enemy_hi_arr = getattr(state, 'g_enemy_flag_hi', None)
+
+    def _mark(power: int) -> None:
+        state.g_enemy_flag[power] = 1
+        if enemy_hi_arr is not None:
+            enemy_hi_arr[power] = 0
+        state.g_ally_trust_score[own_power, power] = 0
+        trust_hi_mat[own_power, power] = 0
+        if (int(state.g_ally_trust_score[power, own_power]) == 1
+                and int(trust_hi_mat[power, own_power]) == 0):
+            state.g_ally_trust_score[power, own_power] = 0
+            trust_hi_mat[power, own_power] = 0
+
+    for power in range(num_powers):
+        sc_power = int(state.g_target_sc_cnt[power])
+        weak = (
+            sc_power < 3
+            or _is_weak_influence_target(state, own_power, power)
+        )
+        if deceit > 2 and weak:
+            _mark(power)
+
+        vulnerable_sc = (
+            int(state.g_contact_count[own_power, power]) > 0
+            and int(state.g_contact_weighted[own_power, power]) > 0
+            and int(state.g_contact_owner_count[own_power, power]) == 0
+        )
+        if vulnerable_sc and (
+                own_sc < 4
+                or int(state.g_influence_rank_flag[own_power, power]) > 3):
+                _mark(power)
+
+
+def _apply_dominance_sweep(
+    state: InnerGameState,
+    own_power: int,
+    leading_other_power: int,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Port CAL_BOARD.c:2284-2328's dominant-leader sweep."""
+    state.g_leading_flag = 0
+    own_pct = float(state.g_sc_percent[own_power])
+    other_pct = float(state.g_sc_percent[leading_other_power])
+    if not (own_pct > 75.0 and own_pct - other_pct >= 2.0):
+        return
+
+    state.g_leading_flag = 1
+    for power in range(num_powers):
+        if power == own_power:
+            continue
+        state.g_ally_trust_score[own_power, power] = 0
+        trust_hi_mat[own_power, power] = 0
+        state.g_enemy_flag[power] = 1
+        state.g_enemy_flag_hi[power] = 0
+        if (int(state.g_ally_trust_score[power, own_power]) == 1
+                and int(trust_hi_mat[power, own_power]) == 0):
+            state.g_ally_trust_score[power, own_power] = 0
+            trust_hi_mat[power, own_power] = 0
+
+
+def _apply_alliance_agreement_enemies(
+    state: InnerGameState,
+    own_power: int,
+    opening_best_ally: int,
+    trust_hi_mat,
+    num_powers: int = 7,
+) -> None:
+    """Port CAL_BOARD.c:2329-2403's alliance-agreement enemy pass.
+
+    C's first nested loop repeatedly overwrites ``auStack_dc[1..N]``. The
+    surviving values are therefore the final power's ally-matrix row, not
+    mutable per-declarer state. The second loop may honor multiple targets
+    from one declaring power while both enemy int64 words remain clear.
+    """
+    if num_powers <= 0:
+        return
+    final_power = num_powers - 1
+    final_row_allies = [
+        int(state.g_ally_matrix[final_power, power]) == 1
+        for power in range(num_powers)
+    ]
+
+    for declaring_power in range(num_powers):
+        for target in range(num_powers):
+            if (int(state.g_enemy_flag[declaring_power]) != 0
+                    or int(state.g_enemy_flag_hi[declaring_power]) != 0
+                    or int(state.g_enemy_flag[target]) != 0
+                    or int(state.g_enemy_flag_hi[target]) != 0
+                    or final_row_allies[declaring_power]
+                    or int(state.g_ally_matrix[declaring_power, target]) != 1
+                    or target == opening_best_ally):
+                continue
+
+            trust_lo = int(
+                state.g_ally_trust_score[declaring_power, target]
+            )
+            trust_hi = int(trust_hi_mat[declaring_power, target])
+            if not (trust_hi < 1
+                    and (trust_hi < 0 or (trust_lo & 0xFFFFFFFF) < 2)):
+                continue
+
+            state.g_enemy_flag[target] = 1
+            state.g_enemy_flag_hi[target] = 0
+            state.g_ally_trust_score[own_power, target] = 0
+            trust_hi_mat[own_power, target] = 0
+            if (int(state.g_ally_trust_score[target, own_power]) == 1
+                    and int(trust_hi_mat[target, own_power]) == 0):
+                state.g_ally_trust_score[target, own_power] = 0
+                trust_hi_mat[target, own_power] = 0
+
+
 def cal_board(state: InnerGameState, own_power: int) -> None:
     """
     Port of CAL_BOARD (FUN_00427960).
@@ -26,7 +406,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
       - g_power_exp_score  (quadratic power score)
       - g_sc_percent      (SC percentage per power, relative to win_threshold)
       - g_enemy_count     (genuine enemy count per power)
-      - g_rank_matrix / g_ally_pref_ranking  (influence ranking)
+      - g_rank_matrix      (enemy-count-with-column-excluded matrix)
+      - g_ally_pref_ranking / g_influence_rank_flag (influence ranking)
       - g_enemy_flag      (designated enemies for this turn)
       - g_leading_flag / g_other_power_lead_flag / g_near_victory_power
       - g_request_draw_flag / g_static_map_flag
@@ -158,31 +539,14 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     state.g_near_end_game_factor = near_end
 
     # ── Phase 2: g_enemy_count + g_rank_matrix init ────────────────────────────
-    state.g_enemy_count.fill(0)
     state.g_ally_distress_flag.fill(0)
-    state.g_rank_matrix.fill(-1)
-    np.fill_diagonal(state.g_rank_matrix, -2)
-
-    for row in range(num_powers):
-        for col in range(num_powers):
-            if row == col:
-                continue
-            trust_lo = int(state.g_ally_trust_score[row, col])
-            trust_hi = int(trust_hi_mat[row, col])
-            influence = float(state.g_influence_matrix[row, col])
-            col_sc = int(state.g_target_sc_cnt[col])
-            if (trust_hi < 1
-                    and (trust_hi < 0 or trust_lo < 2)
-                    and influence > 0.0
-                    and col_sc > 2):
-                state.g_enemy_count[row] += 1
+    _populate_enemy_rank_matrix(state, trust_hi_mat, num_powers)
 
     # ── Phase 2b: ally distress flag (C lines 660-720) ────────────────────────
     # For each ally p: if own has high trust toward p, p is at war with BOTH
     # its top 2 enemies, and BOTH those enemies rank own_power as rank 1
-    # (g_influence_rank_flag[enemy, own] == 1 — the 21-stride mutual-enemy
-    # selection; C uses g_rank_matrix which is unpopulated in Python, so
-    # g_influence_rank_flag is the correct populated substitute), and the SC
+    # (g_rank_matrix[enemy, own] == 1 — the 21-stride mutual-enemy
+    # exclusion count), and the SC
     # balance condition holds → mark p as distressed.
     for ally in range(num_powers):
         if ally == own_power:
@@ -206,8 +570,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         # Both enemies must rank own_power as their #1 feared power.
         # sum == 2 is the minimum possible (both rank 1), matching C's
         # rank_matrix[enemy1,own]==1 AND rank_matrix[enemy2,own]==1.
-        if (int(state.g_influence_rank_flag[enemy1, own_power]) != 1
-                or int(state.g_influence_rank_flag[enemy2, own_power]) != 1):
+        if (int(state.g_rank_matrix[enemy1, own_power]) != 1
+                or int(state.g_rank_matrix[enemy2, own_power]) != 1):
             continue
         sc_ally = int(state.g_target_sc_cnt[ally])
         sc_e1 = int(state.g_target_sc_cnt[enemy1])
@@ -335,8 +699,10 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 # C:946-948 — clear the enemy flag and stamp the near-victory
                 # power into DAT_00b9fdd8[inner].
                 state.g_enemy_flag[inner] = 0
-                if hasattr(state, 'g_near_victory_by_power'):
-                    state.g_near_victory_by_power[inner] = local_128
+                # DAT_00b9fdd8 is reused by HOSTILITY as the mutual-enemy
+                # table. A later CAL_BOARD call leaves this near-victory value
+                # in the same storage until HOSTILITY rebuilds the table.
+                state.g_mutual_enemy_table[inner] = local_128
 
                 if inner == local_128:
                     continue
@@ -452,16 +818,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 # local_fc <= 75 AND leading_pct > own_pct
                 for p in range(num_powers):
                     sc_p = int(state.g_target_sc_cnt[p])
-                    infl_own_p = float(state.g_influence_matrix[own_power, p])
-                    infl_p_own = float(state.g_influence_matrix[p, own_power])
-                    infl_raw_own_p = float(getattr(state, 'g_influence_matrix_raw',
-                                                    state.g_influence_matrix)[own_power, p])
-                    infl_raw_p_p = float(getattr(state, 'g_influence_matrix_raw',
-                                                  state.g_influence_matrix)[p, p])
                     if (sc_p < 2
-                            or (infl_own_p > 0.0 and p != own_power
-                                and infl_raw_own_p / (infl_raw_p_p + 1.0) > 4.5
-                                and infl_p_own > 10.0)):
+                            or _is_weak_influence_target(state, own_power, p)):
                         state.g_enemy_flag[p] = 1
                         state.g_ally_trust_score[own_power, p] = 0
                         if hasattr(trust_hi_mat, '__setitem__'):
@@ -469,11 +827,18 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         # goto LAB_0042bff2 — skip all remaining passes
         return  # early exit; function writes are complete
 
-    # ── Phase 4c: normal enemy selection (LAB_00429317, lines 1091-1455) ──────
-    # Full decision tree ported from C decompile.
-    if not bVar26:
+    # C:1093 jumps directly to function end while HOSTILITY says an enemy is
+    # not desired. A near-victory keep-alliance decision (bVar26) still reaches
+    # this gate and, when enabled, continues through normal selection.
+    g_stabbed = int(getattr(state, 'g_stabbed_flag', 0))
+    if g_stabbed == 0:
+        return
+
+    # ── Phase 4c: normal enemy selection (LAB_00429317, lines 1091-1810) ───
+    # The near-victory-enemy path returned above; every other source path enters
+    # this scoped block, including bVar26's keep-alliance path.
+    if not state.g_other_power_lead_flag:
         from .. import rng as _random
-        g_stabbed = int(getattr(state, 'g_stabbed_flag', 0))
         g_opening_sticky = int(getattr(state, 'g_opening_sticky_mode', 0))
         g_deceit = int(getattr(state, 'g_deceit_level', 0))
         g_opening_enemy = int(getattr(state, 'g_opening_enemy', -1))
@@ -484,6 +849,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         t_lo_1 = int(state.g_ally_trust_score[own_power, top_enemy_1])
         t_hi_2 = int(trust_hi_mat[own_power, top_enemy_2])
         t_lo_2 = int(state.g_ally_trust_score[own_power, top_enemy_2])
+        t_hi_3 = int(trust_hi_mat[own_power, top_enemy_3])
+        t_lo_3 = int(state.g_ally_trust_score[own_power, top_enemy_3])
 
         # DAT_00634e90 — written by FRIENDLY.c / CAL_BOARD.c.  This used to
         # read g_relation_history, a duplicate binding nothing wrote.
@@ -513,6 +880,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
         # two-front war.
         at_war_1 = (t_hi_1 == 0 and t_lo_1 == 0)
         at_war_2 = (t_hi_2 == 0 and t_lo_2 == 0)
+        at_war_3 = (t_hi_3 == 0 and t_lo_3 == 0)
         # C's entry test (decompile 1093-1096) is trust-only; the
         # top_enemy_2 == own_power case is handled *inside* the branch at
         # line 1121, not excluded from it.  Requiring it here skipped the
@@ -528,27 +896,25 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 # Lines 1125-1196: peace-signal / neutral / random
                 # C: g_peace_counter[enemy]==0 (DAT_004cf4c0/c4, both int32 halves of int64)
                 #    && DAT_0062b7b0[other_enemy]==0  → pick other_enemy
-                # C (1126-1128) gates on enemy 2 in BOTH tests:
-                #   g_peace_counter[enemy2] == 0 (int64, both halves)
-                #   AND g_neutral_flag[own, enemy2] == 0
-                # → select enemy 1.  Anything else falls straight through to
-                # the random pick; there is no second "peace signal from
-                # enemy 1 → select enemy 2" arm.
-                # Corrected 2026-08-12: the neutral test read enemy 1, and the
-                # invented second arm diverted cases C sends to the random pick.
+                # C:1126-1161 tests each feared power's peace counter and
+                # neutral marker in turn. A clear pair for #2 selects #1; if
+                # that fails, a clear pair for #1 selects #2.
+                n1 = _neutral(top_enemy_1)
                 n2 = _neutral(top_enemy_2)
                 peace_ctr = getattr(state, 'g_peace_counter', None)
+                pc1_zero = peace_ctr is None or peace_ctr[top_enemy_1] == 0
                 pc2_zero = peace_ctr is None or peace_ctr[top_enemy_2] == 0
 
                 if pc2_zero and (not n2):
                     state.g_enemy_flag[top_enemy_1] = 1
+                elif pc1_zero and (not n1):
+                    state.g_enemy_flag[top_enemy_2] = 1
                 else:
-                    # Random weighted selection (C line 1163)
-                    # C: FloatToInt64(100, ...) yields influence-ratio-based threshold
+                    # Albert.exe 0x429626-0x429669: 100*inf1/(inf1+inf2).
                     inf_alt = state.g_influence_matrix
                     inf1 = float(inf_alt[own_power, top_enemy_1])
                     inf2 = float(inf_alt[own_power, top_enemy_2])
-                    threshold = int((inf1 * 100.0) / (inf1 + inf2 + 1.0))
+                    threshold = _fear_weighted_threshold(inf1, 1, inf2, 1)
                     r = (_random.randint(0, 32767) // 0x17) % 100
                     if r < threshold:
                         state.g_enemy_flag[top_enemy_1] = 1
@@ -572,30 +938,19 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             enemy_selected = True
 
         # Branch 3 (C line 1256-1259): at war with exactly one
-        if not enemy_selected and (at_war_1 or at_war_2):
+        if not enemy_selected and (at_war_1 or at_war_2 or at_war_3):
             # "at war with at least one of our Top 3 enemies — validate"
             if at_war_1:
                 # Trust[#1]==0: validate #1 as enemy
                 state.g_enemy_flag[top_enemy_1] = 1
                 enemy_selected = True
             else:
-                # Trust[#2]==0 but #1 has trust: need to check whether to
-                # re-target. C lines 1293-1455: check influence ratio,
-                # power exp score, opening alliance preservation.
-                # Get trust tier for #1 and #2
-                def _trust_tier(t_lo, t_hi):
-                    if t_hi < 0 or (t_hi == 0 and t_lo < 3):
-                        return 1
-                    if t_hi < 1 and t_lo < 5:
-                        return 3
-                    return 4
-
-                tier_1 = _trust_tier(t_lo_1, t_hi_1)
-                tier_2 = _trust_tier(t_lo_2, t_hi_2)
-
+                # #1 has trust. C may keep hostile #2, validate hostile #3,
+                # or rechoose after checking influence, power, and opening-
+                # alliance constraints.
                 # Top-3 enemy (local_f0) trust check
-                top_e3_trust_lo = int(state.g_ally_trust_score[own_power, top_enemy_3]) if top_enemy_3 < num_powers else 0
-                top_e3_trust_hi = int(trust_hi_mat[own_power, top_enemy_3]) if top_enemy_3 < num_powers else 0
+                top_e3_trust_lo = t_lo_3
+                top_e3_trust_hi = t_hi_3
 
                 # Influence matrix alt check (C lines 1296-1302)
                 inf_alt = state.g_influence_matrix
@@ -603,32 +958,61 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 dac_4c6bc4 = int(getattr(state, 'g_opening_best_ally',
                                           getattr(state, 'g_best_ally_slot0', -1)))
 
-                # Check if enemy2 should be replaced (C condition lines 1296-1302)
-                should_rechoose = False
-                if (t_lo_2 != 0 or t_hi_2 != 0) and top_enemy_2 != own_power:
-                    # enemy2 has nonzero trust — check influence ratio
-                    inf_1_val = float(inf_alt[own_power, top_enemy_1])
-                    inf_2_val = float(inf_alt[own_power, top_enemy_2])
-                    ratio = (inf_2_val * 100.0) / (inf_1_val + 1.0) if inf_1_val > 0 else 100.0
-                    if ratio > 20.0:
-                        if ratio > 70.0:
-                            should_rechoose = True
-                        elif power_exp is not None:
-                            pe_own = float(power_exp[own_power]) if hasattr(power_exp, '__getitem__') else 0.0
-                            pe_1 = float(power_exp[top_enemy_1]) if hasattr(power_exp, '__getitem__') else 0.0
-                            if (pe_own - pe_1 * 1.7) + 69.0 <= 0.0:
-                                should_rechoose = True
+                # C:1296-1305 decides whether #3 must be inspected. If it does
+                # not, C validates #2 at 1559. If it does, #3 is validated only
+                # when its trust and all three influence thresholds pass.
+                inf_1_val = float(inf_alt[own_power, top_enemy_1])
+                inf_2_val = float(inf_alt[own_power, top_enemy_2])
+                inf_3_val = float(inf_alt[own_power, top_enemy_3])
+                ratio_21 = (inf_2_val * 100.0) / (inf_1_val + 1.0)
+                pe_own = float(power_exp[own_power])
+                pe_1 = float(power_exp[top_enemy_1])
+                power_gate_fails = (pe_own - pe_1 * 1.7) + 69.0 <= 0.0
 
-                # Check enemy3 viability
-                e3_viable = (top_e3_trust_lo != 0 or top_e3_trust_hi != 0) or \
-                    (top_enemy_3 < num_powers and
-                     float(inf_alt[own_power, top_enemy_3]) <= 15.0) or \
-                    (top_enemy_3 == own_power)
+                inspect_third = (
+                    t_lo_2 != 0
+                    or t_hi_2 != 0
+                    or top_enemy_2 == own_power
+                    or ratio_21 <= 20.0
+                    or (ratio_21 <= 70.0 and power_gate_fails)
+                )
+                third_rejected = True
+                rechoose_rolls = None
+                if inspect_third:
+                    third_rejected = (
+                        top_e3_trust_lo != 0
+                        or top_e3_trust_hi != 0
+                        or inf_3_val <= 15.0
+                        or top_enemy_3 == own_power
+                    )
+                    if not third_rejected:
+                        ratio_31 = (inf_3_val * 100.0) / (inf_1_val + 1.0)
+                        ratio_32 = (inf_3_val * 100.0) / (inf_2_val + 1.0)
+                        third_rejected = (
+                            ratio_31 <= 20.0
+                            or ratio_32 <= 50.0
+                            or (ratio_21 <= 70.0 and power_gate_fails)
+                        )
 
-                if should_rechoose or e3_viable:
+                if inspect_third and not third_rejected:
+                    state.g_enemy_flag[top_enemy_3] = 1
+                    state.g_enemy_flag_hi[top_enemy_3] = 0
+                    _apply_validated_top3_gang_up(
+                        state, own_power, top_enemy_1, top_enemy_2,
+                        dac_4c6bc4, trust_hi_mat,
+                    )
+                    enemy_selected = True
+                elif not inspect_third:
+                    # C:1559-1571: feared #2 still meets the criteria, so keep
+                    # the current war instead of entering the rechoose block.
+                    state.g_enemy_flag[top_enemy_2] = 1
+                    state.g_enemy_flag_hi[top_enemy_2] = 0
+                    enemy_selected = True
+                else:
                     # C LAB_0042a6ef: "rechoose a new one"
                     r1 = (_random.randint(0, 32767) // 0x17) % 50
                     r2 = (_random.randint(0, 32767) // 0x17) % 50
+                    rechoose_rolls = (r1, r2)
 
                     # Opening alliance preservation (C lines 1400-1427)
                     if dac_4c6bc4 >= 0 and top_enemy_1 != dac_4c6bc4 and top_enemy_2 == dac_4c6bc4:
@@ -664,13 +1048,23 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
                 if not enemy_selected:
                     # C LAB_0042aa75: random threshold selection
-                    # FloatToInt64 computes influence-ratio-based threshold
                     inf_1_val = float(inf_alt[own_power, top_enemy_1])
                     inf_2_val = float(inf_alt[own_power, top_enemy_2])
-                    threshold = int((inf_1_val * 100.0) / (inf_1_val + inf_2_val + 1.0))
+                    tier_1 = 1
+                    if t_hi_1 >= 0 and (t_hi_1 > 0 or t_lo_1 > 2):
+                        tier_1 = 3 if t_hi_1 == 0 and t_lo_1 < 5 else 4
+                    tier_2 = 1
+                    if t_hi_2 >= 0 and (t_hi_2 > 0 or t_lo_2 > 2):
+                        tier_2 = 3 if t_hi_2 == 0 and t_lo_2 < 5 else 4
+                    threshold = _fear_weighted_threshold(
+                        inf_1_val, tier_1, inf_2_val, tier_2,
+                    )
 
-                    r1 = (_random.randint(0, 32767) // 0x17) % 50
-                    r2 = (_random.randint(0, 32767) // 0x17) % 50
+                    if rechoose_rolls is None:
+                        r1 = (_random.randint(0, 32767) // 0x17) % 50
+                        r2 = (_random.randint(0, 32767) // 0x17) % 50
+                    else:
+                        r1, r2 = rechoose_rolls
                     if (r2 + r1 < threshold) or (top_enemy_2 == own_power):
                         state.g_enemy_flag[top_enemy_1] = 1
                         state.g_ally_trust_score[own_power, top_enemy_1] = 0
@@ -681,9 +1075,19 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                         trust_hi_mat[own_power, top_enemy_2] = 0
                     enemy_selected = True
 
-        # Branch 4 (C lines 1591-1729): peace with all top enemies — random
+        # C:1586-1590 permits peace selection only for three non-negative,
+        # non-zero trust pairs, and suppresses it for highly deceitful powers
+        # that already have more than two enemies.
+        peace_selection_allowed = (
+            not (t_hi_1 < 0 or (t_hi_1 < 1 and t_lo_1 == 0))
+            and not (t_hi_2 < 0 or (t_hi_2 < 1 and t_lo_2 == 0))
+            and not (t_hi_3 < 0 or (t_hi_3 < 1 and t_lo_3 == 0))
+            and not (int(state.g_enemy_count[own_power]) > 2 and g_deceit > 2)
+        )
+
+        # Branch 4 (C lines 1591-1809): peace with all top enemies — random
         # weighted selection with trust tiers and opening-alliance preservation.
-        if not enemy_selected:
+        if not enemy_selected and peace_selection_allowed:
             r1 = (_random.randint(0, 32767) // 0x17) % 50
             r2 = (_random.randint(0, 32767) // 0x17) % 50
             rand_sum = r1 + r2  # pdStack_134
@@ -697,12 +1101,12 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             if t_hi_2 >= 0 and (t_hi_2 > 0 or t_lo_2 > 2):
                 tier_2 = 3
 
-            # Influence-ratio threshold (C: FloatToInt64(0x32, pdStack_134))
-            # FloatToInt64 here computes: round(inf1 * 100 / (inf1 + inf2 + 1))
             inf_alt = state.g_influence_matrix
             inf1 = float(inf_alt[own_power, top_enemy_1])
             inf2 = float(inf_alt[own_power, top_enemy_2])
-            threshold = round((inf1 * 100.0) / (inf1 + inf2 + 1.0))
+            threshold = _fear_weighted_threshold(
+                inf1, tier_1, inf2, tier_2,
+            )
 
             history_counter = int(getattr(state, 'g_history_counter', 0))
             dac_4c6bc4_b4 = int(getattr(state, 'g_best_ally_slot0',
@@ -712,6 +1116,17 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             # Opening-alliance preservation / late-game selection (C lines 1626-1799)
             b4_done = False
             _enter_opening = history_counter < 10  # C: g_HistoryCounter < 10 → LAB_00429d0f
+
+            def _mark_branch4_enemy(target: int) -> None:
+                """Apply the shared C:1804-1809 enemy/trust cleanup."""
+                state.g_enemy_flag[target] = 1
+                state.g_enemy_flag_hi[target] = 0
+                state.g_ally_trust_score[own_power, target] = 0
+                trust_hi_mat[own_power, target] = 0
+                if (int(state.g_ally_trust_score[target, own_power]) == 1
+                        and int(trust_hi_mat[target, own_power]) == 0):
+                    state.g_ally_trust_score[target, own_power] = 0
+                    trust_hi_mat[target, own_power] = 0
 
             if not _enter_opening:
                 # C lines 1730-1799: late-game branch (g_HistoryCounter >= 10)
@@ -744,16 +1159,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                         if (pe_own_lg - pe_te1_lg * 1.7) + 69.0 > 0.0:
                             pe_ok_lg = True
                     if pe_ok_lg:
-                        state.g_enemy_flag[top_enemy_1] = 1
-                        state.g_ally_trust_score[own_power, top_enemy_1] = 0
-                        if hasattr(trust_hi_mat, '__setitem__'):
-                            trust_hi_mat[own_power, top_enemy_1] = 0
-                        # Reverse-trust adjustment (C lines 1760-1763)
-                        if (int(state.g_ally_trust_score[top_enemy_1, own_power]) == 1
-                                and int(trust_hi_mat[top_enemy_1, own_power]) == 0):
-                            state.g_ally_trust_score[top_enemy_1, own_power] = 0
-                            if hasattr(trust_hi_mat, '__setitem__'):
-                                trust_hi_mat[top_enemy_1, own_power] = 0
+                        _mark_branch4_enemy(top_enemy_1)
 
                 # C lines 1767-1774: secondary gate — redirect to opening block if any holds
                 inf2_sg = float(inf_alt[own_power, top_enemy_2])
@@ -769,10 +1175,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                     _enter_opening = True
                 else:
                     # C lines 1775-1799: late-game identified enemy = top_enemy_2
-                    state.g_enemy_flag[top_enemy_2] = 1
-                    state.g_ally_trust_score[own_power, top_enemy_2] = 0
-                    if hasattr(trust_hi_mat, '__setitem__'):
-                        trust_hi_mat[own_power, top_enemy_2] = 0
+                    _mark_branch4_enemy(top_enemy_2)
                     b4_done = True
 
             if _enter_opening:
@@ -780,10 +1183,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 if dac_4c6bc4_b4 >= 0:
                     if top_enemy_1 == dac_4c6bc4_b4:
                         # enemy1 IS opening ally → pick enemy2, keep alliance
-                        state.g_enemy_flag[top_enemy_2] = 1
-                        state.g_ally_trust_score[own_power, top_enemy_2] = 0
-                        if hasattr(trust_hi_mat, '__setitem__'):
-                            trust_hi_mat[own_power, top_enemy_2] = 0
+                        _mark_branch4_enemy(top_enemy_2)
                         b4_done = True
                     elif (top_enemy_2 != dac_4c6bc4_b4
                           or top_enemy_2 == own_power):
@@ -793,8 +1193,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                         if top_enemy_1 != own_power:
                             inf_1_val = float(inf_alt[own_power, top_enemy_1])
                             inf_2_val = float(inf_alt[own_power, top_enemy_2])
-                            ratio_b4 = (inf_2_val * 100.0) / (inf_1_val + 1.0) \
-                                if inf_1_val > 0 else 100.0
+                            ratio_b4 = (inf_2_val * 100.0) / (inf_1_val + 1.0)
                             if ratio_b4 > 20.0:
                                 pe_ok = True
                                 if ratio_b4 <= 70.0 and power_exp is not None:
@@ -806,153 +1205,40 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                                         pe_ok = False
                                 if pe_ok:
                                     # Pick enemy1 — keep opening alliance with enemy2
-                                    state.g_enemy_flag[top_enemy_1] = 1
-                                    state.g_ally_trust_score[own_power, top_enemy_1] = 0
-                                    if hasattr(trust_hi_mat, '__setitem__'):
-                                        trust_hi_mat[own_power, top_enemy_1] = 0
+                                    _mark_branch4_enemy(top_enemy_1)
                                     b4_done = True
 
             # LAB_00429efb: random threshold selection
             if not b4_done:
                 if rand_sum < threshold or top_enemy_2 == own_power:
-                    state.g_enemy_flag[top_enemy_1] = 1
-                    state.g_ally_trust_score[own_power, top_enemy_1] = 0
-                    if hasattr(trust_hi_mat, '__setitem__'):
-                        trust_hi_mat[own_power, top_enemy_1] = 0
+                    _mark_branch4_enemy(top_enemy_1)
                 else:
-                    state.g_enemy_flag[top_enemy_2] = 1
-                    state.g_ally_trust_score[own_power, top_enemy_2] = 0
-                    if hasattr(trust_hi_mat, '__setitem__'):
-                        trust_hi_mat[own_power, top_enemy_2] = 0
+                    _mark_branch4_enemy(top_enemy_2)
             enemy_selected = True
 
-    # Opening best ally lookup (also used by gang-up and alliance-agreement)
+    # Opening best ally lookup (used by alliance-agreement below).
     opening_best_ally = int(getattr(state, 'g_best_ally_slot0',
                                     getattr(state, 'g_opening_best_ally', -1)))
 
-    # ── Gang-up logic (decompile lines 1470-1557, 1950-2060) ─────────────────
-    # When we've committed to an enemy, check if a high-trust ally also has a
-    # remaining top-feared power as *their* enemy — coordinate by redirecting
-    # to the shared enemy.  C checks:
-    #   - trust_hi[own, ally] > 0 OR trust_lo > 6   (high-trust ally)
-    #   - ally != opening_best_ally                 (not a pass-through)
-    #   - g_influence_rank_flag[target, own] < 2      (we're their #1 fear; 1-indexed)
-    #   - trust[ally, target] == 0                  (ally hostile to target)
-    #   - g_influence_matrix_raw[target, own] / (raw[ally] + 1) > 1.0
-    #
-    # Simplified port: look for a high-trust ally among top3_feared whose own
-    # relation with another top3_feared is hostile, then switch enemy to that
-    # other power.
-    g_infl_raw_gu = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
-    for ally in (top_enemy_1, top_enemy_2, top_enemy_3):
-        if ally == own_power:
-            continue
-        ally_t_hi = int(trust_hi_mat[own_power, ally])
-        ally_t_lo = int(state.g_ally_trust_score[own_power, ally])
-        # High-trust gate (hi>0 OR lo>6)
-        if not (ally_t_hi > 0 or (ally_t_hi == 0 and ally_t_lo > 6)):
-            continue
-        if ally == opening_best_ally:
-            # Don't redirect via opening ally (would burn opening selection)
-            continue
-        for target in (top_enemy_1, top_enemy_2, top_enemy_3):
-            if target == own_power or target == ally:
-                continue
-            if state.g_enemy_flag[target] != 0:
-                continue  # already enemy
-            # ally hostile to target (both trust words zero)
-            ally_target_hi = int(trust_hi_mat[ally, target])
-            ally_target_lo = int(state.g_ally_trust_score[ally, target])
-            if ally_target_hi != 0 or ally_target_lo != 0:
-                continue
-            # influence ratio gate: raw[target, own] / (raw[ally, ally] + 1) > 1
-            try:
-                ratio = (float(g_infl_raw_gu[target, own_power])
-                         / (float(g_infl_raw_gu[ally, ally]) + 1.0))
-            except (IndexError, ValueError):
-                ratio = 0.0
-            if ratio <= 1.0:
-                continue
-            # Rank-matrix gate: own is target's #1 fear (g_influence_rank_flag 1-indexed)
-            if int(state.g_influence_rank_flag[target, own_power]) >= 2:
-                continue
-            # Gang-up fires: mark target enemy, clear ally trust toward target
-            state.g_enemy_flag[target] = 1
-            state.g_ally_trust_score[own_power, target] = 0
-            if hasattr(trust_hi_mat, '__setitem__'):
-                trust_hi_mat[own_power, target] = 0
-            break  # one target per ally
-
-    # ── LAB_0042b203: distressed-ally rescue (decompile lines 2077–2166) ──────
-    # For each ally with g_ally_distress_flag==1 that is not already an enemy:
-    # If own trust toward top-1 or top-2 feared > 30 (in Hi word), look up
-    # g_power_proximity_rank[ally][0] and [1]; if in own top-2/3 feared AND
-    # g_influence_rank_flag[own, rank_neighbor] < 3 → set that neighbor as enemy.
-    # NOTE: g_power_proximity_rank stride=0x14(20 bytes per power, 5 int32s per row).
-    # Simplified: use own top3 as proxy for proximity rank.
-    trust_threshold_hi = (
-        int(trust_hi_mat[own_power, top_enemy_1]) > 30
-        or int(trust_hi_mat[own_power, top_enemy_2]) > 30
+    # ── Late symmetric gang-up block (C:1925–2076) ───────────────────
+    # This exact late block uses top one/two as allies and tries top three,
+    # then inverse-rank slot four, as the shared enemy.
+    top_enemy_4 = int(state.g_ally_pref_ranking[own_power, 4])
+    _apply_late_gang_up(
+        state, own_power, top_enemy_1, top_enemy_2,
+        top_enemy_3, top_enemy_4, trust_hi_mat, num_powers,
     )
-    for ally in range(num_powers):
-        if (int(state.g_ally_distress_flag[ally]) != 1
-                or state.g_enemy_flag[ally] != 0
-                or not trust_threshold_hi):
-            continue
-        # Use g_power_proximity_rank[ally] — proxy via own top3 if unavailable
-        prox_rank = getattr(state, 'g_power_proximity_rank', None)
-        candidates = []
-        if prox_rank is not None:
-            # Access g_power_proximity_rank[ally][0] and [1] (stride 5 int32s per power)
-            candidates = [int(prox_rank[ally, 0]), int(prox_rank[ally, 1])]
-        else:
-            candidates = [top_enemy_1, top_enemy_2]
-        for neighbor in candidates:
-            if not (0 <= neighbor < num_powers) or neighbor == own_power:
-                continue
-            if (neighbor in (top_enemy_2, top_enemy_3)  # in own top-2/3 feared
-                    and int(state.g_influence_rank_flag[own_power, neighbor]) < 3):
-                state.g_enemy_flag[neighbor] = 1
-                state.g_ally_trust_score[own_power, neighbor] = 0
-                if hasattr(trust_hi_mat, '__setitem__'):
-                    trust_hi_mat[own_power, neighbor] = 0
 
-    # ── Weak-elimination + SC-grab pass (decompile lines 2168–2283) ──────────
-    g_deceit = int(getattr(state, 'g_deceit_level', 0))
-    g_infl_raw = getattr(state, 'g_influence_matrix_raw', state.g_influence_matrix)
-    for p in range(num_powers):
-        sc_p = int(state.g_target_sc_cnt[p])
-        infl_own_p = float(state.g_influence_matrix[own_power, p])
-        infl_p_own = float(state.g_influence_matrix[p, own_power])
-        raw_own_p  = float(g_infl_raw[own_power, p])
-        raw_p_own  = float(g_infl_raw[p, own_power])
+    # ── LAB_0042b203: distressed-ally rescue (C:2077–2166) ────────────
+    _apply_distressed_ally_rescue(
+        state, own_power, top_enemy_1, top_enemy_2,
+        trust_hi_mat, num_powers,
+    )
 
-        # Weak-elimination: g_deceit_level > 2 AND (sc < 3 OR high influence dominance)
-        if g_deceit > 2 and (
-                sc_p < 3 or (
-                    infl_own_p > 0.0 and p != own_power
-                    and raw_own_p / (raw_p_own + 1.0) > 4.5
-                    and infl_p_own > 10.0
-                )):
-            state.g_enemy_flag[p] = 1
-            state.g_ally_trust_score[own_power, p] = 0
-            if hasattr(trust_hi_mat, '__setitem__'):
-                trust_hi_mat[own_power, p] = 0
-
-        # SC-grab: own_sc < 4 AND vulnerable unguarded SC (decompile lines
-        # 2200-2276). C reads via pdStack_148 (= &g_AllyRankingAux + own*63 + p,
-        # advancing +4 bytes per inner iter): base = g_contact_weighted[own,p],
-        # -0x54 bytes (−21 int32s) = g_contact_count[own,p],
-        # +0x54 bytes (+21 int32s) = g_contact_owner_count[own,p].
-        # The ±21 strides cross array boundaries, NOT adjacent power columns.
-        if own_sc < 4 and p != own_power and sc_p > 3:
-            if (int(state.g_contact_count[own_power, p]) > 0
-                    and int(state.g_contact_weighted[own_power, p]) > 0
-                    and int(state.g_contact_owner_count[own_power, p]) == 0):
-                state.g_enemy_flag[p] = 1
-                state.g_ally_trust_score[own_power, p] = 0
-                if hasattr(trust_hi_mat, '__setitem__'):
-                    trust_hi_mat[own_power, p] = 0
+    # ── Weak-elimination + two SC-grab branches (C:2168–2283) ───────
+    _apply_weak_elimination_and_sc_grab(
+        state, own_power, trust_hi_mat, num_powers,
+    )
 
     # ── Dominance sweep (decompile lines 2284–2328) ───────────────────────────
     # MUST come after all per-power passes above.
@@ -961,46 +1247,13 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     # (Note: uses local_128 not max_pct; uses >= not >)
     # NOTE: second write of log-only g_leading_flag — see note at first write
     # above; no downstream C reads.  Kept for parity.
-    state.g_leading_flag = 0
-    if local_128 != own_power:
-        lead_pct_dominate = float(state.g_sc_percent[local_128])
-        if own_pct > 75.0 and (own_pct - lead_pct_dominate) >= 2.0:
-            state.g_leading_flag = 1
-            for k in range(num_powers):
-                if k != own_power:
-                    state.g_enemy_flag[k] = 1
-                    state.g_ally_trust_score[own_power, k] = 0
-                    if hasattr(trust_hi_mat, '__setitem__'):
-                        trust_hi_mat[own_power, k] = 0
+    _apply_dominance_sweep(
+        state, own_power, local_128, trust_hi_mat, num_powers,
+    )
 
     # ── Alliance-agreement → enemy (decompile lines 2329–2403) ──────────────
-    # Honor ally's declared enemies; conditions (decompile lines 2356–2363):
-    #   g_enemy_flag[pow_b] == 0 (not yet enemy)
-    #   auStack_dc[pow_a + 1] == 0  (pow_a has no prior alliance enforcement)
-    #   g_ally_matrix[own][pow_b] == 1  (own allied with pow_b)
-    #   DAT_004c6bc4 != pow_b  (pow_b is not opening best ally)
-    #   g_ally_trust_score_hi[own][pow_b] < 1 AND (Hi<0 OR Lo<2)  (low trust)
-    # opening_best_ally defined above (shared with gang-up)
-    # Track which pow_a rows have already set an enemy (auStack_dc equivalent)
-    pow_a_enforced = [False] * num_powers
-    for pow_a in range(num_powers):
-        for pow_b in range(num_powers):
-            if pow_a_enforced[pow_a]:
-                continue
-            # C (decompile 2355-2363) indexes BOTH the ally-matrix test and the
-            # trust gate with the same pair offset `iVar22 = pow_a*0x15 + pow_b`
-            # — i.e. trust(pow_a, pow_b), the ally's view of pow_b, not ours.
-            # There is also no second `g_ally_matrix[own, pow_b] == 1` clause.
-            # Corrected 2026-08-12.
-            t_hi_b = int(trust_hi_mat[pow_a, pow_b])
-            t_lo_b = int(state.g_ally_trust_score[pow_a, pow_b])
-            if (state.g_enemy_flag[pow_b] == 0
-                    and state.g_enemy_flag[pow_a] == 0
-                    and int(state.g_ally_matrix[pow_a, pow_b]) == 1
-                    and pow_b != opening_best_ally
-                    and t_hi_b < 1 and (t_hi_b < 0 or t_lo_b < 2)):
-                state.g_enemy_flag[pow_b] = 1
-                state.g_ally_trust_score[own_power, pow_b] = 0
-                if hasattr(trust_hi_mat, '__setitem__'):
-                    trust_hi_mat[own_power, pow_b] = 0
-                pow_a_enforced[pow_a] = True
+    # The helper preserves the final-row auStack_dc snapshot and both-word
+    # enemy gates before honoring each declaring power's low-trust targets.
+    _apply_alliance_agreement_enemies(
+        state, own_power, opening_best_ally, trust_hi_mat, num_powers,
+    )

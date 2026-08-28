@@ -32,6 +32,86 @@ _SCORE_NORM_SCALE    = 10.0
 _SCORE_NORM_OFFSET   = 1.0
 
 
+def _seed_and_fold_coasts(state, bfs, power: int, rnd: int) -> None:
+    """Reconcile the fleet BFS with C's (province, TOKEN) key model.
+
+    ``ScoreProvinces.c:489-506`` seeds round 0 by walking each province's key
+    list and writing ``g_AttackCount[province] * build_weight`` into EVERY key
+    at that province.  A coastal supply centre such as SPA therefore carries
+    one FLT key per coast — ``(SPA, FLT/NCS)`` and ``(SPA, FLT/SCS)`` — and
+    both are seeded with SPA's supply-centre score.  There is no plain-FLT key
+    at a multi-coast province: ``AdjacencyList_FilterByUnitType`` resolves a
+    fleet's adjacency to the coast tokens.  When the propagation loop
+    (``ScoreProvinces.c:537-631``) then walks a neighbour's adjacency and hits
+    the same province twice under two coast tokens, ``local_5580`` keeps the
+    LARGER of the two values (C:1560-1584).
+
+    The port keys its arrays by province id alone, modelling the coast tokens
+    as separate ids.  That left the coast ids seeded at 0 and unreachable —
+    nothing in ``fleet_adj_matrix`` points at them — while the base id held a
+    fleet node with an EMPTY fleet adjacency, so ``final_score_set_flt`` for
+    SPA, BUL and STP decayed to noise.  Those are the three coastal supply
+    centres a fleet can only enter through a coast, and their destination
+    scores were being read off that dead node.
+
+    This restores both halves of C's behaviour, once per BFS round:
+      * every coast id inherits its base province's value (round 0: the seed);
+      * the base id becomes the MAX over its coast tokens, which is what a
+        neighbour's deduplicated adjacency walk sees and what ``fss()`` must
+        return for "fleet moves into this province".
+    """
+    variants = getattr(state, 'coast_variants', None)
+    if not variants:
+        return
+    row = bfs[power, rnd]
+    if rnd == 0:
+        for base, coasts in variants.items():
+            for coast in coasts:
+                row[coast] = row[base]
+    for base, coasts in variants.items():
+        row[base] = max(row[coast] for coast in coasts)
+
+
+def _populate_threat_path_scores(state: InnerGameState) -> None:
+    """Port ScoreOrderCandidates_AllPowers.c Phase 11 (lines 846-952)."""
+    threat = state.g_threat_path_score
+    for power in range(7):
+        for province in getattr(state, 'valid_provinces', range(256)):
+            if province not in state.sc_provinces:
+                continue
+            if state.g_own_reach_score[power, province] <= 0:
+                continue
+            occupant = state.unit_info.get(province)
+            army_owner = (
+                int(occupant.get('power', -1))
+                if occupant is not None
+                and occupant.get('type', 'A') in ('A', 'AMY')
+                else 0x14
+            )
+            if army_owner == power:
+                continue
+            for adj in state.get_adjacent_provinces(province):
+                if int(state.g_sc_ownership[power, adj]) <= 0:
+                    continue
+                if adj in state.sc_provinces:
+                    adj_occupant = state.unit_info.get(adj)
+                    adj_army_owner = (
+                        int(adj_occupant.get('power', -1))
+                        if adj_occupant is not None
+                        and adj_occupant.get('type', 'A') in ('A', 'AMY')
+                        else 0x14
+                    )
+                    if adj_army_owner != power:
+                        continue
+                # The C inner loop has no iteration when this province has no
+                # adjacency token records.
+                if not state.get_adjacent_provinces(adj):
+                    continue
+                score = state.g_max_prov_score_per_power[power, adj]
+                if score > threat[power, province]:
+                    threat[power, province] = score
+
+
 def score_order_candidates_all_powers(state: InnerGameState, round_weights: list, dominant_power_idx: int):
     """
     Port of ScoreOrderCandidates_AllPowers / FUN_0044a040.
@@ -48,102 +128,92 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
     _borrow = 1 if _fal_lo < _spr_lo else 0
     dominance_weight = (((_fal_hi - _spr_hi - _borrow) & 0xFFFFFFFF) << 32) | ((_fal_lo - _spr_lo) & 0xFFFFFFFF)
 
-    # Reset before computing fresh scores so stale values from the previous
-    # phase don't leak into score_threshold (Phase 2 Step 2) via provinces
-    # that are no longer BFS candidates (g_candidate_scores == 0 for them).
+    # C's trees are keyed by (province, unit/coast token).  The Python state
+    # represents the two material movement channels separately: the existing
+    # array is AMY-space and ``final_score_set_flt`` is fleet-space.
     state.final_score_set.fill(0)
+    state.final_score_set_flt.fill(0)
 
+    _fb = getattr(state, '_bfs_flt', None)
+    if _fb is None:
+        _fb = state.g_candidate_bfs
+
+    valid = sorted(getattr(state, 'valid_provinces', None) or range(256))
+    water = set(getattr(state, 'water_provinces', ()))
+    land_only = set(getattr(state, 'land_provinces', ()))
+    army_domain = [province for province in valid if province not in water]
+    fleet_domain = [province for province in valid if province not in land_only]
+    channels = (
+        (state.g_candidate_bfs, state.final_score_set, army_domain),
+        (_fb, state.final_score_set_flt, fleet_domain),
+    )
+    war_mode = int(getattr(state, 'g_war_mode_flag',
+                   getattr(state, 'g_dominant_power_mode', 0)))
+    n_rounds = min(10, len(round_weights))
+
+    # C normalises each power's complete key tree as one population.  Army and
+    # fleet keys at the same province therefore share the same max/min and the
+    # same threshold; normalising the channels independently is observably
+    # different and contradicts the single +0x4000 tree in the C object.
     for power in range(7):
-        for province in range(256):
-            # Use the heat_move candidate list from generate_orders (g_candidate_scores),
-            # which matches the C binary's ScoreOrderCandidates_AllPowers iteration source.
-            # g_candidate_scores comes from GenerateOrders Phase 1f and EXCLUDES own-army
-            # positions (those are skipped in the top-N selection).  Using g_candidate_bfs
-            # round-0 (the prior gate) seeded own-SC provinces like LVP with a high
-            # g_attack_count value, inflating final_score_set for those hold positions and
-            # causing armies to perpetually hold at home SCs.
-            if state.g_candidate_scores[power, province] <= 0:
-                continue
+        keyed_raw = []
+        max_raw = 1.0       # local_a8 initialiser
+        min_raw = 1.0e17    # local_b0 initialiser
+        for bfs, output, domain in channels:
+            for province in domain:
+                raw = sum(
+                    float(bfs[power, rnd, province]) * round_weights[rnd]
+                    for rnd in range(n_rounds)
+                )
+                if war_mode == 1 and power != dominant_power_idx:
+                    raw += float(bfs[power, 0, province]) * dominance_weight
+                keyed_raw.append((output, province, raw))
+                max_raw = max(max_raw, raw)
+                min_raw = min(min_raw, raw)
 
-            total = 0.0
-            for i in range(min(10, len(round_weights))):
-                score = state.get_candidate_score(power, province, i)
-                total += score * round_weights[i]
-                
-            # C (ScoreOrderCandidates_AllPowers.c:106): war-mode bonus fires when
-            # DAT_00baed6c == 1 AND DAT_00624124 != local_f4.  The canonical Python
-            # name for DAT_00baed6c is g_war_mode_flag (written by heuristics/board.py).
-            # g_DominantPowerMode is the legacy alias per GlobalDataRefs.md:135 and
-            # research.md:3531 — kept as a fallback for any transitional callers.
-            war_mode = int(getattr(state, 'g_war_mode_flag',
-                           getattr(state, 'g_dominant_power_mode', 0)))
-            if war_mode == 1 and power != dominant_power_idx:
-                main_candidate_score = state.get_candidate_score(power, province, 0)
-                total += main_candidate_score * dominance_weight
-                
-            state.g_max_province_score[province] = max(state.g_max_province_score[province], total)
-            state.g_min_score[province] = min(state.g_min_score[province], total)
-            
-            state.final_score_set[power, province] = total
-            
-    # Pass 2 - Score normalization (C Phase 1b, lines 131-211)
-    # Above-threshold: (raw * 1000 / global_max) + 15
-    # Sub-threshold, non-zero: pow(raw/threshold, 0.5) * 10 + 1
-    # Assembly: FILD [score], FLD [0.5], _safe_pow → FSTP local_78
-    #           FILD [threshold], FLD [0.5], _safe_pow
-    #           FDIVR local_78 → FMUL [10.0] → FADD [1.0]
-    global_max = np.max(state.g_max_province_score)
-    threshold = global_max / 100.0
-    # Off-by-one guard — C: if min == threshold → threshold = min+1
-    global_min = float(np.min(state.g_min_score))
-    if global_min == threshold:
-        threshold = global_min + 1.0
+        threshold = max_raw / 100.0
+        if min_raw == threshold:
+            threshold = min_raw + 1.0
 
-    for power in range(7):
-        for province in range(256):
-            raw_score = state.final_score_set[power, province]
-            if raw_score <= 0:
-                continue
-            if raw_score >= threshold and global_max > 0:
-                score = (raw_score * 1000.0 / global_max) + 15.0
+        for output, province, raw in keyed_raw:
+            if raw >= threshold:
+                normalized = (raw * 1000.0 / max_raw) + 15.0
+            elif raw == 0.0 or raw == min_raw:
+                normalized = 1.0
             else:
-                ratio = max(raw_score / max(threshold, 1.0), 0.0)
-                score = pow(ratio, _SCORE_NORM_EXPONENT) * _SCORE_NORM_SCALE + _SCORE_NORM_OFFSET
-                if score > 10.0:
-                    score = 10.0
+                ratio = max(raw / max(threshold, 1.0), 0.0)
+                normalized = (
+                    pow(ratio, _SCORE_NORM_EXPONENT) * _SCORE_NORM_SCALE
+                    + _SCORE_NORM_OFFSET
+                )
+                normalized = min(normalized, 10.0)
+            output[power, province] = normalized
+            state.g_max_prov_score_per_power[power, province] = max(
+                state.g_max_prov_score_per_power[power, province], normalized
+            )
+            state.g_min_prov_score_per_power[power, province] = min(
+                state.g_min_prov_score_per_power[power, province], normalized
+            )
 
-            state.final_score_set[power, province] = score
+        # Phase 1c applies to every AMY key, not merely provinces currently
+        # occupied by an army.  It pulls that key down to the difference from
+        # the best token-specific value at the same province.
+        for province in army_domain:
+            army_score = float(state.final_score_set[power, province])
+            province_max = float(state.g_max_prov_score_per_power[power, province])
+            if army_score < province_max:
+                state.final_score_set[power, province] = province_max - army_score
 
-            # Per-power max/min pair updates (C Phase 1b tail, lines 193-209)
-            if hasattr(state, 'g_max_prov_score_per_power'):
-                if score > state.g_max_prov_score_per_power[power, province]:
-                    state.g_max_prov_score_per_power[power, province] = score
-                if score < state.g_min_prov_score_per_power[power, province]:
-                    state.g_min_prov_score_per_power[power, province] = score
-
-            # Pass 3 - AMY shortfall-pull toward max (C Phase 1c, lines 214-248)
-            # Replaces former random 0.9-1.1 jitter with deterministic
-            # "delta to per-power max" — pulls under-performing armies
-            # toward the best-scoring province.
-            if state.get_unit_type(province) == "AMY":
-                per_pow_max = (state.g_max_prov_score_per_power[power, province]
-                               if hasattr(state, 'g_max_prov_score_per_power')
-                               else state.g_max_province_score[province])
-                if score < per_pow_max:
-                    state.final_score_set[power, province] = float(per_pow_max) - score
-
-    # Pass 3b - Recompute g_max_province_score from normalized final_score_set.
-    # In C (lines 192-201), g_max_province_score is updated DURING the
-    # normalization loop, so it holds post-normalization values.  The Python
-    # Pass 1 sets it from raw dot-product totals; we must refresh it here so
-    # that downstream consumers (TopReachFlag, BuildSupportOpportunities)
-    # see the correct normalized maxima.
-    state.g_max_province_score[:] = 0
-    for power in range(7):
-        for province in range(256):
-            v = float(state.final_score_set[power, province])
-            if v > state.g_max_province_score[province]:
-                state.g_max_province_score[province] = v
+    # This 1-D compatibility view has no separate C storage; retain it as the
+    # cross-power/key maximum expected by the existing support helpers.
+    state.g_max_province_score[:] = np.maximum(
+        state.final_score_set.max(axis=0),
+        state.final_score_set_flt.max(axis=0),
+    )
+    state.g_min_score[:] = np.minimum(
+        state.final_score_set.min(axis=0),
+        state.final_score_set_flt.min(axis=0),
+    )
 
     # Pass 4 - g_prov_target_flag classification (C Phase 3, lines 265-316)
     # Ported 2026-04-14 — fixes dead-code bug (enemy_reach==0 duplicate branch)
@@ -241,10 +311,42 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                 for adj1 in (state.get_adjacent_provinces(unit_prov)
                              if hasattr(state, 'get_adjacent_provinces') else []):
                     direct_reach[power, adj1] = 1
+                    # DAT_005c48e8/ec are the lo/hi words of ONE int64 that C
+                    # sets to 1 (ScoreOrderCandidates_AllPowers.c:724-725).
+                    # The port bound them as two arrays and wrote only the hi
+                    # one, so every g_convoy_reach reader in
+                    # monte_carlo/evaluation.py:869-878 saw a permanent zero.
+                    state.g_convoy_reach[power, adj1] = 1
                     for adj2 in (state.get_adjacent_provinces(adj1)
                                  if hasattr(state, 'get_adjacent_provinces') else []):
                         if state.has_unit(adj2):
                             ext_reach[power, adj2] = 1
+
+        # Pass 7a - support reach (ScoreOrderCandidates_AllPowers.c:749-780).
+        # Never ported: state.g_support_reach (DAT_005ba0e8) had ZERO writers in
+        # the whole tree while being read three times in
+        # monte_carlo/evaluation.py:870-885, so that OR collapsed to its first
+        # term.  C: for each of the power's units, for each type-filtered
+        # level-1 adjacency a1, for each type-filtered level-2 adjacency a2 of
+        # a1 that is a SUPPLY CENTRE (board byte +3), mark a2 AND every
+        # neighbour of a2 (the ordered set at this + prov*0xc + 0x2a1c, which
+        # EvaluateProvinceScore.c:30 shows is the province adjacency set).
+        for power in range(7):
+            for unit_prov in (state.get_power_units(power)
+                              if hasattr(state, 'get_power_units') else []):
+                _u = state.unit_info.get(unit_prov, {})
+                _ut = _u.get('type', 'A')
+                for a1 in state.get_unit_adjacencies(unit_prov):
+                    if _ut in ('A', 'AMY') and a1 in state.water_provinces:
+                        continue
+                    if _ut in ('F', 'FLT') and a1 in state.land_provinces:
+                        continue
+                    for a2 in state.get_unit_adjacencies(a1):
+                        if a2 not in state.sc_provinces:
+                            continue
+                        state.g_support_reach[power, a2] = 1
+                        for nb in state.get_unit_adjacencies(a2):
+                            state.g_support_reach[power, nb] = 1
 
         # Pass 7b - 3-round BFS flood-fill of DirectReach (C Phase 10b, lines 792-845)
         for power in range(7):
@@ -262,7 +364,8 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
         for power in range(7):
             for unit_prov in (state.get_power_units(power)
                               if hasattr(state, 'get_power_units') else []):
-                if (state.final_score_set[power, unit_prov]
+                unit_type = state.unit_info.get(unit_prov, {}).get('type', 'A')
+                if (state.fss(power, unit_prov, unit_type)
                     < state.g_max_prov_score_per_power[power, unit_prov]):
                     state.g_needs_rescore[unit_prov] = 0
 
@@ -272,13 +375,18 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
         for power in range(7):
             for unit_prov in (state.get_power_units(power)
                               if hasattr(state, 'get_power_units') else []):
-                for adj in (state.get_adjacent_provinces(unit_prov)
-                            if hasattr(state, 'get_adjacent_provinces') else []):
+                unit = state.unit_info.get(unit_prov, {})
+                unit_type = unit.get('type', 'A')
+                unit_coast = unit.get('coast', '')
+                for adj in state.get_unit_adjacencies(unit_prov):
+                    if not state.can_reach_by_type(
+                            unit_prov, adj, unit_type, unit_coast):
+                        continue
                     if state.g_needs_rescore[adj] != 0:
                         continue
                     if (state.g_sc_ownership[power, adj] == 1
                         and state.g_enemy_reach_score[power, adj] == 0):
-                        score = state.final_score_set[power, adj]
+                        score = state.fss(power, adj, unit_type)
                         if score == state.g_max_prov_score_per_power[power, adj]:
                             state.g_needs_rescore[adj] = 1
 
@@ -297,7 +405,8 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
         # Sub-pass A: clear TopReachFlag for under-performing unit provinces
         for unit_prov in (state.get_power_units(power)
                           if hasattr(state, 'get_power_units') else []):
-            fs_val = float(state.final_score_set[power, unit_prov])
+            unit_type = state.unit_info.get(unit_prov, {}).get('type', 'A')
+            fs_val = state.fss(power, unit_prov, unit_type)
             mx_val = float(state.g_max_province_score[unit_prov])
             if fs_val < mx_val:
                 state.g_top_reach_flag[unit_prov] = 0
@@ -306,13 +415,18 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
         # Sub-pass B: mark reachable own-SC provinces that hit max score
         for unit_prov in (state.get_power_units(power)
                           if hasattr(state, 'get_power_units') else []):
-            for q in (state.get_adjacent_provinces(unit_prov)
-                      if hasattr(state, 'get_adjacent_provinces') else []):
+            unit = state.unit_info.get(unit_prov, {})
+            unit_type = unit.get('type', 'A')
+            unit_coast = unit.get('coast', '')
+            for q in state.get_unit_adjacencies(unit_prov):
+                if not state.can_reach_by_type(
+                        unit_prov, q, unit_type, unit_coast):
+                    continue
                 if int(state.g_top_reach_flag[q]) != 0:
                     continue  # already set or cleared with non-zero marker
                 if int(state.g_sc_ownership[power, q]) != 1:
                     continue
-                fs_q = float(state.final_score_set[power, q])
+                fs_q = state.fss(power, q, unit_type)
                 mx_q = float(state.g_max_province_score[q])
                 if fs_q > 0 and fs_q == mx_q:
                     state.g_top_reach_flag[q] = 1
@@ -350,23 +464,13 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
                         sup_mark[power, adj2] = 1
 
     # Pass 12 - g_threat_path_score (C Phase 11, lines 846-952)
-    # For each non-own province with enemy unit and own-reach > 0: iterate
-    # its adjacencies and record the max final_score_set reachable via it.
-    threat = getattr(state, 'g_threat_path_score', None)
-    if threat is not None:
-        for power in range(7):
-            for province in range(256):
-                if state.g_own_reach_score[power, province] <= 0:
-                    continue
-                owner = (state.get_unit_owner(province)
-                         if hasattr(state, 'get_unit_owner') else None)
-                if owner is None or owner == power:
-                    continue
-                for adj in (state.get_adjacent_provinces(province)
-                            if hasattr(state, 'get_adjacent_provinces') else []):
-                    score = state.final_score_set[power, adj]
-                    if score > threat[power, province]:
-                        threat[power, province] = score
+    # C's province byte +3 gate is the supply-centre flag, not occupancy.  For
+    # each threatened SC (no own army and own-reach > 0), scan adjacent
+    # reachable provinces.  An adjacent SC is usable only when occupied by the
+    # evaluated power's army; non-SCs have no occupant gate.  C then walks all
+    # adjacency token keys for that province and retains their greatest score,
+    # which is the shared per-power/province maximum in the split Python model.
+    _populate_threat_path_scores(state)
 
 
 # ── ScoreProvinces ────────────────────────────────────────────────────────────
@@ -621,30 +725,59 @@ def score_provinces(state: InnerGameState,
             if 0 <= prov < num_provinces:
                 state.g_attack_count[outer_power, prov] = weight
 
-        # Section 4e — convoy/mobility counts (C: uncertain-trust fleet gate)
-        # Updated 2026-04-14: adds the `g_ally_trust_score < 1 AND < 0` test
-        # (uncertain-trust fleet) that gates the 2-hop expansion in C. Prior
-        # port expanded through every adjacency, over-counting by ~4x.
+        # Section 4e — convoy/mobility counts (C: ScoreProvinces.c:831-925).
+        #
+        # Re-derived 2026-08-24.  The previous port read this block as an
+        # "uncertain-trust fleet" gate and produced an ALL-ZERO
+        # g_convoy_reach_count, which silently killed the entire
+        # `convoy_reach > 0` branch of EvaluateProvinceScore
+        # (heuristics/_primitives.py:63-72) — every uncontested province
+        # scored 0 there instead of 2/15/50/100.  Three separate divergences:
+        #
+        #  1. `DAT_004d2e14` is NOT a trust score.  It is the HI word of
+        #     g_AllyDesignation_A (paired with it as an int64 `== -1` test at
+        #     EvaluateAllianceScore.c:898), and C indexes it by the ADJACENT
+        #     PROVINCE (`[piVar11[3] * 2]`), not by a power.  C:874-875 is
+        #     therefore "adj carries no A-designation", i.e. hi word < 0.
+        #     There is no fleet-type test and no "adj must hold a unit" test.
+        #  2. C:897 gates on g_enemy_presence[outer_power, UNIT_PROV]
+        #     (DAT_004f6ce8, int64 == 1), not on a unit-presence table.
+        #  3. C indexes every table in this block with the OUTER power
+        #     (`iVar16 = local_559c * 0x100`), not own_power; C:918 likewise
+        #     compares the unit's owner (node+0x18) against outer_power.
         for prov, info in state.unit_info.items():
-            for adj in state.get_unit_adjacencies(prov):
-                adj_power = state.get_unit_power(adj)
-                if adj_power == -1:
+            _utype = info.get('type', 'A')
+            if _utype in ('A', 'AMY'):
+                _adj1 = [a for a in state.get_unit_adjacencies(prov)
+                         if a not in state.water_provinces]
+            elif _utype in ('F', 'FLT'):
+                _adj1 = list(state.fleet_adj_matrix.get(prov, []))
+            else:
+                _adj1 = list(state.get_unit_adjacencies(prov))
+            _enemy_here = int(state.g_enemy_presence[outer_power, prov]) == 1
+            _prev = -1
+            for adj in _adj1:
+                # C:872 skips consecutive duplicate adjacency entries
+                # (local_5594 holds the previous province).
+                if adj == _prev:
                     continue
-                # C gate: the unit at `adj` must be a fleet of uncertain trust.
-                # Uncertain ≈ trust score unknown (< 1) AND hi-word < 0.
-                trust_lo = float(state.g_ally_trust_score[outer_power, adj_power])
-                trust_hi = int(state.g_ally_trust_score_hi[outer_power, adj_power])
-                if not (trust_lo < 1 and trust_hi < 0):
-                    continue
-                # Filter to fleet units only (C calls AdjacencyList_FilterByUnitType)
-                if state.get_unit_type(adj) != 'F':
+                _prev = adj
+                if int(state.g_ally_designation_a_hi[adj]) >= 0:
                     continue
                 for adj2 in state.get_unit_adjacencies(adj):
-                    if (g_unit_presence[prov] == 1
-                        and state.g_sc_ownership[own_power, adj2] == 0):
-                        state.g_convoy_reach_count[own_power, adj2] += 1
-                    if info['power'] != own_power:
-                        state.g_enemy_mobility_count[own_power, adj2] += 1
+                    if (_enemy_here
+                            and int(state.g_sc_ownership[outer_power, adj2]) == 0):
+                        state.g_convoy_reach_count[outer_power, adj2] += 1
+                    if info['power'] != outer_power:
+                        state.g_enemy_mobility_count[outer_power, adj2] += 1
+        #
+        # MEASURED 2026-08-24: neutral on the F1901M corpus (140 vs 141 of
+        # 550; convoys, exact-set and neutral-SC counts all identical).
+        # Applied for fidelity: g_convoy_reach_count was ALWAYS EMPTY
+        # before this, and g_enemy_mobility_count only feeds a branch
+        # gated on g_press_flag, which compare_albert disables -- so that
+        # half of the fix is untestable by this harness but live in real
+        # games.
 
         # Section 4g — per-power province weight (C: ScoreProvinces.c:651-762,
         # writing DAT_00540ce8[outer_power*0x100 + prov]).
@@ -730,26 +863,51 @@ def score_provinces(state: InnerGameState,
         # 0x14 in C, which != any valid outer_power).
         # Fixed 2026-04-28: was checking home_power != sc_owner; must
         # check outer_power SC ownership instead.
+        # Fixed 2026-08-17: read g_board_sc_ownership, not g_sc_ownership.
+        # C's test is GameBoard_GetPowerRec (ScoreProvinces.c:958-971), a
+        # board query.  g_sc_ownership is the per-trial *unit presence*
+        # scratch table this function overwrites at Section 3, so the old
+        # read made this flag mean "outer_power has a unit somewhere that
+        # isn't occupied by outer_power" — never true.
         local_5581_flag = False
         for alive_prov in range(num_provinces):
-            if state.g_sc_ownership[outer_power, alive_prov] == 1:
-                uowner_a = (state.get_unit_power(alive_prov)
-                            if alive_prov in state.unit_info else -1)
+            if state.g_board_sc_ownership[outer_power, alive_prov] == 1:
+                # C:964-970 reads the unit field and downgrades a non-ARMY
+                # occupant to the 0x14 "no owner" sentinel BEFORE comparing, so
+                # a FLEET of outer_power sitting on its own centre still sets
+                # the flag.  The port compared the raw unit owner and missed
+                # that case.
+                _ua = state.unit_info.get(alive_prov)
+                if _ua is None or _ua.get('type', 'A') not in ('A', 'AMY'):
+                    uowner_a = -1
+                else:
+                    uowner_a = int(_ua.get('power', -1))
                 if uowner_a != outer_power:
                     local_5581_flag = True
                     break
 
         near_end = float(state.g_near_end_game_factor)
 
-        # Broadened 2026-04-14 (pass 2) to all 256 provinces — matches C's
-        # per-alive-province iteration (ScoreProvinces.c:982-991) so that
-        # Adjustments 4 (opening target) and 5/6 (unit-owner branch) can
-        # fire on provinces that are neither SC-owned nor unit-occupied
-        # by outer_power.
-        # C only enters the scoring body when the province "alive" flag
-        # is non-zero (*(char*)(board + 3 + prov*0x24) != '\0').  Non-map
-        # provinces (IDs > ~81 on standard map) stay at g_attack_count = 0.
-        prov_iter = valid_provs if valid_provs else range(num_provinces)
+        # C:983 gates the scoring body on province-record byte +3
+        # (*(char *)(board + 3 + prov*0x24) != '\0').  That byte is the
+        # SUPPLY-CENTRE flag, not a map-validity flag: ComputeBuildDelta
+        # walks the same records and uses the identical test
+        # (`pbVar5[-0x1d] != 0`, pbVar5 = record + 0x20) to decide whether a
+        # province contributes to a power's supply-centre tally.
+        #
+        # Fixed 2026-08-17: this loop previously ran over `valid_provinces`
+        # (every province on the map).  That gave every empty non-centre the
+        # same 75 as every empty neutral centre, erasing the whole
+        # supply-centre gradient — SPA and GAS were worth exactly the same to
+        # France, so armies wandered instead of taking centres.  Non-centres
+        # must stay at g_attack_count = 0; they still receive value through
+        # the BFS diffusion below, which does iterate every province.
+        # Sorted so the sweep runs in province-index order like C's, and so a
+        # set's iteration order can never leak into the results.
+        _sc_provs = getattr(state, 'sc_provinces', None)
+        prov_iter = sorted(_sc_provs) if _sc_provs else (
+            sorted(valid_provs) if valid_provs else range(num_provinces)
+        )
         for prov in prov_iter:
             uowner_here = (state.get_unit_power(prov)
                            if prov in state.unit_info else -1)
@@ -774,7 +932,12 @@ def score_provinces(state: InnerGameState,
                 #   not found                   → score != 0 & flag → 80
                 # Fixed 2026-04-28: was using home_power == sc_owner; must
                 # use outer_power SC ownership.
-                outer_owns_this_sc = (state.g_sc_ownership[outer_power, prov] == 1)
+                # Fixed 2026-08-17: g_sc_ownership → g_board_sc_ownership.
+                # C:1002-1019 queries the board (GameBoard_GetPowerRec); the
+                # scratch table read here holds unit presence by this point.
+                outer_owns_this_sc = (
+                    state.g_board_sc_ownership[outer_power, prov] == 1
+                )
 
                 if outer_owns_this_sc:
                     if score > 15.0 and local_5581_flag:
@@ -832,7 +995,18 @@ def score_provinces(state: InnerGameState,
 
             # Adjustment 7 — unoccupied province match / default (C 1071-1149).
             # Fixed 2026-04-28: Removed `not is_home_center` gating which broke S1902 unoccupied SC logic.
-            if (uowner_here == -1
+            # C reaches Adjustment 7 on `ppiVar10 == 0x14` (C:1124), i.e. NO
+            # ARMY here -- a non-army occupant is downgraded to the 0x14
+            # sentinel first, so a province holding a foreign FLEET takes this
+            # path, not Adjustment 5's.  The port tested `uowner_here == -1`
+            # (truly empty).  Adjustment 4 twelve lines above already does the
+            # army-only test correctly; these two disagreed with it.
+            _occ = state.unit_info.get(prov)
+            _army_owner = (uowner_here
+                           if (_occ is not None
+                               and _occ.get('type', 'A') in ('A', 'AMY'))
+                           else -1)
+            if (_army_owner == -1
                     and hasattr(state, 'g_press_matrix')
                     and hasattr(state, 'g_press_count')
                     and score != 150.0):
@@ -869,20 +1043,29 @@ def score_provinces(state: InnerGameState,
                             best = 75.0 / tlo
                     score = 75.0 if capped else best
 
-            # Adjustment 5 — non-SC-owned unit owner score (C 1150-1161).
-            # Occupied-by-other-power path: trust-uncertain → 10, ally → 1.
-            is_owned_sc = (state.g_sc_ownership[outer_power, prov] == 1)
-            if (not is_owned_sc and uowner_here != -1
-                    and uowner_here != outer_power):
-                trust_lo = float(state.g_ally_trust_score[outer_power, uowner_here])
-                trust_hi = int(state.g_ally_trust_score_hi[outer_power, uowner_here])
+            # Adjustment 5 — unit-owner score (C 1150-1161).  C reaches this
+            # branch whenever an ARMY of some other power stands here (the
+            # `ppiVar10 == 0x14` test at C:1124 fails); there is no
+            # supply-centre condition on it.
+            #
+            # 2026-08-17: dropped a `g_sc_ownership[outer_power, prov] == 1`
+            # gate that had no C counterpart.  It was a no-op — after
+            # Section 3 that table means "outer_power has a unit here", which
+            # `uowner_here != outer_power` below already excludes — so this
+            # removes dead code without changing behaviour.
+            if _army_owner != -1 and _army_owner != outer_power:
+                trust_lo = float(state.g_ally_trust_score[outer_power, _army_owner])
+                trust_hi = int(state.g_ally_trust_score_hi[outer_power, _army_owner])
                 uncertain = (trust_hi < 0
                              or (trust_hi < 1 and trust_lo < 2))
                 score = 10.0 if uncertain else 1.0
 
                 # Adjustment 8 — WIN sticky + SC-count bump (C 1162-1199).
                 # Fires when outer_power owns > 2 supply centres.
-                own_scs = int(np.sum(state.g_sc_ownership[outer_power]))
+                # Fixed 2026-08-17: C reads curr_sc_cnt[power] (C:1160), the
+                # board-derived centre tally = state.sc_count.  Summing
+                # g_sc_ownership counted units, not centres.
+                own_scs = int(state.sc_count[outer_power])
                 if own_scs > 2:
                     deceit = int(getattr(state, 'g_deceit_level', 0))
                     sticky = int(getattr(state, 'g_opening_sticky_mode', 0))
@@ -895,8 +1078,9 @@ def score_provinces(state: InnerGameState,
                         # C: PackScoreU64 rounds ST0 (= current score float)
                         # to int64 via banker's rounding (ScoreProvinces.c:1174-1176).
                         score = float(_float_to_int64(score))
-                    # Neighbor SC-count bump.
-                    owner_scs = int(np.sum(state.g_sc_ownership[uowner_here]))
+                    # Neighbor SC-count bump.  C:1188/1194 — curr_sc_cnt of the
+                    # occupying unit's owner.
+                    owner_scs = int(state.sc_count[uowner_here])
                     wt = int(getattr(state, 'win_threshold', 18)) or 18
                     if owner_scs < 2:
                         score += 20.0
@@ -911,11 +1095,24 @@ def score_provinces(state: InnerGameState,
 
             # Adjustment 9 — SC ownership override (C 1209-1228).
             # FINAL adjustment: if outer_power owns this SC, override:
-            #   own unit present → 90; other/empty → 150.
+            #   own army present → 90; other/empty → 150.
             # C: GameBoard_GetPowerRec; if found (outer_power in power-
             # record), check unit type at province.
-            if state.g_sc_ownership[outer_power, prov] == 1:
-                if uowner_here == outer_power:
+            # Fixed 2026-08-17: g_sc_ownership → g_board_sc_ownership.  With
+            # the scratch table this branch could only fire where outer_power
+            # already had a unit, so it always produced 90 and never 150 —
+            # every centre outer_power did not stand on lost its premium and
+            # scored the same 75 as an empty non-centre province.
+            if state.g_board_sc_ownership[outer_power, prov] == 1:
+                # C:1215-1220 downgrades a non-army occupant to 0x14 ("no
+                # owner") before the comparison, so a fleet sitting on the
+                # centre still yields 150.
+                occupant_army = (
+                    uowner_here
+                    if state.unit_info.get(prov, {}).get('type', 'A') in ('A', 'AMY')
+                    else -1
+                )
+                if occupant_army == outer_power:
                     score = 90.0
                 else:
                     score = 150.0
@@ -929,24 +1126,41 @@ def score_provinces(state: InnerGameState,
 
     all_provs = valid_provs if valid_provs else range(num_provinces)
 
-    # ── g_build_order_pending seed pass (C:1235-1260) ────────────────────────
-    # After the outer-power loop, C scans all provinces for own_power and
-    # writes DAT_006190e8 (g_build_order_pending) = 600 for every province
-    # where own_power's SC exists but no own unit occupies it.
-    # Gate (C:1264-1285, local_5581): only runs when own_power has NO units
-    # anywhere (build phase after full disband).  In that case every own SC
-    # lacking an own unit is a valid build target and gets seeded with 600.
-    # This value enters Phase-5 BFS seeding (C:1538-1544) as
-    #   g_attack_count * build_weight + g_build_order_pending * move_weight.
-    own_has_units = any(
-        info['power'] == own_power for info in state.unit_info.values()
-    )
-    if not own_has_units:
+    # ── g_build_order_pending seed pass (C:1240-1285) ────────────────────────
+    # C runs this inside the per-outer_power loop, in two parts:
+    #
+    #   gate  (C:1263-1284): sweep provinces; set local_5581 when outer_power
+    #         owns the centre AND an ARMY of outer_power stands on it (a fleet
+    #         is downgraded to 0x14 first, C:1273-1276).  If the flag is still
+    #         clear after the sweep → `goto LAB_00449210`, i.e. seed.
+    #   seed  (C:1244-1259, LAB_00449210): for EVERY province outer_power owns
+    #         the centre of, write DAT_006190e8 = 600.  There is no unit test
+    #         in this loop.
+    #
+    # Read as: "if this power has no army sitting on any centre it owns, pull
+    # it toward all of them."  It enters the Phase-5 BFS reseed (C:1538-1544)
+    # as g_attack_count * build_weight + g_build_order_pending * move_weight.
+    #
+    # Fixed 2026-08-17: the port gated on "own_power has no units anywhere"
+    # (true only after a total disband, so the seed was dead in every movement
+    # phase), applied it to own_power alone rather than all seven, and added a
+    # `unit_here != own_power` test the seed loop does not have.
+    for seed_power in range(num_powers):
+        has_army_on_own_centre = False
         for prov in all_provs:
-            if state.g_sc_ownership[own_power, prov] == 1:
-                unit_here = state.get_unit_power(prov) if prov in state.unit_info else -1
-                if unit_here != own_power:
-                    state.g_build_order_pending[own_power, prov] = 600
+            if state.g_board_sc_ownership[seed_power, prov] != 1:
+                continue
+            unit = state.unit_info.get(prov)
+            if (unit is not None
+                    and unit.get('power') == seed_power
+                    and unit.get('type', 'A') in ('A', 'AMY')):
+                has_army_on_own_centre = True
+                break
+        if has_army_on_own_centre:
+            continue
+        for prov in all_provs:
+            if state.g_board_sc_ownership[seed_power, prov] == 1:
+                state.g_build_order_pending[seed_power, prov] = 600
 
     # ── Candidate BFS seeding (ScoreProvinces.c:466-638) ─────────────────────
     # C outer loop (local_559c) iterates ALL 7 powers — not just own_power.
@@ -962,6 +1176,9 @@ def score_provinces(state: InnerGameState,
     seed_w = float(build_weight)
     move_w = float(move_weight)
 
+    if getattr(state, '_bfs_flt', None) is None or state._bfs_flt.shape != state.g_candidate_bfs.shape:
+        state._bfs_flt = np.zeros_like(state.g_candidate_bfs)
+
     for bfs_power in range(num_powers):
         # Round 0: seed from g_attack_count (ScoreProvinces.c:489-495)
         state.g_candidate_bfs[bfs_power, 0].fill(0.0)
@@ -976,9 +1193,30 @@ def score_provinces(state: InnerGameState,
             for prov in all_provs:
                 prev_self = state.g_candidate_bfs[bfs_power, rnd - 1, prov]
                 adj_sum = 0.0
+                # The C node key carries AMY, and
+                # AdjacencyList_FilterByUnitType filters this expansion by that
+                # token.  Generic adjacency includes sea edges and would let
+                # army influence diffuse through water.
                 for adj in set(state.adj_matrix.get(prov, [])):
+                    if adj in state.water_provinces:
+                        continue
                     adj_sum += state.g_candidate_bfs[bfs_power, rnd - 1, adj]
                 state.g_candidate_bfs[bfs_power, rnd, prov] = (prev_self + adj_sum) / 5.0
+        # FLEET channel: same seed, but diffused over fleet-reachable adjacency
+        # only (C filters each key's adjacency by that key's own token,
+        # ScoreProvinces.c:537-539).
+        _fb = state._bfs_flt
+        _fb[bfs_power, 0] = state.g_candidate_bfs[bfs_power, 0]
+        _seed_and_fold_coasts(state, _fb, bfs_power, 0)
+        for rnd in range(1, 10):
+            _fb[bfs_power, rnd].fill(0.0)
+            for prov in all_provs:
+                prev_self = _fb[bfs_power, rnd - 1, prov]
+                adj_sum = 0.0
+                for adj in set(state.fleet_adj_matrix.get(prov, [])):
+                    adj_sum += _fb[bfs_power, rnd - 1, adj]
+                _fb[bfs_power, rnd, prov] = (prev_self + adj_sum) / 5.0
+            _seed_and_fold_coasts(state, _fb, bfs_power, rnd)
 
     # ── Phase-5 candidate BFS re-seed (ScoreProvinces.c:1538-1544) ───────────
     # Re-seeds slot[0] for all powers with
@@ -1013,8 +1251,25 @@ def score_provinces(state: InnerGameState,
                 prev_self = state.g_candidate_bfs[bfs_power, rnd - 1, prov]
                 adj_sum = 0.0
                 for adj in set(state.adj_matrix.get(prov, [])):
+                    if adj in state.water_provinces:
+                        continue
                     adj_sum += state.g_candidate_bfs[bfs_power, rnd - 1, adj]
                 state.g_candidate_bfs[bfs_power, rnd, prov] = (prev_self + adj_sum) / 5.0
+        # FLEET channel: same seed, but diffused over fleet-reachable adjacency
+        # only (C filters each key's adjacency by that key's own token,
+        # ScoreProvinces.c:537-539).
+        _fb = state._bfs_flt
+        _fb[bfs_power, 0] = state.g_candidate_bfs[bfs_power, 0]
+        _seed_and_fold_coasts(state, _fb, bfs_power, 0)
+        for rnd in range(1, 10):
+            _fb[bfs_power, rnd].fill(0.0)
+            for prov in all_provs:
+                prev_self = _fb[bfs_power, rnd - 1, prov]
+                adj_sum = 0.0
+                for adj in set(state.fleet_adj_matrix.get(prov, [])):
+                    adj_sum += _fb[bfs_power, rnd - 1, adj]
+                _fb[bfs_power, rnd, prov] = (prev_self + adj_sum) / 5.0
+            _seed_and_fold_coasts(state, _fb, bfs_power, rnd)
 
 
 # ── ScoreOrderCandidates: candidate-vs-press corroboration penalty ───────────

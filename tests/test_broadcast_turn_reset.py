@@ -71,6 +71,7 @@ def test_no_press_leaves_process_turn_proposal_trees_empty():
     state.g_alliance_orders = {0: [{'type': 'SUP'}]}
     state.g_candidate_record_list = [{'power': 0}]
     state._candidate_key_map = {('stale',): state.g_candidate_record_list[0]}
+    state._candidate_keys = [('stale',)]
 
     prepare_proposals(state)
 
@@ -78,3 +79,4 @@ def test_no_press_leaves_process_turn_proposal_trees_empty():
     assert state.g_alliance_orders == {}
     assert state.g_candidate_record_list == []
     assert not hasattr(state, '_candidate_key_map')
+    assert not hasattr(state, '_candidate_keys')

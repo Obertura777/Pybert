@@ -90,7 +90,13 @@ def evaluate_province_score(state: InnerGameState, province_id: int, power_id: i
 
     # C gate (line 163-170): fires on local_38 == 0 (max_threatening_adj_scs == 0),
     # NOT on score == 0 — the convoy-reach branch can set score != 0 before this.
-    if state.g_uniform_mode == 1 and state.g_near_end_game_factor < 3.0:
+    #
+    # Fixed 2026-08-18: was `state.g_uniform_mode`, a phantom attribute that
+    # nothing in the port ever writes, so this branch was dead.  C's test here
+    # (EvaluateProvinceScore.c:163) is `DAT_00baed68 == '\x01' && NearEndGame
+    # < 3.0`, and DAT_00baed68 is the press flag — bound as g_press_flag at
+    # 20-odd other sites in this port.
+    if int(getattr(state, 'g_press_flag', 0)) == 1 and state.g_near_end_game_factor < 3.0:
         if max_threatening_adj_scs == 0 and state.g_enemy_mobility_count[power_id, province_id] > 0:
             score = 2
             
@@ -313,21 +319,17 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     fleet_adj_score = np.zeros((num_powers, num_provinces), dtype=np.float64)
     prov_move_count = np.zeros(num_provinces, dtype=np.float64)
 
-    # --- Phase 1: Unit-list walk ---
-    # C: puVar3[0x1a + p] = unit struct's per-power reach array.
-    # For each unit at prov, sum reach scores into:
-    #   aiStack_10008[prov]   = prov_move_count[prov]   (total across all powers)
-    #   local_fc08[p, prov]   = province_visit[p, prov] (per-power)
-    # g_own_reach_score[p, prov] is the Python equivalent of unit[0x1a + p].
-    for prov, unit_data in state.unit_info.items():
-        power = unit_data.get('power', -1)
-        if power < 0 or power >= num_powers:
-            continue
-
-        for p in range(num_powers):
-            reach_p = int(state.g_own_reach_score[p, prov])
-            prov_move_count[prov] += reach_p      # aiStack_10008[prov]
-            province_visit[p, prov] += reach_p    # local_fc08[p, prov]
+    # --- Phase 1: token-key record walk ---
+    # EvaluateAllianceScore.c:182-219 walks DAT_00baed7c, not the unit list.
+    # record[0x1a+p] is the live candidate weight written by
+    # UpdateAllyOrderScore.  Sum both material token channels by province.
+    key_weights = (
+        state.g_key_weight[:, :num_provinces].astype(np.float64, copy=False)
+        + state.g_key_weight_flt[:, :num_provinces].astype(
+            np.float64, copy=False)
+    )
+    province_visit[:] = key_weights
+    prov_move_count[:] = np.sum(key_weights, axis=0)
 
     # --- Phase 2: Province threat scoring ---
     # C: EvaluateAllianceScore.c lines 229–262.
@@ -387,26 +389,76 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     # Corrected 2026-08-12: the port iterated occupied provinces, looped every
     # power instead of own_power, compared against province_visit, and used
     # win_threshold as the band cutoff.
-    for prov in range(num_provinces):
-        if prov in state.unit_info:
-            continue
-        threat_val = float(threat_score[own_power, prov])
-        pressure = float(state.g_mc_province_pressure[own_power, prov]) \
-            if hasattr(state, 'g_mc_province_pressure') else 0.0
-        if threat_val > 0.0 and pressure > 0.0:
-            if (pressure - threat_val) < float(trial_weight):
-                if threat_val * 3 < pressure * 2:
-                    enemy_penalty[own_power] += 10
-                elif threat_val < pressure:
-                    enemy_penalty[own_power] += 5
-                elif pressure != threat_val:
-                    enemy_penalty[own_power] -= 10
-            else:
-                enemy_penalty[own_power] += 20
+    occupied = np.zeros(num_provinces, dtype=bool)
+    occupied_provinces = [
+        int(prov) for prov in state.unit_info
+        if 0 <= int(prov) < num_provinces
+    ]
+    if occupied_provinces:
+        occupied[occupied_provinces] = True
+    own_threat = threat_score[own_power, :num_provinces]
+    own_pressure = (
+        state.g_mc_province_pressure[own_power, :num_provinces]
+        if hasattr(state, 'g_mc_province_pressure')
+        else np.zeros(num_provinces, dtype=np.float64)
+    )
+    eligible_empty = (~occupied) & (own_threat > 0.0) & (own_pressure > 0.0)
+    near_band = eligible_empty & (
+        (own_pressure - own_threat) < float(trial_weight)
+    )
+    strong_pressure = near_band & (own_threat * 3 < own_pressure * 2)
+    weaker_pressure = near_band & ~strong_pressure & (own_threat < own_pressure)
+    unequal_pressure = (
+        near_band & ~strong_pressure & ~weaker_pressure
+        & (own_pressure != own_threat)
+    )
+    far_band = eligible_empty & ~near_band
+    enemy_penalty[own_power] += (
+        int(np.count_nonzero(strong_pressure)) * 10
+        + int(np.count_nonzero(weaker_pressure)) * 5
+        - int(np.count_nonzero(unequal_pressure)) * 10
+        + int(np.count_nonzero(far_band)) * 20
+    )
 
-    # --- Phase 3b: occupied-province scoring ---
+    # --- Phase 3b: same-power token-key contribution ---
+    # C:574-637 adds base_score[key,power] * live_weight / trial_weight to the
+    # evaluated power before occupation/trust adjustments.  This contribution
+    # was entirely absent when Python substituted static reach arrays.
+    _tw_int = max(int(trial_weight), 1)
+    for score_table, weight_table in (
+            (state.final_score_set, state.g_key_weight),
+            (state.final_score_set_flt, state.g_key_weight_flt)):
+        weights = weight_table[:num_powers, :num_provinces].astype(
+            np.int64, copy=False
+        )
+        # C reads integer score records.  Python stores the same integral
+        # values in float64 tables, so this vectorized cast is identical to
+        # the former per-cell ``int(...)`` conversion.
+        base_scores = score_table[:num_powers, :num_provinces].astype(
+            np.int64, copy=False
+        )
+        weighted_scores = base_scores * weights
+        main_score += np.sum(
+            weighted_scores // _tw_int, axis=1, dtype=np.int64
+        )
+
+        # C:623-637 applies the sustained-attack premium to the same weighted
+        # keys.  Batch the fixed 7x256 record pass instead of entering Python
+        # once for every nonzero key.
+        premium_mask = (
+            (state.g_attack_history[:num_powers, :num_provinces] > 10)
+            & (state.g_sc_ownership[:num_powers, :num_provinces] == 0)
+            & (state.g_threat_level[:num_powers, :num_provinces] > 0)
+        )
+        premium = ((weighted_scores * 7) // 20) // _tw_int
+        main_score += np.sum(
+            np.where(premium_mask, premium, 0), axis=1, dtype=np.int64
+        )
+
+    # --- Phase 3c: occupied-province scoring ---
     for prov, unit_data in state.unit_info.items():
         unit_power = unit_data.get('power', -1)
+        unit_type = unit_data.get('type', 'A')
         if unit_power < 0:
             continue
 
@@ -425,59 +477,38 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
                     elif threat_val > 0:
                         ally_affinity[outer_power] += 5
 
-    # --- Phase 4: Fleet-chain BFS scoring (C lines 748-862) ---
-    # For each province with a fleet, get fleet-filtered adjacencies and walk
-    # the chain.  For each fleet-adjacent province, look up unit presence via
-    # the unit_info dict. If the unit's reach for the evaluated power > 0,
-    # compute a score based on whether the unit at the adjacent province
-    # belongs to the same owner (factor 0.1, cap 20) or different (0.05, cap 10).
-    # local_a808[power*256 + prov] accumulates the fleet-chain scores.
+    # --- Phase 4: water-record fleet-chain scoring (C lines 748-862) ---
+    # C walks every DAT_00baed7c key whose province has the water marker, then
+    # follows FLT adjacency.  The adjacent lookup explicitly constructs an
+    # AMY key and requires its live weight to be positive.
     local_a808 = np.zeros((num_powers, num_provinces), dtype=np.float64)
-
-    for prov, unit_data in state.unit_info.items():
-        unit_power = unit_data.get('power', -1)
-        unit_type = unit_data.get('type', 'A')
-        if unit_power < 0 or unit_type in ('A', 'AMY'):
-            continue  # fleet-only pass
-
-        # For each evaluated power, check if reach > 0
-        for eval_power in range(num_powers):
-            reach_val = float(state.g_own_reach_score[eval_power, prov]) \
-                if hasattr(state, 'g_own_reach_score') else 0.0
-            if reach_val <= 0:
-                continue
-
-            # Compute base_score: ((unit[eval_power+5] + 50) * reach) / num_powers
-            # unit[power+5] = g_unit_province_reach[power, prov] (set by EnumerateHoldOrders)
-            affinity = float(state.g_unit_province_reach[eval_power, prov]) \
-                if hasattr(state, 'g_unit_province_reach') else 0.0
-            base_score = int(((affinity + 50) * reach_val) / num_powers)
-
-            # Get fleet-filtered adjacency list (fleet_adj_matrix excludes
-            # land-only borders between coastal provinces, e.g. ANK→SMY).
-            fleet_adj = list(state.fleet_adj_matrix.get(prov, []))
-
-            for adj_prov in fleet_adj:
-                adj_unit = state.unit_info.get(adj_prov)
-                if adj_unit is None:
+    for prov in sorted(getattr(state, 'water_provinces', ())):
+        for score_table, source_weights in (
+                (state.final_score_set, state.g_key_weight),
+                (state.final_score_set_flt, state.g_key_weight_flt)):
+            for eval_power in range(num_powers):
+                source_weight = int(source_weights[eval_power, prov])
+                if source_weight <= 0:
                     continue
-                adj_reach = float(state.g_own_reach_score[eval_power, adj_prov]) \
-                    if hasattr(state, 'g_own_reach_score') else 0.0
-                if adj_reach <= 0:
-                    continue
-
-                # GameBoard_GetPowerRec: check if adj province owner == prov owner
-                adj_owner = adj_unit.get('power', -1)
-                if adj_owner == unit_power:
-                    # Same owner: factor 0.1, cap 20
-                    new_val = (adj_reach * base_score * 0.1) / num_powers
+                base_score = (
+                    (int(score_table[eval_power, prov]) + 50) * source_weight
+                ) // _tw_int
+                for adj_prov in state.fleet_adj_matrix.get(prov, []):
+                    adjacent_weight = int(
+                        state.g_key_weight[eval_power, adj_prov]
+                    )
+                    if adjacent_weight <= 0:
+                        continue
+                    owns_adjacent_sc = (
+                        int(state.g_board_sc_ownership[eval_power, adj_prov]) == 1
+                    )
+                    factor = 0.1 if owns_adjacent_sc else 0.05
+                    cap = 20.0 if owns_adjacent_sc else 10.0
+                    new_val = (
+                        adjacent_weight * base_score * factor
+                    ) / _tw_int
                     if new_val > local_a808[eval_power, adj_prov]:
-                        local_a808[eval_power, adj_prov] = min(new_val, 20.0)
-                else:
-                    # Different owner: factor 0.05, cap 10
-                    new_val = (adj_reach * base_score * 0.05) / num_powers
-                    if new_val > local_a808[eval_power, adj_prov]:
-                        local_a808[eval_power, adj_prov] = min(new_val, 10.0)
+                        local_a808[eval_power, adj_prov] = min(new_val, cap)
 
     # Transfer local_a808 into fleet_adj_score (used by Phase 5)
     fleet_adj_score[:] = local_a808
@@ -487,8 +518,8 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     # seed and made every non-own power score exactly (2000-5000)*50 = -150000.
     # Ported 2026-08-12 once FUN_0041c270 was decoded: it is
     # std::map<pair<province,coast>, int[42]>::operator[], returning node+5, so
-    # value[p] is that (province, coast)'s per-power score — bound here as
-    # final_score_set[p, prov], dropping the coast dimension as elsewhere.
+    # value[p] is that (province, unit/coast token)'s per-power score.  Select
+    # the current unit's AMY/FLT channel through state.fss below.
     #
     # Two arms, keyed on whether the unit belongs to the power being scored:
     #   own unit  (C:1115) — subtract its reach, then add a move bonus when the
@@ -500,6 +531,7 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
     press_flag = int(getattr(state, 'g_press_flag', 0))   # C: DAT_00baed68
     for prov, unit_data in state.unit_info.items():
         unit_power = unit_data.get('power', -1)
+        unit_type = unit_data.get('type', 'A')
         if not (0 <= prov < num_provinces):
             continue
         for power in range(num_powers):
@@ -523,8 +555,8 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
                 dest = int(state.g_order_table[prov, 2])
                 if not (0 <= dest < num_provinces):
                     continue
-                score_dest = float(state.final_score_set[power, dest])
-                score_src  = float(state.final_score_set[power, prov])
+                score_dest = state.fss(power, dest, unit_type)
+                score_src = state.fss(power, prov, unit_type)
                 if score_src * 0.85 < score_dest and press_flag == 0:
                     main_score[power] += ((_tw - moved) * reach_at) / _tw
             else:
@@ -601,3 +633,292 @@ def evaluate_alliance_score(state: InnerGameState, own_power: int,
         state.g_alliance_desirability[power] = score_adj
 
     return int(aggregate_score)
+
+
+def evaluate_alliance_scores_batch(
+    state: InnerGameState,
+    own_power: int,
+    trial_weight: int,
+    key_weight_batch: np.ndarray,
+    key_weight_flt_batch: np.ndarray,
+    mc_pressure_batch: np.ndarray,
+    mc_fleet_pressure_batch: np.ndarray,
+    order_type_batch: np.ndarray,
+    order_dest_batch: np.ndarray,
+) -> np.ndarray:
+    """Batch ``EvaluateAllianceScore`` across one power's candidate records.
+
+    ``UpdateAllyOrderScore`` evaluates every candidate against the same board,
+    relations, selected-slot groups, and trial weight.  Only six compact
+    candidate snapshots vary.  The scalar port rebuilt fixed 7x256 scratch
+    arrays and crossed the Python/NumPy boundary once per candidate; this
+    implementation adds a leading candidate axis and performs the same phases
+    in 7x256 batches.  Integer division order and candidate iteration order are
+    retained so the returned scores are parity-compatible with the scalar
+    evaluator.
+    """
+    batch_size = int(key_weight_batch.shape[0])
+    if batch_size == 0:
+        return np.empty(0, dtype=np.int64)
+
+    num_powers = 7
+    num_provinces = 256
+    _tw_int = max(int(trial_weight), 1)
+    _tw = float(trial_weight) if trial_weight else 1.0
+    near_end_factor = float(state.g_near_end_game_factor)
+
+    enemy_weight = 50
+    ally_weight = 50
+    if near_end_factor >= 3.0 and int(state.sc_count[own_power]) > 2:
+        if near_end_factor < 5.0:
+            enemy_weight, ally_weight = 80, 70
+        elif near_end_factor >= 6.0:
+            enemy_weight, ally_weight = 120, 100
+        else:
+            enemy_weight, ally_weight = 100, 90
+
+    main_score = np.full((batch_size, num_powers), 5000.0, dtype=np.float64)
+    enemy_penalty = np.zeros((batch_size, num_powers), dtype=np.float64)
+    ally_affinity = np.zeros((batch_size, num_powers), dtype=np.float64)
+
+    key_weights = (
+        key_weight_batch[:, :num_powers, :num_provinces].astype(
+            np.float64, copy=False
+        )
+        + key_weight_flt_batch[:, :num_powers, :num_provinces].astype(
+            np.float64, copy=False
+        )
+    )
+    prov_move_count = np.sum(key_weights, axis=1)
+    pressure_rows = (
+        mc_pressure_batch[:, :num_powers, :num_provinces].astype(
+            np.float64, copy=False
+        )
+        + mc_fleet_pressure_batch[:, :num_powers, :num_provinces].astype(
+            np.float64, copy=False
+        )
+    )
+    threat_score = np.zeros(
+        (batch_size, num_powers, num_provinces), dtype=np.float64
+    )
+    for outer_power in range(num_powers):
+        eligible = [
+            inner_power for inner_power in range(num_powers)
+            if inner_power != outer_power
+            and int(state.g_relation_score[outer_power, inner_power]) < 10
+        ]
+        if not eligible:
+            continue
+        selected = pressure_rows[:, eligible, :]
+        if near_end_factor <= 5.0:
+            threat_score[:, outer_power, :] = np.maximum(
+                np.max(selected, axis=1), 0.0
+            )
+        else:
+            threat_score[:, outer_power, :] = np.sum(selected, axis=1)
+
+    occupied = np.zeros(num_provinces, dtype=bool)
+    occupied_provinces = [
+        int(prov) for prov in state.unit_info
+        if 0 <= int(prov) < num_provinces
+    ]
+    if occupied_provinces:
+        occupied[occupied_provinces] = True
+    own_threat = threat_score[:, own_power, :]
+    own_pressure = mc_pressure_batch[:, own_power, :num_provinces]
+    eligible_empty = (
+        (~occupied)[None, :] & (own_threat > 0.0) & (own_pressure > 0.0)
+    )
+    near_band = eligible_empty & (
+        (own_pressure - own_threat) < float(trial_weight)
+    )
+    strong_pressure = near_band & (own_threat * 3 < own_pressure * 2)
+    weaker_pressure = near_band & ~strong_pressure & (own_threat < own_pressure)
+    unequal_pressure = (
+        near_band & ~strong_pressure & ~weaker_pressure
+        & (own_pressure != own_threat)
+    )
+    far_band = eligible_empty & ~near_band
+    enemy_penalty[:, own_power] += (
+        np.count_nonzero(strong_pressure, axis=1) * 10
+        + np.count_nonzero(weaker_pressure, axis=1) * 5
+        - np.count_nonzero(unequal_pressure, axis=1) * 10
+        + np.count_nonzero(far_band, axis=1) * 20
+    )
+
+    premium_mask = (
+        (state.g_attack_history[:num_powers, :num_provinces] > 10)
+        & (state.g_sc_ownership[:num_powers, :num_provinces] == 0)
+        & (state.g_threat_level[:num_powers, :num_provinces] > 0)
+    )
+    for score_table, weight_batch in (
+            (state.final_score_set, key_weight_batch),
+            (state.final_score_set_flt, key_weight_flt_batch)):
+        base_scores = score_table[:num_powers, :num_provinces].astype(
+            np.int64, copy=False
+        )
+        weights = weight_batch[:, :num_powers, :num_provinces].astype(
+            np.int64, copy=False
+        )
+        weighted_scores = weights * base_scores[None, :, :]
+        main_score += np.sum(
+            weighted_scores // _tw_int, axis=2, dtype=np.int64
+        )
+        premium = ((weighted_scores * 7) // 20) // _tw_int
+        main_score += np.sum(
+            np.where(premium_mask[None, :, :], premium, 0),
+            axis=2,
+            dtype=np.int64,
+        )
+
+    for prov, unit_data in state.unit_info.items():
+        unit_power = int(unit_data.get('power', -1))
+        if unit_power < 0 or not 0 <= int(prov) < num_provinces:
+            continue
+        for outer_power in range(num_powers):
+            if outer_power == unit_power:
+                continue
+            if float(state.g_own_reach_score[outer_power, prov]) <= 0:
+                continue
+            trust_hi = int(state.g_ally_trust_score_hi[outer_power, unit_power])
+            trust_lo = int(state.g_ally_trust_score[outer_power, unit_power])
+            if trust_hi < 1 and (trust_hi < 0 or trust_lo < 3):
+                ally_affinity[:, outer_power] -= 10
+            else:
+                ally_affinity[
+                    threat_score[:, outer_power, prov] > 0,
+                    outer_power,
+                ] += 5
+
+    local_a808 = np.zeros(
+        (batch_size, num_powers, num_provinces), dtype=np.float64
+    )
+    for prov in sorted(getattr(state, 'water_provinces', ())):
+        for score_table, source_weights in (
+                (state.final_score_set, key_weight_batch),
+                (state.final_score_set_flt, key_weight_flt_batch)):
+            for eval_power in range(num_powers):
+                source_weight = source_weights[:, eval_power, prov].astype(
+                    np.int64, copy=False
+                )
+                source_active = source_weight > 0
+                if not np.any(source_active):
+                    continue
+                base_score = (
+                    (int(score_table[eval_power, prov]) + 50) * source_weight
+                ) // _tw_int
+                for adj_prov in state.fleet_adj_matrix.get(prov, []):
+                    adjacent_weight = key_weight_batch[
+                        :, eval_power, adj_prov
+                    ].astype(np.int64, copy=False)
+                    active = source_active & (adjacent_weight > 0)
+                    if not np.any(active):
+                        continue
+                    owns_adjacent_sc = (
+                        int(state.g_board_sc_ownership[
+                            eval_power, adj_prov
+                        ]) == 1
+                    )
+                    factor = 0.1 if owns_adjacent_sc else 0.05
+                    cap = 20.0 if owns_adjacent_sc else 10.0
+                    new_value = (
+                        adjacent_weight * base_score * factor
+                    ) / _tw_int
+                    destination = local_a808[:, eval_power, adj_prov]
+                    destination[active] = np.maximum(
+                        destination[active],
+                        np.minimum(new_value[active], cap),
+                    )
+
+    press_flag = int(getattr(state, 'g_press_flag', 0))
+    for prov, unit_data in state.unit_info.items():
+        prov = int(prov)
+        unit_power = int(unit_data.get('power', -1))
+        unit_type = unit_data.get('type', 'A')
+        if not 0 <= prov < num_provinces:
+            continue
+        moved = prov_move_count[:, prov]
+        for power in range(num_powers):
+            reach_at = float(state.g_unit_province_reach[power, prov])
+            if unit_power == power:
+                if float(state.g_enemy_reach_score[power, prov]) <= 0:
+                    continue
+                main_score[:, power] -= reach_at
+                moving = np.isin(order_type_batch[:, prov], (2, 6))
+                if not np.any(moving):
+                    continue
+                destinations = order_dest_batch[:, prov].astype(
+                    np.int64, copy=False
+                )
+                valid_dest = moving & (destinations >= 0) & (
+                    destinations < num_provinces
+                )
+                if not np.any(valid_dest) or press_flag != 0:
+                    continue
+                score_table = (
+                    state.final_score_set_flt
+                    if unit_type in ('F', 'FLT')
+                    else state.final_score_set
+                )
+                score_dest = np.zeros(batch_size, dtype=np.float64)
+                score_dest[valid_dest] = score_table[
+                    power, destinations[valid_dest]
+                ]
+                score_src = float(score_table[power, prov])
+                rewarded = valid_dest & (score_src * 0.85 < score_dest)
+                main_score[rewarded, power] += (
+                    ((_tw - moved[rewarded]) * reach_at) / _tw
+                )
+            else:
+                if float(state.g_own_reach_score[power, prov]) <= 0:
+                    continue
+                main_score[:, power] += reach_at
+                if int(state.g_friendly_unit_flag[power, prov]) == 0:
+                    delta = ((_tw - moved) * reach_at) / _tw
+                    main_score[:, power] -= delta
+
+    aggregate_score = main_score[:, own_power].copy()
+    desirability = np.zeros((batch_size, num_powers), dtype=np.float64)
+    fleet_totals = np.sum(local_a808, axis=2)
+    deceit_level = int(getattr(state, 'g_deceit_level', 0))
+    best_ally = int(getattr(state, 'g_best_ally_slot0', -1))
+    albert_power = int(getattr(state, 'albert_power_idx', -1))
+    for power in range(num_powers):
+        if power == own_power:
+            continue
+        main_score[:, power] += fleet_totals[:, power]
+        main_score[:, power] -= enemy_penalty[:, power]
+        main_score[:, power] += ally_affinity[:, power]
+
+        trust_score = int(state.g_ally_trust_score[own_power, power])
+        trust_hi = int(state.g_ally_trust_score_hi[own_power, power])
+        relation_score = int(state.g_relation_score[own_power, power])
+        if ((trust_score == 0 and trust_hi == 0)
+                or (trust_score == 1 and trust_hi == 0
+                    and relation_score < 11)):
+            score_adj = (2000.0 - main_score[:, power]) * enemy_weight
+            aggregate_score += score_adj
+        elif (
+            (trust_hi >= 0 and (trust_hi > 0 or trust_score != 0)
+             and relation_score > 19)
+            or (trust_hi >= 0 and (trust_hi > 0 or trust_score > 2)
+                and deceit_level > 1)
+        ):
+            if (own_power == albert_power and ally_weight < 51
+                    and power == best_ally and press_flag == 0
+                    and best_ally >= 0):
+                if (int(state.sc_count[own_power]) + 1
+                        < int(state.sc_count[best_ally])):
+                    effective_weight = ally_weight + 20
+                else:
+                    effective_weight = ally_weight + 30
+            else:
+                effective_weight = ally_weight
+            score_adj = (main_score[:, power] - 2000.0) * effective_weight
+            aggregate_score = score_adj
+        else:
+            score_adj = np.zeros(batch_size, dtype=np.float64)
+        desirability[:, power] = score_adj
+
+    state.g_alliance_desirability[:] = desirability[-1]
+    return aggregate_score.astype(np.int64)

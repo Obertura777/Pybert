@@ -19,6 +19,7 @@ _evaluation = __import__(
     fromlist=[
         'snapshot_order_entry', 'restore_order_entry', 'candidate_orders_key',
         'evaluate_order_score', 'evaluate_order_proposal',
+        'insert_candidate_record', '_projected_new_supply_center_count',
     ],
 )
 _trial = __import__(
@@ -38,6 +39,10 @@ restore_order_entry = _evaluation.restore_order_entry
 candidate_orders_key = _evaluation.candidate_orders_key
 evaluate_order_score = _evaluation.evaluate_order_score
 evaluate_order_proposal = _evaluation.evaluate_order_proposal
+insert_candidate_record = _evaluation.insert_candidate_record
+_projected_new_supply_center_count = (
+    _evaluation._projected_new_supply_center_count
+)
 _refresh_order_table = _trial._refresh_order_table
 _rank_candidates_for_power = _analysis._rank_candidates_for_power
 _candidate_rank_threshold = _analysis._candidate_rank_threshold
@@ -368,6 +373,11 @@ def test_pass_a_main_complex_path_matches_decompiled_formula():
     state.g_order_table[province, _F_INCOMING_MOVE + 1] = 2
     state.g_order_table[province, _F_TARGET_PROV] = 3
     state.g_order_table[province, _F_MOVE_HISTORY] = 10
+    # Keep Pass B's later MTO relaxation disabled so this test observes the
+    # Pass-A formula itself.
+    state.g_enemy_presence[0, province] = 1
+    state.g_attack_count[0, province] = 1
+    state.g_order_table[province, _F_SUP_TARGET + 1] = -1
     state.g_order_table[11, _F_TARGET_PROV] = 1
 
     evaluate_order_score(0, state)
@@ -401,6 +411,11 @@ def test_pass_a_main_non_sc_complex_path_includes_field_14_term():
     state.g_order_table[province, _F_INCOMING_MOVE + 1] = 2
     state.g_order_table[province, _F_TARGET_PROV] = 3
     state.g_order_table[province, _F_MOVE_HISTORY] = 10
+    # Keep Pass B's later MTO relaxation disabled so this test observes the
+    # Pass-A formula itself.
+    state.g_enemy_presence[0, province] = 1
+    state.g_attack_count[0, province] = 1
+    state.g_order_table[province, _F_SUP_TARGET + 1] = -1
     state.g_order_table[11, _F_TARGET_PROV] = 1
 
     evaluate_order_score(0, state)
@@ -425,6 +440,24 @@ def test_pass_b_relaxes_move_probability_to_destination_probability():
     evaluate_order_score(0, state)
 
     assert state.g_order_table[source, _F_MOVE_PROB] == 0.4
+
+
+def test_pass_b_min_propagation_does_not_require_equal_destination_counts():
+    state = InnerGameState()
+    source, destination = 10, 11
+    state.g_order_table[source, _F_ORDER_TYPE] = 2
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.g_order_table[source, _F_INCOMING_MOVE] = 1
+    state.g_order_table[source, _F_ORDER_ASGN] = 0
+    state.g_order_table[source, _F_MOVE_PROB] = 0.8
+    state.g_order_table[source, _F_SUP_TARGET + 1] = 0
+    state.g_order_table[destination, _F_INCOMING_MOVE] = 1
+    state.g_order_table[destination, _F_TARGET_PROV] = 2
+    state.g_order_table[destination, _F_MOVE_PROB] = 0.2
+
+    evaluate_order_score(0, state)
+
+    assert state.g_order_table[source, _F_MOVE_PROB] == 0.2
 
 
 def test_pass_b_negative_score_fallback_copies_destination_probability():
@@ -546,6 +579,79 @@ def test_refresh_slots_preserve_complete_candidate_sets():
     assert len(state.g_current_best_order[0]) == 30
     assert all(slot == first_set for slot in state.g_current_best_order[0])
     assert all(len(slot) == 2 for slot in state.g_current_best_order[0])
+    assert all(
+        record is state.g_candidate_record_list[0]
+        for record in state.g_current_best_order_records[0]
+    )
+
+
+def test_refresh_consumes_process_global_msvc_rng():
+    rng = __import__(f'{_pkg_name}.rng', fromlist=['seed', 'getstate'])
+    state = InnerGameState()
+    state.g_candidate_record_list = [
+        {'power': 0, 'orders': [_entry(10, _ORDER_HLD, 10)], 'weight': 100},
+        {'power': 0, 'orders': [_entry(10, _ORDER_MTO, 11)], 'weight': 1},
+    ]
+
+    saved_state = rng.getstate()
+    try:
+        rng.seed(1)
+        initial_state = rng.getstate()
+        _refresh_order_table(state, 0)
+
+        assert rng.getstate() != initial_state
+    finally:
+        rng.setstate(saved_state)
+
+
+def test_projected_new_centres_counts_coordinated_backfill_once_each():
+    state = InnerGameState()
+    gas, spa, por = 10, 11, 12
+    state.sc_provinces = {spa, por}
+    state.unit_info = {
+        gas: {'power': 0, 'type': 'A', 'coast': ''},
+        spa: {'power': 0, 'type': 'A', 'coast': ''},
+    }
+    state.g_order_table[gas, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[gas, _F_DEST_PROV] = spa
+    state.g_order_table[spa, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[spa, _F_DEST_PROV] = por
+
+    assert _projected_new_supply_center_count(0, state) == 2
+
+
+def test_projected_new_centres_excludes_owned_and_enemy_occupied_targets():
+    state = InnerGameState()
+    source, owned, enemy_center = 10, 11, 12
+    state.sc_provinces = {owned, enemy_center}
+    state.unit_info = {
+        source: {'power': 0, 'type': 'A', 'coast': ''},
+        enemy_center: {'power': 1, 'type': 'A', 'coast': ''},
+    }
+    state.g_board_sc_ownership[0, owned] = 1
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = enemy_center
+
+    assert _projected_new_supply_center_count(0, state) == 0
+
+
+def test_order_score_rewards_uncontested_new_supply_center_occupation():
+    def scored_state(already_owned):
+        state = InnerGameState()
+        province = 10
+        state.num_valid_provinces = 11
+        state.sc_provinces = {province}
+        state.unit_info = {
+            province: {'power': 0, 'type': 'A', 'coast': ''},
+        }
+        state.g_order_table[province, _F_ORDER_TYPE] = _ORDER_HLD
+        state.g_order_table[province, _F_SUP_TARGET] = -1
+        state.g_order_table[province, _F_SUP_TARGET + 1] = -1
+        if already_owned:
+            state.g_board_sc_ownership[0, province] = 1
+        return evaluate_order_score(0, state)
+
+    assert scored_state(False) - scored_state(True) == 2030.0
 
 
 def test_refresh_uses_c_complement_threshold_and_final_rand_draw():
@@ -620,3 +726,41 @@ def test_candidate_identity_ignores_snapshot_bookkeeping_fields():
     assert candidate_orders_key(0, [tuple(first)]) == candidate_orders_key(
         0, [tuple(second)]
     )
+
+
+def test_insert_candidate_record_preserves_serialized_key_tree_order():
+    state = InnerGameState()
+    later_key = {
+        'power': 0, 'orders': [_entry(20, _ORDER_HLD, 20)], 'score': 20,
+    }
+    earlier_key = {
+        'power': 0, 'orders': [_entry(10, _ORDER_HLD, 10)], 'score': 10,
+    }
+
+    insert_candidate_record(state, later_key)
+    insert_candidate_record(state, earlier_key)
+
+    assert state.g_candidate_record_list == [earlier_key, later_key]
+
+
+def test_insert_candidate_record_duplicate_returns_existing_unchanged():
+    state = InnerGameState()
+    original = {
+        'power': 0, 'orders': [_entry(10, _ORDER_HLD, 10)], 'score': 100,
+    }
+    duplicate = {
+        'power': 0, 'orders': [_entry(10, _ORDER_HLD, 10)], 'score': 999,
+    }
+    inserted, record = insert_candidate_record(state, original)
+    before = list(record['trial_scores'])
+
+    inserted_again, returned = insert_candidate_record(
+        state, duplicate, trial_idx=5
+    )
+
+    assert inserted
+    assert not inserted_again
+    assert returned is record
+    assert returned['score'] == 100
+    assert returned['trial_scores'] == before
+    assert state.g_candidate_record_list == [record]

@@ -321,13 +321,13 @@ if __name__ == "__main__":
     p.add_argument(
         "--press",
         action="store_true",
-        default=True,
+        default=False,
         help="Enable press (messaging) for all bots. "
         "Without this flag the game is created with NO_PRESS.",
     )
     p.add_argument(
         "--pause-phase",
-        default="W1904A",
+        default="W1910A",
         help="Short phase name (e.g. 'W1902A') at which to pause "
         "the game and dump its state to games/. Default: W1904A.",
     )

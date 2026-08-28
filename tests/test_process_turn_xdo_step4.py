@@ -107,3 +107,32 @@ def test_xdo_sup_hld_populates_step4_hold_container():
 
     assert _handle_xdo(state, tokens)
     assert state.g_xdo_order_hold_by_power[OWN] == {OTHER}
+
+
+def test_xdo_mto_populates_deviate_move_expectation():
+    state = InnerGameState()
+    state.prov_to_id = {'LON': SRC, 'BUR': DEST}
+    state.g_xdo_candidate_list = [{'power': 0}]
+    tokens = [
+        'XDO', '(',
+        '(', 'ENG', 'AMY', 'LON', ')', 'MTO', 'BUR',
+        ')',
+    ]
+
+    assert _handle_xdo(state, tokens)
+    assert state.g_xdo_mto_opp_score[0] == {SRC: DEST}
+
+
+def test_xdo_sup_mto_populates_deviate_support_expectation():
+    state = InnerGameState()
+    state.prov_to_id = {'LON': SRC, 'PAR': OTHER, 'BUR': DEST}
+    state.g_xdo_candidate_list = [{'power': 0}]
+    tokens = [
+        'XDO', '(',
+        '(', 'ENG', 'AMY', 'LON', ')',
+        'SUP', '(', 'ENG', 'AMY', 'PAR', ')', 'MTO', 'BUR',
+        ')',
+    ]
+
+    assert _handle_xdo(state, tokens)
+    assert state.g_xdo_sup_attacker_score[0] == {SRC: (OTHER, DEST)}

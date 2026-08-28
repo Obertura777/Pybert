@@ -20,6 +20,16 @@ from ..moves import build_support_proposals
 
 _dbg_log = logging.getLogger("pybert.scoring_dbg")
 
+
+# ScoreOrderCandidates normalizes a best province key to 1000 + 15.  Gaining
+# a supply centre is worth more than merely occupying one province: it also
+# buys another unit at the following adjustment.  The recovered evaluator
+# accounts for the positional score but has no Python-side projection of that
+# future unit, which made an empty owned home centre worth ~1015 while an army
+# poised to capture SPA/POR was worth only the destination's small positional
+# score.  Two normalized province values represent those two durable assets.
+_NEW_SUPPLY_CENTER_OCCUPATION_BONUS = 2.0 * 1015.0
+
 from ._flags import (
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,
     _F_MOVE_PROB, _F_UNIT_REACH_SCORE,
@@ -107,6 +117,65 @@ def candidate_orders_key(power: int, orders) -> tuple:
             continue
         semantic_orders.append(tuple(entry[:5]))
     return int(power), tuple(sorted(semantic_orders))
+
+
+def candidate_record_key(record: dict) -> tuple:
+    """Return and cache a candidate record's immutable semantic order key.
+
+    Candidate order snapshots are fixed when ``InsertCandidateRecord`` creates
+    the record; later scoring rounds mutate scores and rank metadata only.  C
+    retains a direct pointer to the tree node, whereas the old Python port
+    repeatedly rebuilt and sorted the same tuple key to rediscover that node.
+    Keeping the key on the record preserves the public list/dict model while
+    making identity lookup proportional to the number of selected slots, not
+    the number of orders times every candidate-rescore pass.
+    """
+    cached = record.get('_orders_key')
+    if cached is None:
+        cached = candidate_orders_key(
+            int(record.get('power', -1)), record.get('orders', [])
+        )
+        record['_orders_key'] = cached
+    return cached
+
+
+def _projected_new_supply_center_count(
+    power_idx: int,
+    state: InnerGameState,
+) -> int:
+    """Count unowned supply centres occupied by this complete order set.
+
+    Candidate evaluation is intentionally order-set based.  Looking at one
+    order at a time cannot distinguish ``GAS-SPA, SPA-POR`` (two projected
+    captures) from vacating SPA without a replacement.  Only uncontested
+    destinations are credited here; attacks on an enemy-occupied centre still
+    rely on the existing threat/support evaluator rather than receiving a
+    speculative capture reward.
+    """
+    ot = state.g_order_table
+    projected_occupied: set[int] = set()
+
+    for source, unit in state.unit_info.items():
+        if int(unit.get('power', -1)) != power_idx:
+            continue
+        order_type = int(ot[source, _F_ORDER_TYPE])
+        if order_type in (_ORDER_MTO, _ORDER_CTO):
+            destination = int(ot[source, _F_DEST_PROV])
+            occupant = state.unit_info.get(destination)
+            if (occupant is not None
+                    and int(occupant.get('power', -1)) != power_idx):
+                continue
+            projected_occupied.add(destination)
+        elif order_type != 0:
+            # HLD, SUP and CVY keep the unit in its current province.
+            projected_occupied.add(int(source))
+
+    return sum(
+        1
+        for province in projected_occupied
+        if (province in state.sc_provinces
+            and int(state.g_board_sc_ownership[power_idx, province]) == 0)
+    )
 
 
 def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
@@ -303,17 +372,24 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
                     (attack == 0 and (history < 11 or enemy == 1))
                     or support_hi >= 0
                 )
-                if (may_relax
-                        and int(ot[dest, _F_INCOMING_MOVE])
-                        == int(ot[dest, _F_TARGET_PROV])):
-                    dest_attack = int(state.g_attack_count[power_idx, dest])
-                    dest_history = int(state.g_attack_history[power_idx, dest])
-                    dest_enemy = int(state.g_enemy_presence[power_idx, dest])
-                    if (dest_attack > 0
-                            or (dest_history > 10 and dest_enemy == 0)):
-                        ot[prov, _F_MOVE_PROB] = 0.3
-                    elif (float(ot[dest, _F_MOVE_PROB])
-                          < float(ot[prov, _F_MOVE_PROB])):
+                if may_relax:
+                    forced_contested = False
+                    if (int(ot[dest, _F_INCOMING_MOVE])
+                            == int(ot[dest, _F_TARGET_PROV])):
+                        dest_attack = int(state.g_attack_count[power_idx, dest])
+                        dest_history = int(state.g_attack_history[power_idx, dest])
+                        dest_enemy = int(state.g_enemy_presence[power_idx, dest])
+                        if (dest_attack > 0
+                                or (dest_history > 10 and dest_enemy == 0)):
+                            ot[prov, _F_MOVE_PROB] = 0.3
+                            # C jumps to LAB_00437bfa, bypassing the sibling
+                            # minimum-propagation comparison below.
+                            forced_contested = True
+                    if (not forced_contested
+                            and float(ot[dest, _F_MOVE_PROB])
+                            < float(ot[prov, _F_MOVE_PROB])):
+                        # EvaluateOrderScore.c:294-297: this is a sibling of
+                        # the destination-count equality, not nested inside it.
                         ot[prov, _F_MOVE_PROB] = ot[dest, _F_MOVE_PROB]
 
             # C tests field 7's sign as the high dword of the signed field
@@ -601,6 +677,17 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> float:
         if cut_risk != 0.0:
             local_120 += cut_risk * 100.0
 
+    # The positional score maps strongly value already-controlled centres but
+    # do not project the ownership update caused by the candidate orders.  In
+    # particular, a fall army on neutral SPA was repeatedly sent back to MAR,
+    # and GAS-SPA was evaluated independently from SPA-POR, so France could
+    # wander for years without banking either centre.  Credit the complete
+    # set for each new, uncontested SC occupation.  Applying the value to the
+    # complete set naturally rewards backfills instead of hard-coding any
+    # country or province.
+    new_centres = _projected_new_supply_center_count(power_idx, state)
+    local_120 += new_centres * _NEW_SUPPLY_CENTER_OCCUPATION_BONUS
+
     return local_120
 
 
@@ -610,20 +697,42 @@ def insert_candidate_record(state: InnerGameState, candidate: dict,
 
     The C function maintains a sorted BST keyed on the order combination so
     that two MC trials producing identical orders for a power share one record.
-    On a duplicate the existing node's per-trial score slot is updated rather
-    than discarding the new score (matching the TrialEvaluateOrders field-copy
-    that follows InsertCandidateRecord in EvaluateOrderProposal.c:918-920).
+    Forward iteration is lexicographic by the serialized SUB key.  A duplicate
+    returns the existing node unchanged; ``TrialEvaluateOrders`` constructs the
+    proposed value *before* insertion, and C never copies it over an existing
+    node.
+
+    Python keeps the records in that same key order.  This matters even though
+    most consumers re-sort by score: C's stable equal-score insertion inherits
+    candidate-tree order, not Monte-Carlo discovery order.
     Returns (inserted, record): inserted=False means an identical order set
     already existed and record is that existing entry.
     """
-    key = candidate_orders_key(candidate['power'], candidate['orders'])
-    key_map: dict = state.__dict__.setdefault('_candidate_key_map', {})
+    import bisect
+
+    key = candidate_record_key(candidate)
+    key_map = state.__dict__.get('_candidate_key_map')
+    ordered_keys = state.__dict__.get('_candidate_keys')
+    if (not isinstance(key_map, dict)
+            or not isinstance(ordered_keys, list)
+            or len(ordered_keys) != len(state.g_candidate_record_list)
+            or len(key_map) != len(state.g_candidate_record_list)):
+        # The C tree is authoritative and self-indexing.  Rebuild Python's
+        # acceleration structures if a direct caller replaced/pre-populated
+        # the public list or supplied an older index-valued key map.
+        keyed_records = sorted([
+            (candidate_record_key(record), record)
+            for record in state.g_candidate_record_list
+        ], key=lambda pair: pair[0])
+        state.g_candidate_record_list[:] = [record for _, record in keyed_records]
+        ordered_keys = [record_key for record_key, _ in keyed_records]
+        key_map = {
+            record_key: record for record_key, record in keyed_records
+        }
+        state.__dict__['_candidate_keys'] = ordered_keys
+        state.__dict__['_candidate_key_map'] = key_map
     if key in key_map:
-        existing = state.g_candidate_record_list[key_map[key]]
-        ts = existing['trial_scores']
-        if trial_idx < len(ts):
-            ts[trial_idx] = candidate['score']
-        return False, existing
+        return False, key_map[key]
     # Pre-allocate 30-slot array (matches C's 30-element per-trial arrays in
     # the candidate record struct copied by TrialEvaluateOrders).
     # EvaluateOrderProposal zeroes all three 30-slot arrays before constructing
@@ -640,8 +749,10 @@ def insert_candidate_record(state: InnerGameState, candidate: dict,
     candidate.setdefault('pareto_flag', 0)
     candidate.setdefault('weight', 0.0)
     candidate.setdefault('output_score', 0.0)
-    key_map[key] = len(state.g_candidate_record_list)
-    state.g_candidate_record_list.append(candidate)
+    position = bisect.bisect_left(ordered_keys, key)
+    state.g_candidate_record_list.insert(position, candidate)
+    ordered_keys.insert(position, key)
+    key_map[key] = candidate
     return True, candidate
 
 

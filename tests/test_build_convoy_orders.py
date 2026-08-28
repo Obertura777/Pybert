@@ -31,7 +31,9 @@ _bot_orders = __import__(
 InnerGameState      = _state.InnerGameState
 build_convoy_orders = _convoy.build_convoy_orders
 register_convoy_fleet = _convoy.register_convoy_fleet
+score_convoy_fleet = _convoy.score_convoy_fleet
 _enumerate_convoy_chains_for_src = _convoy._enumerate_convoy_chains_for_src
+_populate_convoy_routes_for_src = _convoy._populate_convoy_routes_for_src
 _build_order_seq_from_table = _bot_orders._build_order_seq_from_table
 
 _F_ORDER_TYPE    = _constants._F_ORDER_TYPE
@@ -56,6 +58,22 @@ STP = 50   # St. Petersburg (coastal, army destination)
 ENG = 60   # English Channel (water, unused fleet)
 
 POWER_ENG = 0  # England
+
+
+def test_score_convoy_fleet_uses_descending_stable_tree_order():
+    state = InnerGameState()
+
+    score_convoy_fleet(state, 30, 10)
+    score_convoy_fleet(state, 20, 30)
+    score_convoy_fleet(state, 10, 20)
+    score_convoy_fleet(state, 90, 20)
+
+    assert state.g_convoy_fleet_candidates == [
+        (30, 20),
+        (20, 10),
+        (20, 90),
+        (10, 30),
+    ]
 
 
 def test_route_enumerator_uses_only_own_fleets_and_land_destinations():
@@ -89,6 +107,93 @@ def test_route_enumerator_rejects_fleets_on_coastal_land():
     assert _enumerate_convoy_chains_for_src(state, LON) == {}
 
 
+def test_route_enumerator_accepts_occupied_coastal_landing():
+    state = InnerGameState()
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        NTH: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+        STP: {'power': 1, 'type': 'F', 'coast': 'NC'},
+    }
+    state.water_provinces = frozenset({NTH})
+    state.adj_matrix = {LON: [NTH]}
+    state.fleet_adj_matrix = {NTH: [LON, STP]}
+
+    assert _enumerate_convoy_chains_for_src(
+        state, LON, eligible_fleets=[NTH]
+    ) == {STP: (NTH,)}
+
+
+def test_route_enumerator_does_not_overwrite_direct_army_destination():
+    state = InnerGameState()
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        NTH: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+    }
+    state.water_provinces = frozenset({NTH})
+    # STP is both directly army-reachable and adjacent to the convoy fleet.
+    # C already wrote route depth zero for it, so the BFS's `depth == -1`
+    # landing gate must leave it as a plain MTO candidate.
+    state.adj_matrix = {LON: [NTH, STP]}
+    state.fleet_adj_matrix = {NTH: [LON, STP]}
+
+    assert _enumerate_convoy_chains_for_src(
+        state, LON, eligible_fleets=[NTH]
+    ) == {}
+
+
+def test_route_enumerator_uses_live_candidate_tree_order_and_membership():
+    state = InnerGameState()
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        NTH: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+        NWG: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+    }
+    state.water_provinces = frozenset({NTH, NWG})
+    state.adj_matrix = {LON: [NTH, NWG]}
+    state.fleet_adj_matrix = {
+        NTH: [LON, STP],
+        NWG: [LON, STP],
+    }
+
+    # Both routes have depth one.  C walks its candidate tree, so NWG wins
+    # even though the army adjacency happens to list NTH first.
+    assert _enumerate_convoy_chains_for_src(
+        state, LON, eligible_fleets=[NWG, NTH]
+    ) == {STP: (NWG,)}
+    # A fleet absent from the live tree cannot participate at all.
+    assert _enumerate_convoy_chains_for_src(
+        state, LON, eligible_fleets=[NTH]
+    ) == {STP: (NTH,)}
+
+
+def test_trial_route_population_replaces_stale_prepass_route():
+    state = InnerGameState()
+    state.unit_info = {
+        LON: {'power': POWER_ENG, 'type': 'A', 'coast': ''},
+        NTH: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+        NWG: {'power': POWER_ENG, 'type': 'F', 'coast': ''},
+    }
+    state.water_provinces = frozenset({NTH, NWG})
+    state.adj_matrix = {LON: [NTH, NWG]}
+    state.fleet_adj_matrix = {
+        NTH: [LON, STP],
+        NWG: [LON, STP],
+    }
+    state.g_convoy_route = {
+        LON: {STP: {'fleet_count': 1, 'fleets': [NWG]}}
+    }
+
+    routes = _populate_convoy_routes_for_src(
+        state, LON, eligible_fleets=[NTH]
+    )
+
+    assert routes == {STP: (NTH,)}
+    assert state.g_convoy_route[LON][STP] == {
+        'fleet_count': 1,
+        'fleets': [NTH],
+    }
+
+
 def _make_state(army_src, army_dst, fleet_provs, adj_map):
     """Build a minimal InnerGameState for convoy testing."""
     state = InnerGameState()
@@ -118,7 +223,16 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     }
 
     # Seed scores so we can verify they propagate.
-    state.g_candidate_bfs[POWER_ENG, 0, army_dst] = 42.0  # army inherits this
+    #
+    # The two candidate containers are seeded with DIFFERENT values on purpose.
+    # C (BuildConvoyOrders.c:42-44) reads the per-power province SCORE map at
+    # `this + power*0xc + 0x4000` — final_score_set, the same set
+    # BuildOrder_MTO.c:29 uses — NOT the BFS round-0 set at
+    # `this + power*0x78 + 0x361c` (g_candidate_bfs).  Seeding both lets these
+    # tests fail loudly if the read ever regresses to the BFS container, whose
+    # values are the raw unnormalized seed and are orders of magnitude larger.
+    state.final_score_set[POWER_ENG, army_dst] = 42.0    # army inherits this
+    state.g_candidate_bfs[POWER_ENG, 0, army_dst] = 999999.0  # must NOT be used
 
     for fp in fleet_provs:
         # C seeds each convoying fleet from the PER-POWER max-province score
@@ -138,6 +252,17 @@ def _make_state(army_src, army_dst, fleet_provs, adj_map):
     state.g_enemy_reach_score = np.zeros((7, 256), dtype=np.float64)
 
     return state
+
+
+def test_convoy_fleet_uses_shared_token_maximum():
+    state = _make_state(LON, STP, [NTH], {
+        LON: [NTH], NTH: [LON, STP], STP: [NTH],
+    })
+    state.g_max_prov_score_per_power[POWER_ENG, NTH] = 73
+
+    build_convoy_orders(state, POWER_ENG, LON, STP)
+
+    assert state.g_convoy_chain_score[NTH] == 73
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -205,6 +330,8 @@ class TestSingleFleetConvoy:
     def test_army_score_propagated(self, state):
         # C: g_ConvoyChainScore[army_province * 0x1e] where the Ghidra local
         # `army_province` is param_3 = the DESTINATION, not the source.
+        # The value comes from final_score_set (the +0x4000 map), not from the
+        # BFS round-0 set — the fixture seeds 999999.0 there to catch that.
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_convoy_chain_score[STP] == 42.0
         assert state.g_order_score_hi[STP] == 42.0

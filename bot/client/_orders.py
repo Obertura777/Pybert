@@ -55,9 +55,11 @@ from ...heuristics import (
     snapshot_province_state,
 )
 from ...dispatch import validate_and_dispatch_order
+from ...moves import compute_safe_reach, enumerate_hold_orders
 
 from .._shared import _POWER_NAMES
 from ..orders import (
+    _init_position_for_orders,
     _populate_retreat_orders,
     _format_retreat_commands,
     _build_order_seq_from_table,
@@ -76,6 +78,18 @@ from ..strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _begin_turn_timing(state: InnerGameState, now: float | None = None) -> None:
+    """Reset the C move-timer state and establish this phase's deadline."""
+    if now is None:
+        now = time.time()
+    state.g_turn_start_time = float(now)
+    state.mtl_expired = 0
+    move_limit = int(getattr(state, 'g_move_time_limit_sec', 0))
+    state.g_turn_deadline = (
+        float(now) + move_limit if move_limit > 0 else 0.0
+    )
 
 
 def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
@@ -142,6 +156,7 @@ def _prepare_proposal_orders_for_turn(state: InnerGameState) -> None:
     state.g_alliance_orders = {}
     state.g_candidate_record_list = []
     state.__dict__.pop('_candidate_key_map', None)
+    state.__dict__.pop('_candidate_keys', None)
 
     if getattr(state, 'g_minimal_press_mode', 0) == 1:
         return
@@ -154,6 +169,149 @@ def _prepare_proposal_orders_for_turn(state: InnerGameState) -> None:
             "score_order_candidates_from_broadcast raised; continuing"
             " with empty g_general_orders/g_alliance_orders"
         )
+
+
+def _reset_send_gof_order_state(state: InnerGameState) -> None:
+    """ResetPerTrialState call at send_GOF.c:54."""
+    for province in state.unit_info:
+        state.g_order_table[province, _F_ORDER_TYPE] = 0.0
+    for unit in getattr(state, 'dislodged_unit_info', {}).values():
+        unit['order_type'] = 0
+    state.g_build_order_list.clear()
+    state.g_build_order_list_size = 0
+    state.g_waive_count = 0
+
+
+def _run_send_gof_candidate_pass(
+    state: InnerGameState,
+    phase: str,
+    own_power_idx: int,
+    num_powers: int,
+) -> list:
+    """Run send_GOF's snapshot/scoring/ProcessTurn block.
+
+    GenerateAndSubmitOrders calls this only after PostProcessOrders, alliance
+    updates, HOSTILITY/SetGamePhase(3), and NormalizeInfluenceMatrix. That is
+    the ordering of the call to send_GOF in the executable.
+    """
+    movement_phase = phase in ('SPR', 'FAL')
+
+    snapshot_province_state(state)
+    _reset_send_gof_order_state(state)
+
+    # send_GOF.c:56-69 scores SUM like SPR and AUT like FAL. WIN uses the
+    # spring weights too, but its own-power candidate scoring must happen only
+    # after build/remove candidates have been populated by the caller.
+    if phase in ('SPR', 'SUM', 'FAL', 'AUT'):
+        fall_weights = phase in ('FAL', 'AUT')
+        move_weight = (state.g_fal_move_weight if fall_weights
+                       else state.g_spr_move_weight)
+        build_weight = (state.g_fal_build_weight if fall_weights
+                        else state.g_spr_build_weight)
+        round_weights = (state.g_fal_round_weights if fall_weights
+                         else state.g_spr_round_weights)
+        try:
+            score_provinces(state, move_weight, build_weight, own_power_idx)
+        except Exception:
+            logger.exception(
+                "score_provinces raised; continuing with default scores"
+            )
+        try:
+            score_order_candidates_all_powers(
+                state, round_weights, own_power_idx
+            )
+        except Exception:
+            logger.exception(
+                "score_order_candidates_all_powers raised; continuing"
+                " with empty final_score_set"
+            )
+
+    # Retreat and WIN branches never enter send_GOF's ten-round ProcessTurn
+    # arm; they select RTO/DSB or BLD/REM directly from the scored key trees.
+    if not movement_phase:
+        return []
+
+    # send_GOF.c:97-98: both routines consume the final score trees populated
+    # immediately above.  Running them from GenerateOrders meant they observed
+    # the prior turn's scores (or construction-time zeroes).
+    compute_safe_reach(state)
+    for power in range(num_powers):
+        enumerate_hold_orders(state, power)
+
+    _prepare_proposal_orders_for_turn(state)
+    trial_scale = int(getattr(state, 'g_trial_scale', 260))
+    press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
+    unit_count = getattr(
+        state, 'g_unit_count', np.zeros(num_powers, dtype=np.int32)
+    )
+
+    mtl_fired = False
+    for _mc_round in range(10):
+        if mtl_fired:
+            break
+        for power in range(num_powers):
+            if check_time_limit(state):
+                mtl_fired = True
+                break
+            if int(unit_count[power]) <= 0:
+                continue
+            if press_cap == 0 and power != own_power_idx:
+                n_trials = 1
+            else:
+                n_trials = (
+                    int(unit_count[power]) * trial_scale + 10
+                ) // 10
+
+            state.g_ring_convoy_enabled = 0
+            process_turn(state, power, num_trials=n_trials)
+
+            support_opportunities = getattr(
+                state, 'g_support_opportunities_set', None
+            )
+            if not support_opportunities:
+                continue
+            for opportunity in support_opportunities:
+                if check_time_limit(state):
+                    mtl_fired = True
+                    break
+                if int(opportunity.get('power', -1)) != power:
+                    continue
+                state.g_ring_prov_a = int(
+                    opportunity.get('mover_prov', -1)
+                )
+                state.g_ring_prov_b = int(
+                    opportunity.get('target_prov', -1)
+                )
+                state.g_ring_prov_c = int(
+                    opportunity.get('supporter_prov', -1)
+                )
+                state.g_ring_convoy_enabled = 1
+                re_trials = max(int(state.sc_count[power]), 1)
+                if press_cap == 0 and power != own_power_idx:
+                    re_trials = 1
+                process_turn(state, power, num_trials=re_trials)
+
+    state.g_current_round += 1
+
+    broadcast = getattr(state, 'g_broadcast_list', None)
+    watermark = int(getattr(state, 'g_broadcast_list_watermark', 0))
+    no_press = int(getattr(state, 'g_minimal_press_mode', 0)) == 1
+    if bool(broadcast) and watermark > 0 and not no_press:
+        try:
+            from ...heuristics import apply_press_corroboration_penalty
+            penalised = apply_press_corroboration_penalty(state)
+            if penalised:
+                logger.debug(
+                    "Press corroboration: penalised %d candidate(s) for"
+                    " disagreeing with received XDOs", penalised,
+                )
+        except Exception:
+            logger.exception(
+                "apply_press_corroboration_penalty raised; continuing"
+                " without press-corroboration penalty"
+            )
+
+    return state.g_candidate_record_list
 
 
 class _OrdersMixin:
@@ -189,14 +347,15 @@ class _OrdersMixin:
             5d  Phase checks: increment g_deceit_level (SPR), AnalyzePosition,
                 MOVE_ANALYSIS (year-1 FAL, press-off, allied).
             5e  Clear g_baed6d sentinel.
-            5f  GenerateOrders + MC selection (process_turn).
+            5f  GenerateOrders.
             5g  PostProcessOrders (SPR/FAL).
             5h  ComputePress (if press active).
             5i  Alliance block (STABBED / DEVIATE_MOVE / FRIENDLY / HOSTILITY /
                 PhaseHandler 1–3).
-            5j  BuildAndSendSUB (movement phases) + draw vote;
-                or HOSTILITY + PhaseHandler(3) (retreat/adjustment).
-          Step 6  CleanupTurn + GOF.
+            5j  HOSTILITY / PhaseHandler(3), NormalizeInfluenceMatrix, then
+                send_GOF's SnapshotProvinceState + scoring + ProcessTurn or
+                retreat/adjustment selection.
+          Step 6  BuildAndSendSUB / phase-specific orders + GOF.
         """
         own_power_idx = (
             _POWER_NAMES.index(self.power_name)
@@ -212,8 +371,17 @@ class _OrdersMixin:
         # to albert_power_idx via getattr, which was correct by accident.
         self.state.g_albert_power = own_power_idx
 
-        # Step 1 — record turn start timestamp (DAT_00ba2880 = __time64(0))
-        self.state.g_turn_start_time = time.time()
+        # Albert's callback table places InitPositionForOrders alongside
+        # GenerateAndSubmitOrders. Its topology/history resets are position
+        # initialization, not per-turn work, so run it once after the first
+        # synchronized board has supplied SC control and map metadata.
+        if not getattr(self.state, 'g_position_orders_initialized', False):
+            _init_position_for_orders(self.state)
+            self.state.g_position_orders_initialized = True
+
+        # Step 1 — record turn start timestamp and arm the MTL timer.  HST
+        # supplies a duration, not a once-per-connection absolute deadline.
+        _begin_turn_timing(self.state)
 
         # Step 2 — reset per-turn scalar flags
         # Mirrors: DAT_0062cc64 / ba2858 / ba285c / baed46 / baed5e / baed47 = 0
@@ -337,210 +505,13 @@ class _OrdersMixin:
         ):
             _move_analysis(self.state)
 
-        # 5e — SnapshotProvinceState (Source/bot/SnapshotProvinceState.c)
-        # Must run after g_deceit_level increment (5d) and after _analyze_position
-        # so g_other_power_lead_flag / trust matrices reflect the current turn.
-        snapshot_province_state(self.state)
-
         # DAT_00baed6d = 0  (deviation/retry sentinel cleared before GenerateOrders)
         self.state.g_baed6d = 0
 
-        # 5f — GenerateOrders + ScoreOrderCandidates (FUN_004559c0)
-        # ScoreOrderCandidates:
-        #   Step 1: clear g_CandidateList2 (per-power secondary lists) → reset
-        #            g_candidate_record_list so each scoring pass starts fresh.
-        #   Step 2: reset proposal records in g_candidate_record_list for new round.
-        #   Step 3: call ProcessTurn for each power where
-        #             unit_count[p] > 0 AND general_orders_present[p] != 0.
-        #            trial_count = (unit_count[p] * g_TrialScale + 10) // 10;
-        #            if g_press_proposals_cap == 0 AND p != own_power: trial_count = 1.
-        #   Steps 4–5: proposal matching / scoring (DAIDE token comparison) — absorbed
-        #              into the MC candidate scoring: each ProcessTurn call populates
-        #              g_candidate_record_list entries with scored order sets.
+        # 5f — GenerateOrders (FUN_004466e0). ProcessTurn belongs to the later
+        # send_GOF call, after diplomatic state and influence normalization.
         from ...monte_carlo import generate_orders
         generate_orders(self.state, own_power_idx)
-
-        # ── DIAGNOSTIC: log unit counts after generate_orders ────────────────
-        _diag_units = sum(1 for u in self.state.unit_info.values()
-                         if u.get('power') == own_power_idx)
-        logger.info(
-            "DIAG[%s] phase=%s unit_info_own=%d g_unit_count=%s "
-            "g_general_orders_keys=%s",
-            self.power_name, phase, _diag_units,
-            list(self.state.g_unit_count),
-            sorted(self.state.g_general_orders.keys())
-            if hasattr(self.state, 'g_general_orders') else 'N/A',
-        )
-
-        # ── ScoreProvinces + ScoreOrderCandidates_AllPowers ──────────────────
-        # C binary (send_GOF.c lines 56–62): for SPR/FAL movement phases,
-        # ScoreProvinces computes per-province strategic scores, then
-        # ScoreOrderCandidates_AllPowers uses g_candidate_scores (populated by
-        # generate_orders Phase 1f) to compute final_score_set — the per-power
-        # per-province value that the MC trial loop's _build_order_mto reads
-        # when scoring MTO orders.  Without this call final_score_set stays all
-        # zeros and every MTO gets a zero convoy-chain score, making the MC
-        # unable to distinguish good moves from bad ones.
-        if movement_phase:
-            _mw = self.state.g_fal_move_weight if phase == 'FAL' else self.state.g_spr_move_weight
-            _bw = self.state.g_fal_build_weight if phase == 'FAL' else self.state.g_spr_build_weight
-            _rw = (self.state.g_fal_round_weights if phase == 'FAL'
-                   else self.state.g_spr_round_weights)
-            try:
-                score_provinces(self.state, _mw, _bw, own_power_idx)
-            except Exception:
-                logger.exception(
-                    "score_provinces raised; continuing with default scores"
-                )
-            try:
-                score_order_candidates_all_powers(self.state, _rw, own_power_idx)
-            except Exception:
-                logger.exception(
-                    "score_order_candidates_all_powers raised; continuing"
-                    " with empty final_score_set"
-                )
-
-        # Step 1 — clear per-power g_CandidateList2 trees (FUN_00410cf0 per power)
-        # C: for each power, FUN_00410cf0(root) post-order frees the RB-tree,
-        # then resets the sentinel.  Python: clear each power's g_general_orders
-        # list via _destroy_candidate_tree, then reset the flat record list.
-        # Translate inbound press registry → per-power general / alliance order
-        # sets so MC sub-pass 1c can dispatch received-XDO orders.  Without
-        # this call the binary's press-driven MTO/SUP path is unreachable in
-        # Python; ProcessTurn still generates ordinary candidates through its
-        # Phase 2 adjacency walk.  See communications.py for the
-        # ScoreOrderCandidates writer-loop port.
-        # GenerateAndSubmitOrders clears DAT_00bb65ec at call entry. The client
-        # drains the current phase's queued messages after synchronization, so
-        # this list contains only press registered for the active generation
-        # window; longer-term commitment lives in the dedicated history maps.
-        # In NO_PRESS mode, g_broadcast_list only contains self-emitted XDO
-        # support proposals from prior phases.  Reading them back via
-        # score_order_candidates_from_broadcast would partially populate
-        # g_general_orders with stale proposals (wrong positions).  Skip it.
-        _prepare_proposal_orders_for_turn(self.state)
-        _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
-
-        # Step 3 — call ProcessTurn for every active power (DAT_0062e460 / g_unit_count)
-        # g_TrialScale = DAT_004c6bb8 = difficulty*2+60 (default difficulty=100 → 260)
-        # g_press_proposals_cap = DAT_004c6bbc = (difficulty*3)//10 capped at 30
-        trial_scale: int = getattr(self.state, 'g_trial_scale', 260)
-        press_cap: int = getattr(self.state, 'g_press_proposals_cap', 30)
-        unit_count = getattr(self.state, 'g_unit_count', np.zeros(num_powers, dtype=np.int32))
-
-        # ── 10-round ProcessTurn loop with support-opportunity re-pass ───────
-        # C binary (send_GOF.c lines 114–169): runs ProcessTurn 10 rounds.
-        # Each round: for every power with sc_count > 0, run ProcessTurn with
-        # g_ring_convoy_enabled=0.  Then scan g_support_opportunities_set for
-        # matching-power entries; for each hit, copy the ring provinces from
-        # the opportunity into the state, set g_ring_convoy_enabled=1, and run
-        # ProcessTurn AGAIN.  This second pass generates ring-convoy MTO
-        # patterns (A→B→C→A) that are the primary mechanism for non-hold
-        # orders even in NO_PRESS mode.
-        #
-        # In a full-press game the 10-round loop also accumulates proposal-
-        # driven candidates that get refined by later BuildAndSendSUB passes.
-        MC_ROUNDS = 10 if movement_phase else 1
-        _mtl_fired = False
-        for _mc_round in range(MC_ROUNDS):
-            if _mtl_fired:
-                break
-            for p in range(num_powers):
-                # CheckTimeLimit gate (C: BuildAndSendSUB.c line 207,221)
-                if check_time_limit(self.state):
-                    _mtl_fired = True
-                    break
-                if int(unit_count[p]) <= 0:
-                    continue
-                if press_cap == 0 and p != own_power_idx:
-                    n_trials = 1
-                else:
-                    n_trials = (int(unit_count[p]) * trial_scale + 10) // 10
-
-                # Primary pass: g_ring_convoy_enabled = 0
-                self.state.g_ring_convoy_enabled = 0
-                process_turn(self.state, p, num_trials=n_trials)
-
-                # Support-opportunity re-pass: scan for matching entries and
-                # run ProcessTurn again with ring convoy enabled.
-                sup_opps = getattr(self.state, 'g_support_opportunities_set', None)
-                if sup_opps:
-                    for opp in sup_opps:
-                        if check_time_limit(self.state):
-                            _mtl_fired = True
-                            break
-                        if int(opp.get('power', -1)) != p:
-                            continue
-                        # Copy ring provinces from the opportunity entry.
-                        # C: memcpy(DAT_00bbf668, entry+0x10, 28); DAT_00baed5c=1
-                        self.state.g_ring_prov_a = int(opp.get('mover_prov', -1))
-                        self.state.g_ring_prov_b = int(opp.get('target_prov', -1))
-                        self.state.g_ring_prov_c = int(opp.get('supporter_prov', -1))
-                        self.state.g_ring_convoy_enabled = 1
-                        # Trial count for re-pass: sc_count[p] * 10 / 10 = sc_count[p]
-                        re_trials = max(int(self.state.sc_count[p]), 1)
-                        if press_cap == 0 and p != own_power_idx:
-                            re_trials = 1
-                        process_turn(self.state, p, num_trials=re_trials)
-        # Make processed powers stale for BuildAndSendSUB's final
-        # RankCandidatesForPower(flag=0) + UpdateScoreState pass.  Do not
-        # refresh here: C performs that refresh immediately before reading
-        # slot zero for SUB (BuildAndSendSUB.c:287-317, then C:593-614).
-        self.state.g_current_round += 1
-
-        # Candidate-vs-press corroboration penalty
-        # (Source/ScoreOrderCandidates.c lines 342–630).  Marks candidates
-        # whose orders disagree with received-press XDOs with a -2.5e36
-        # score so MC's selector skips them.
-        #
-        # IMPORTANT: only fire when g_broadcast_list has actual received
-        # press. BuildSupportProposals records stay in g_ProposalHistoryMap,
-        # as in C, and never enter this tree. Use the watermark because
-        # register_received_press bumps it when real press arrives.
-        _bl = getattr(self.state, 'g_broadcast_list', None)
-        _wm = getattr(self.state, 'g_broadcast_list_watermark', 0)
-        _no_press = getattr(self.state, 'g_minimal_press_mode', 0) == 1
-        has_real_press = bool(_bl) and _wm > 0 and not _no_press
-        if has_real_press:
-            try:
-                from ...heuristics import apply_press_corroboration_penalty
-                n_penalised = apply_press_corroboration_penalty(self.state)
-                if n_penalised:
-                    logger.debug(
-                        "Press corroboration: penalised %d candidate(s) "
-                        "for disagreeing with received XDOs",
-                        n_penalised,
-                    )
-            except Exception:
-                logger.exception(
-                    "apply_press_corroboration_penalty raised; continuing"
-                    " without press-corroboration penalty"
-                )
-
-        best_orders = self.state.g_candidate_record_list  # populated by process_turn
-
-        # ── DIAGNOSTIC: log candidate record list stats ──────────────────────
-        from collections import Counter as _Counter
-        _power_counts = _Counter(c.get('power') for c in best_orders)
-        _own_count = _power_counts.get(own_power_idx, 0)
-        logger.info(
-            "DIAG[%s] g_candidate_record_list size=%d own_power_candidates=%d "
-            "per_power=%s",
-            self.power_name, len(best_orders), _own_count,
-            dict(_power_counts),
-        )
-        if _own_count > 0:
-            _own_cands = [c for c in best_orders if c.get('power') == own_power_idx]
-            _best = max(_own_cands, key=lambda c: float(c.get('score', 0.0)))
-            _order_types = _Counter(
-                e[1] if isinstance(e, (list, tuple)) and len(e) > 1 else '?'
-                for e in _best.get('orders', [])
-            )
-            logger.info(
-                "DIAG[%s] best_candidate: score=%.1f n_orders=%d order_types=%s",
-                self.power_name, float(_best.get('score', 0)),
-                len(_best.get('orders', [])), dict(_order_types),
-            )
 
         # 5g — PostProcessOrders (SPR/FAL only; runs after GenerateOrders, before SUB)
         if movement_phase:
@@ -574,84 +545,65 @@ class _OrdersMixin:
             _phase_handler(self.state, 2)
             _post_friendly_update(self.state)
 
-        # 5j — submit orders and draw vote (movement) OR retreat handling
+        # 5j — finish GenerateAndSubmitOrders before entering send_GOF.
         if movement_phase:
             _prepare_broadcast_nodes_for_movement(self.state)
             _hostility(self.state)
             _phase_handler(self.state, 3)
-            self._build_and_send_sub(best_orders)
-
             _prepare_draw_vote_set(self.state)
-
-            # Only send a draw vote to the server when Albert wants a draw.
-            # The server defaults to neutral (no draw), so we only need to
-            # send YES when g_draw_sent is set; no need to send NO/neutral.
-            if self.state.g_draw_sent and self.game is not None:
-                self._submit_draw_vote()
         else:
-            # Retreat / adjustment phase — no SUB, but HOSTILITY runs in WIN
             if phase == 'WIN':
-                # C: ComputeBuildDelta is called from ParseNOW; parse_now now
-                # mirrors that.  Re-stamp here to guarantee g_sc_owner freshness
-                # immediately before _hostility / compute_influence_matrix.
                 compute_build_delta(self.state)
-
                 _hostility(self.state)
-
-                # WIN build/remove candidate pipeline — mirrors send_GOF WIN branch:
-                #   ResetPerTrialState → ScoreProvinces →
-                #   populate candidates → ScoreOrderCandidates_OwnPower →
-                #   FUN_0044bd40 (builds) or FUN_00442040 (removes)
-                self.state.g_build_order_list.clear()        # ResetPerTrialState
-                self.state.g_build_order_list_size = 0
-                self.state.g_adjustment_build_candidates.clear()
-                self.state.g_adjustment_candidate_scores.clear()
-                self.state.g_adjustment_candidate_provinces.clear()
-                self.state.g_waive_count = 0
-
-                # Save real SC ownership before score_provinces clobbers it.
-                # score_provinces resets g_sc_ownership and repopulates it from
-                # unit positions (not center ownership), which breaks
-                # populate_build_candidates' eligibility check.
-                saved_sc_ownership = self.state.g_sc_ownership.copy()
-
-                score_provinces(self.state, self.state.g_spr_move_weight,
-                                self.state.g_spr_build_weight, own_power_idx)
-
-                # Restore real SC ownership for build/remove candidate selection.
-                self.state.g_sc_ownership[:] = saved_sc_ownership
-
-                own_delta = self.state.g_build_delta[own_power_idx]
-                if own_delta['flag'] == 1:
-                    # BUILD: unit_count < sc_count
-                    populate_build_candidates(self.state, own_power_idx)
-                    score_order_candidates_own_power(
-                        self.state, _WIN_BUILD_WEIGHTS, own_power_idx)
-                    compute_win_builds(self.state, own_delta['delta'])
-                elif own_delta['delta'] > 0:
-                    # REMOVE: sc_count < unit_count
-                    populate_remove_candidates(self.state, own_power_idx)
-                    score_order_candidates_own_power(
-                        self.state, _WIN_REMOVE_WEIGHTS, own_power_idx)
-                    compute_win_removes(self.state, own_delta['delta'])
-                # else delta == 0: no builds/removes, no waives — empty GOF
-
-                # Submit build/remove/waive orders to the game engine.
-                self._submit_adjustment_orders()
-
             _phase_handler(self.state, 3)
 
-        # 5k — Retreat-phase order population (SUM/AUT only)
-        # In the C binary, ParseNOW populates the retreat unit list at +0x245c
-        # and order map at +0x24c0 directly from the NOW message.  The Python
-        # port bypasses DAIDE parsing; instead, we read dislodged units from
-        # game.powers[power].retreats and choose the best destination using
-        # g_global_province_score (populated by generate_orders).
+        # GenerateAndSubmitOrders calls NormalizeInfluenceMatrix immediately
+        # before send_GOF. The old port ran it after ProcessTurn and selection.
+        _cleanup_turn(self.state)
+
+        best_orders = _run_send_gof_candidate_pass(
+            self.state, phase, own_power_idx, num_powers
+        )
+
+        if movement_phase:
+            self._build_and_send_sub(best_orders)
+            if self.state.g_draw_sent and self.game is not None:
+                self._submit_draw_vote()
+
+        elif phase == 'WIN':
+            # WIN build/remove candidate pipeline — send_GOF.c:69-80,398-403.
+            self.state.g_adjustment_build_candidates.clear()
+            self.state.g_adjustment_candidate_scores.clear()
+            self.state.g_adjustment_candidate_provinces.clear()
+
+            # Save real SC ownership before score_provinces replaces the
+            # scratch table with unit presence.
+            saved_sc_ownership = self.state.g_sc_ownership.copy()
+
+            score_provinces(
+                self.state, self.state.g_spr_move_weight,
+                self.state.g_spr_build_weight, own_power_idx,
+            )
+            self.state.g_sc_ownership[:] = saved_sc_ownership
+
+            own_delta = self.state.g_build_delta[own_power_idx]
+            if own_delta['flag'] == 1:
+                populate_build_candidates(self.state, own_power_idx)
+                score_order_candidates_own_power(
+                    self.state, _WIN_BUILD_WEIGHTS, own_power_idx
+                )
+                compute_win_builds(self.state, own_delta['delta'])
+            elif own_delta['delta'] > 0:
+                populate_remove_candidates(self.state, own_power_idx)
+                score_order_candidates_own_power(
+                    self.state, _WIN_REMOVE_WEIGHTS, own_power_idx
+                )
+                compute_win_removes(self.state, own_delta['delta'])
+            self._submit_adjustment_orders()
+
         if phase in ('SUM', 'AUT') and self.game is not None:
             self.state.g_retreat_order_list = _populate_retreat_orders(
                 self.state, self.game, self.power_name, own_power_idx)
-            # Also submit retreat orders to the diplomacy game engine so
-            # game.process() can advance to the next phase.
             retreat_cmds = _format_retreat_commands(self.state)
             if retreat_cmds:
                 logger.info("Retreat orders for %s: %s",
@@ -663,8 +615,8 @@ class _OrdersMixin:
                     logger.exception(
                         "Failed to submit retreat orders to game engine")
 
-        # Step 6 — CleanupTurn + GOF
-        _cleanup_turn(self.state)
+        # send_GOF's final network signal; FUN_00443ed0 cleanup is represented
+        # by Python state lifecycle hooks rather than NormalizeInfluenceMatrix.
         _send_gof(self.state, self._send_dm)
 
 

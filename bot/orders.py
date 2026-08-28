@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .. import rng as random
+
 if TYPE_CHECKING:
     from diplomacy.engine.game import Game
 
@@ -28,6 +30,43 @@ from ._shared import _DAIDE_COAST_TO_STR, _DAIDE_POWER_NAMES
 logger = logging.getLogger(__name__)
 
 
+def _refresh_order_dip_owner(state: InnerGameState) -> None:
+    """Rebuild DAT_00ba2f70 without touching live SC control.
+
+    InitPositionForOrders.c:148-300 starts this table at -1. For each SC whose
+    current controller occurs in that province's home-power map, it writes the
+    controller to the province and its adjacency set; different qualifying
+    controllers meeting at one province produce the -2 conflict sentinel.
+    """
+    spread = state.g_order_dip_owner
+    spread.fill(-1)
+
+    home_by_province: dict[int, set[int]] = {}
+    for power, provinces in getattr(state, 'home_centers', {}).items():
+        for province in provinces:
+            home_by_province.setdefault(int(province), set()).add(int(power))
+
+    province_count = int(getattr(state, 'num_valid_provinces', 0))
+    if province_count <= 0:
+        province_count = len(spread)
+    for province in getattr(state, 'sc_provinces', ()):
+        province = int(province)
+        if not 0 <= province < min(province_count, len(spread)):
+            continue
+        controller = int(state.g_sc_owner[province])
+        if controller not in home_by_province.get(province, ()):
+            continue
+        for target in (province, *state.get_adjacent_provinces(province)):
+            target = int(target)
+            if not 0 <= target < len(spread):
+                continue
+            current = int(spread[target])
+            if current == -1:
+                spread[target] = controller
+            elif current != controller:
+                spread[target] = -2
+
+
 
 
 def _init_position_for_orders(state: InnerGameState) -> None:
@@ -39,51 +78,11 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     # Step 1 — Clear per-power order candidate lists
     state.g_candidate_record_list.clear()
     state.__dict__.pop('_candidate_key_map', None)
+    state.__dict__.pop('_candidate_keys', None)
 
-    # Step 2 — Initialize g_sc_owner to -1 (unoccupied) for all provinces.
-    # C: DAT_00ba2f70[prov] = 0xffffffff initialised at lines 148-155.
-    state.g_sc_owner = getattr(state, 'g_sc_owner', np.full(num_provinces, -1, dtype=np.int32))
-    state.g_sc_owner.fill(-1)
-
-    # Step 3 — Build per-province adjacency sets (C lines 188–235,
-    # param_1+0x2a1c = g_adjacency_presence).  C uses a per-province STL
-    # sorted-set seeded from the province route-graph; Python's adj_matrix
-    # already holds the same data as plain lists.  We expose a set-view so
-    # the propagation step below and any downstream caller can do O(1) tests.
-    adj_sets: dict = {prov: set(adjs) for prov, adjs in state.adj_matrix.items()}
-
-    # Step 4 — Populate g_sc_owner[prov] = power for each unit province.
-    # C stores unit-type bytes (army subtype / 0x14 fleet); Python stores
-    # power IDs because all downstream consumers compare against power indices.
-    for prov, unit in state.unit_info.items():
-        power = unit.get('power', -1)
-        if power < 0:
-            continue
-        if state.g_sc_owner[prov] == -1:
-            state.g_sc_owner[prov] = power
-        elif state.g_sc_owner[prov] != power:
-            state.g_sc_owner[prov] = -2  # contested
-
-    # Step 4b — Propagate g_sc_owner to adjacent provinces (C lines 238–300).
-    # C: for each SC province occupied by a foreign unit, spreads unit-type to
-    # all adjacent provinces via g_adjacency_presence (first write wins;
-    # type-conflict → 0xfffffffe = -2).  Python: same propagation using power
-    # IDs, applied to all unit provinces (the C's SC-only + invasion-only
-    # condition is an internal optimisation gated on C's unit-type storage;
-    # propagating for all units produces correct power-ownership adjacency for
-    # Python consumers such as heuristics/influence.py and monte_carlo/trial.py).
-    for prov, unit in state.unit_info.items():
-        power = unit.get('power', -1)
-        if power < 0:
-            continue
-        for adj in adj_sets.get(prov, ()):
-            if adj >= num_provinces:
-                continue
-            cur = int(state.g_sc_owner[adj])
-            if cur == -1:
-                state.g_sc_owner[adj] = power
-            elif cur != power and cur != -2:
-                state.g_sc_owner[adj] = -2
+    # Steps 2–4 — Build DAT_00ba2f70. This scratch table is distinct from
+    # the province record's +0x20 SC-controller token (state.g_sc_owner).
+    _refresh_order_dip_owner(state)
 
     # Step 5 — Per-power matrix reset (C lines 302–369).
     # C outer loop: for each power p:
@@ -104,7 +103,14 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     # Step 5b — Zero g_ally_matrix (covers C's g_AllyMatrix zeroing).
     state.g_ally_matrix.fill(0)
 
-    # Step 6 — Zero g_move_history_matrix (C lines 371–393, g_MoveHistoryMatrix).
+    # Step 6 — EnumerateConvoyReach (InitPositionForOrders.c:370). The C
+    # routine loops the complete board topology once; Python's port partitions
+    # its approximation by power, so exhaust all power slices here.
+    from ..moves import enumerate_convoy_reach
+    for power in range(num_powers):
+        enumerate_convoy_reach(state, power)
+
+    # Step 7 — Zero g_move_history_matrix (C lines 371–393, g_MoveHistoryMatrix).
     if not hasattr(state, 'g_move_history_matrix'):
         state.g_move_history_matrix = np.zeros((num_powers, num_provinces, num_provinces), dtype=np.int32)
     else:
@@ -517,11 +523,13 @@ def _populate_retreat_orders(
     own_power_idx: int,
 ) -> list:
     """
-    Build g_retreat_order_list entries for the current retreat phase.
+    Port the dedicated retreat selector at Albert.exe ``0x4418e0``.
 
-    For each dislodged own-power unit (from game.powers[power_name].retreats),
-    evaluate possible retreat destinations using g_global_province_score and pick
-    the best one.  If no valid retreat exists, order a disband (DSB).
+    Dislodged units are processed in the source's random-priority order. Each
+    chooses its highest token-specific ``final_score_set`` destination while
+    honoring non-enemy DMZ promises, trusted ally designations, and the rule
+    that two own retreats cannot select the same destination. If no candidate
+    survives, the unit disbands.
 
     Returns a list of dicts matching the schema at state.py line 539:
         {'province': int, 'unit_type': str, 'unit_coast': str,
@@ -529,70 +537,158 @@ def _populate_retreat_orders(
          'dest_province': int, 'dest_coast': int}
     where order_type 7 = RTO, 8 = DSB.
     """
-    power = game.powers.get(power_name)
-    if power is None or not power.retreats:
-        return []
-
     prov_to_id = state.prov_to_id
-    scores = state.g_global_province_score  # [256] float array from generate_orders
+    records = []
+
+    # ParseNOWUnit/synchronize_from_game already populate the source's +0x245c
+    # set. Keep a game-object fallback for isolated adapter fixtures.
+    for src_id, info in sorted(
+        getattr(state, 'dislodged_unit_info', {}).items()
+    ):
+        if int(info.get('power', -1)) != own_power_idx:
+            continue
+        destinations = []
+        for destination in info.get('retreats', []):
+            if isinstance(destination, dict):
+                dest_id = int(destination.get('province', -1))
+                dest_coast = str(destination.get('coast', '')).lstrip('/').upper()
+            else:
+                dest_text = str(destination).upper()
+                dest_base, _, dest_coast = dest_text.partition('/')
+                dest_id = prov_to_id.get(dest_text, prov_to_id.get(dest_base, -1))
+            if dest_id >= 0:
+                destinations.append((dest_id, dest_coast))
+        records.append({
+            'province': int(src_id),
+            'unit_type': str(info.get('type', 'A')).upper(),
+            'unit_coast': str(info.get('coast', '')).lstrip('/').upper(),
+            'destinations': destinations,
+        })
+
+    if not records:
+        power = getattr(game, 'powers', {}).get(power_name)
+        retreats = getattr(power, 'retreats', {}) if power is not None else {}
+        for unit_spec, destinations in retreats.items():
+            parts = unit_spec.split()
+            if len(parts) < 2:
+                continue
+            unit_type, unit_location = parts[0].upper(), parts[1].upper()
+            src_base, _, src_coast = unit_location.partition('/')
+            src_id = prov_to_id.get(unit_location, prov_to_id.get(src_base, -1))
+            if src_id < 0:
+                continue
+            parsed_destinations = []
+            for destination in destinations:
+                dest_text = str(destination).upper()
+                dest_base, _, dest_coast = dest_text.partition('/')
+                dest_id = prov_to_id.get(dest_text, prov_to_id.get(dest_base, -1))
+                if dest_id >= 0:
+                    parsed_destinations.append((dest_id, dest_coast))
+            records.append({
+                'province': src_id,
+                'unit_type': unit_type,
+                'unit_coast': src_coast,
+                'destinations': parsed_destinations,
+            })
+
+    # AssignHoldSupports + ScoreConvoyFleet: one CRT draw per source, stable
+    # descending priority (equal scores retain source-map order).
+    prioritized = []
+    for insertion_index, record in enumerate(sorted(
+        records, key=lambda item: int(item['province'])
+    )):
+        roll = random.randint(0, 0x7FFF)
+        priority = (roll // 0x17) % 0x7C17 + 500
+        prioritized.append((-priority, insertion_index, record))
+    prioritized.sort(key=lambda item: (item[0], item[1]))
+
+    claimed = set()
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    for power in range(num_powers):
+        if power == own_power_idx:
+            continue
+        enemy_lo = int(state.g_enemy_flag[power])
+        enemy_hi = int(state.g_enemy_flag_hi[power])
+        if enemy_lo != 0 or enemy_hi != 0:
+            continue
+        for entry in state.g_ally_promise_list.get(power, []):
+            value = (entry.get('dest_prov', entry.get('province', -1))
+                     if isinstance(entry, dict) else entry)
+            try:
+                claimed.add(int(value))
+            except (TypeError, ValueError):
+                pass
+
+    province_count = int(getattr(state, 'num_valid_provinces', 0))
+    if province_count <= 0:
+        province_count = len(state.g_sc_owner)
+    has_self_designated_sc = any(
+        province in state.sc_provinces
+        and int(state.g_sc_owner[province]) == own_power_idx
+        and (
+            (int(state.g_ally_designation_a[province]) == -1
+             and int(state.g_ally_designation_a_hi[province]) == -1)
+            or (
+                int(state.g_ally_designation_a[province]) == own_power_idx
+                and int(state.g_ally_designation_a_hi[province]) == 0
+            )
+        )
+        for province in range(province_count)
+    )
 
     result = []
-    for unit_spec, destinations in power.retreats.items():
-        # unit_spec: 'A TYR' or 'F STP/NC'
-        parts = unit_spec.split()
-        if len(parts) < 2:
-            continue
-        u_type = parts[0]              # 'A' or 'F'
-        u_loc  = parts[1]              # 'TYR' or 'STP/NC'
+    selected_destinations = set()
+    for _, _, record in prioritized:
+        src_id = int(record['province'])
+        unit_type = str(record['unit_type'])
+        score_table = (state.final_score_set_flt
+                       if unit_type in ('F', 'FLT')
+                       else state.final_score_set)
+        candidates = sorted(
+            record['destinations'], key=lambda item: (int(item[0]), str(item[1]))
+        )
+        candidates.sort(
+            key=lambda item: float(score_table[own_power_idx, int(item[0])]),
+            reverse=True,
+        )
 
-        # Resolve province ID and coast for the source
-        src_base = u_loc.split('/')[0].upper()
-        src_id = prov_to_id.get(u_loc, prov_to_id.get(src_base, -1))
-        src_coast = ''
-        if '/' in u_loc:
-            src_coast = u_loc.split('/')[1].upper()
-
-        if src_id < 0:
-            logger.warning(
-                "Retreat: cannot resolve province %r → skipping", u_loc)
-            continue
-
-        # Evaluate each destination by g_global_province_score
-        best_score = -1e30
-        best_dest_id = -1
-        best_dest_coast = 0
-        for dest in destinations:
-            # dest: 'BOH' or 'SPA/SC'
-            dest_base = dest.split('/')[0].upper()
-            d_id = prov_to_id.get(dest, prov_to_id.get(dest_base, -1))
-            if d_id < 0:
+        selected = None
+        for dest_id, dest_coast in candidates:
+            dest_id = int(dest_id)
+            if dest_id in claimed or dest_id in selected_destinations:
                 continue
-            d_score = float(scores[d_id]) if 0 <= d_id < len(scores) else 0.0
-            if d_score > best_score:
-                best_score = d_score
-                best_dest_id = d_id
-                best_dest_coast = 0
-                if '/' in dest:
-                    coast_str = dest.split('/')[1].upper()
-                    best_dest_coast = _COAST_STR_TO_DAIDE.get(coast_str, 0)
+            if has_self_designated_sc:
+                ally = int(state.g_ally_designation_a[dest_id])
+                ally_hi = int(state.g_ally_designation_a_hi[dest_id])
+                if ally_hi >= 0 and 0 <= ally < num_powers:
+                    trust_lo = int(state.g_ally_trust_score[own_power_idx, ally])
+                    trust_hi = int(state.g_ally_trust_score_hi[own_power_idx, ally])
+                    if trust_hi > 0 or (trust_hi == 0 and trust_lo > 0):
+                        continue
+            selected = (dest_id, str(dest_coast).upper())
+            break
 
-        if best_dest_id >= 0:
+        if selected is not None:
+            best_dest_id, best_dest_coast_str = selected
+            selected_destinations.add(best_dest_id)
             # RTO — retreat to best destination
             node = {
                 'province':      src_id,
-                'unit_type':     u_type,
-                'unit_coast':    src_coast,
+                'unit_type':     unit_type,
+                'unit_coast':    record['unit_coast'],
                 'power':         own_power_idx,
                 'order_type':    7,           # RTO
                 'dest_province': best_dest_id,
-                'dest_coast':    best_dest_coast,
+                'dest_coast':    _COAST_STR_TO_DAIDE.get(
+                    best_dest_coast_str, 0
+                ),
             }
         else:
             # DSB — no valid retreat destination
             node = {
                 'province':      src_id,
-                'unit_type':     u_type,
-                'unit_coast':    src_coast,
+                'unit_type':     unit_type,
+                'unit_coast':    record['unit_coast'],
                 'power':         own_power_idx,
                 'order_type':    8,           # DSB
                 'dest_province': 0,

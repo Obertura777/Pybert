@@ -210,6 +210,7 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
                               power: str, seed: int,
                               capture_candidates: bool = False,
                               run_submission: bool = True,
+                              proposal_round_cap: int | None = None,
                               ) -> list[str] | tuple[list[str], list[list[str]]] | None:
     """Run Pybert as `power` on the given state, return submitted orders.
 
@@ -223,6 +224,11 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
     client.current_phase = g.get_current_phase()
     # Force NO_PRESS mode so the bot doesn't try to send DAIDE messages.
     client.state.g_minimal_press_mode = 1
+    if proposal_round_cap is not None:
+        # Explicit diagnostic/fast-mode override.  The default remains the
+        # recovered ALBERT difficulty-100 value (30); reducing it changes the
+        # stochastic final ranking and therefore is not a parity run.
+        client.state.g_press_proposals_cap = int(proposal_round_cap)
     # This is an offline ``diplomacy.Game``, not a NetworkGame.  Submission
     # still goes through ``Game.set_orders``, but GOF is a network readiness
     # signal (``NetworkGame.no_wait``) and has no local equivalent.  Suppress
@@ -416,6 +422,12 @@ def main() -> None:
         help="MSVC CRT srand state reset before each run. The recovered source "
              "contains no srand call, so the CRT default is 1.",
     )
+    parser.add_argument(
+        "--proposal-round-cap", type=int, default=None, metavar="N",
+        help="Diagnostic fast mode: run at most N BuildAndSendSUB proposal "
+             "rounds (0..30) instead of the recovered default 30. This can "
+             "change submitted orders and is not a parity comparison.",
+    )
     parser.add_argument("--verbose", action="store_true",
                         help="Print each phase/power result.")
     parser.add_argument(
@@ -439,6 +451,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.candidate_seed_count < 0:
         parser.error("--candidate-seed-count must be non-negative")
+    if (args.proposal_round_cap is not None
+            and not 0 <= args.proposal_round_cap <= 30):
+        parser.error("--proposal-round-cap must be between 0 and 30")
 
     # Silence the bot's noisy loggers; we only care about returned orders.
     logging.basicConfig(level=logging.CRITICAL)
@@ -522,7 +537,8 @@ def main() -> None:
                 albert_orders = list(albert_orders or [])
                 capture = _capture_orders_for_power(
                     state, phase_name, power, seed=args.seed,
-                    capture_candidates=args.candidate_coverage)
+                    capture_candidates=args.candidate_coverage,
+                    proposal_round_cap=args.proposal_round_cap)
                 if capture is None:
                     n_pybert_failed += 1
                     by_phase_type[phase_name[-1]]["failed"] += 1
@@ -642,6 +658,9 @@ def main() -> None:
     print("=" * 60)
     print(f"Compared {n_games} games, {n_phase_powers} (phase, power) pairs"
           f" in {dt:.1f}s")
+    if args.proposal_round_cap is not None:
+        print("  Diagnostic proposal-round cap: "
+              f"{args.proposal_round_cap} (non-parity mode)")
     if n_pybert_failed:
         print(f"  Pybert errors: {n_pybert_failed}")
     if n_phase_powers:

@@ -2,14 +2,16 @@
 
 Split from monte_carlo.py during the 2026-04 refactor.
 
-``generate_orders`` runs the province-scoring + candidate-enumeration pre-pass
-that produces the hold/move/support/convoy order-candidate lists the MC
-trial loop consumes.  Calls into ``..moves`` enumerators and defers an
+``generate_orders`` runs Albert's influence-scoring pre-pass.  The source
+routine does not run the final-score-dependent hold/safe-reach enumeration;
+that belongs to ``send_GOF`` after ``ScoreOrderCandidates_AllPowers``.  This
+module retains the live convoy-route cache preparation used by the Python MC
+trial implementation and defers an
 ``apply_influence_scores`` call into ``..heuristics`` (kept deferred to
 avoid the heuristics→monte_carlo import cycle).
 
-Module-level deps: ``numpy``, ``..state.InnerGameState``, and
-the four enumerators from ``..moves``.
+Module-level deps: ``numpy``, ``..state.InnerGameState``, and convoy helpers
+from ``..moves``.
 """
 
 
@@ -18,11 +20,7 @@ import numpy as np
 from ..state import InnerGameState
 from ..heuristics._primitives import _safe_pow
 from ..moves import (
-    enumerate_hold_orders,
-    enumerate_convoy_reach,
     populate_convoy_routes,
-    compute_safe_reach,
-    build_support_opportunities,
 )
 
 
@@ -31,8 +29,7 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     Port of FUN_004466e0 = GenerateOrders(Albert *this).
 
     Master turn-evaluation driver.  Computes the full influence-matrix pipeline,
-    populates g_candidate_scores, g_alliance_score, and g_opening_target, then
-    triggers the order-enumeration pipeline.
+    populates g_candidate_scores, g_alliance_score, and g_opening_target.
 
     Phases (research.md §GenerateOrders — FUN_004466e0 / §generate_orders):
       Phase 0  — Zero all scoring tables and influence matrices.
@@ -43,8 +40,9 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
       Phase 5  — Row-normalize g_influence_matrix to row-sums of 100.
       Phase 6  — Asymmetric g_alliance_score from Raw matrix (via compute_alliance_score).
       Phase 7  — g_opening_target per power (SPR + g_deceit_level==1 only).
-      Finally  — enumerate_hold_orders, enumerate_convoy_reach, compute_safe_reach,
-                 build_support_opportunities (mirrors post-loop calls in binary).
+      Finally  — refresh the Python live convoy-route cache. In Albert,
+                 EnumerateConvoyReach belongs to InitPositionForOrders and the
+                 live convoy route BFS is embedded inside ProcessTurn.
     """
     NUM_POWERS   = 7
     NUM_PROVINCES = 256
@@ -83,7 +81,13 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
         for prov in valid_provs:
             if state.get_unit_power(prov) != p:
                 heat_build_seed[prov] = 0.0
-            elif state.g_uniform_mode == 1:          # g_StickyModeActive / g_uniform_mode
+            elif int(getattr(state, 'g_press_flag', 0)) == 1:
+                # C: GenerateOrders.c:193 — `if (DAT_00baed68 == '\x01')`.
+                # Fixed 2026-08-18: was `state.g_uniform_mode`, a phantom
+                # attribute nothing writes, so this branch never fired and the
+                # seed always fell through to the SC-need formula below.
+                # DAT_00baed68 is the press flag (g_press_flag elsewhere in
+                # this port), not a sticky/uniform mode.
                 heat_build_seed[prov] = 5000.0
             elif target_sc > curr_sc:
                 heat_build_seed[prov] = float((target_sc - curr_sc + 2) * 500)
@@ -117,11 +121,7 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
                     nxt[prov] = sum(heat_move[q] for q in adjs) / 5.0
             heat_move = nxt
 
-        # 1e — Accumulate g_global_province_score
-        for prov in valid_provs:
-            state.g_global_province_score[prov] += heat_build[prov] + heat_move[prov]
-
-        # 1f — Build ordered set, populate g_candidate_scores (top-N by heat_move)
+        # 1e — Build ordered set, populate g_candidate_scores (top-N by heat_move)
         # C (GenerateOrders.c:400–468): provinces sorted descending by heat_move
         # are inserted into an ordered set; the iterator takes at most win_threshold
         # entries, skipping any province where own army sits (puVar12 == local_60b4).
@@ -143,10 +143,14 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
             state.g_candidate_scores[p, prov] = _score
             _count += 1
 
-        # 1g — Copy heat_move → g_heat_movement[p]
+        # 1f — Copy heat_move into both ApplyInfluenceScores input channels.
+        # GenerateOrders.c:457-460 writes the same int64 score to
+        # DAT_005af0e8 and DAT_004ec2f0; ApplyInfluenceScores normalizes them
+        # differently but does not replace them with its private diffusion.
         state.g_heat_movement[p] = heat_move
+        state.g_heat_movement_b[p] = heat_move
 
-        # 1h — Accumulate g_influence_matrix[col, p]
+        # 1g — Accumulate g_influence_matrix[col, p]
         # GenerateOrders.c L366: two-condition gate:
         #   (puVar11[1] != local_6054) && (local_60b4 != local_60bc)
         # Ghidra conflates the outer loop counter with GameBoard_GetPowerRec's
@@ -199,25 +203,22 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
 
     # ── ApplyInfluenceScores ────────────────────────────────────────────────
     # C binary: GenerateOrders.c L619 calls ApplyInfluenceScores after the
-    # per-power heat/influence loop.  This populates g_unit_adjacency_count
-    # (Pass 4), g_heat_movement_b (Pass 1), and — crucially — g_order_list
-    # (Pass 5), which downstream feeds g_general_orders via the press
+    # per-power heat/influence loop.  This populates g_unit_adjacency_count,
+    # normalizes the two GenerateOrders-owned movement-heat copies, and —
+    # crucially — fills g_order_list, which downstream feeds g_general_orders
+    # via the press
     # translator pipeline.  Without this call g_order_list stays empty and
     # the MC trial loop (ProcessTurn Phase 1c) has no orders to dispatch.
     apply_influence_scores(state, own_power)
     set_opening_targets(state)
 
     # ── Order enumeration pipeline ───────────────────────────────────────────
-    # Mirrors the post-loop calls in the binary (EnumerateHoldOrders,
-    # EnumerateConvoyReach, ComputeSafeReach, BuildSupportOpportunities).
+    # Compatibility plumbing for the current Python data model. Keep
+    # InitPosition and final-score enumeration in their source lifecycle slots.
     for p in range(NUM_POWERS):
-        enumerate_hold_orders(state, p)
-        enumerate_convoy_reach(state, p)
         # Populates state.g_convoy_route[army_src] for each army of p with a
         # shortest fleet chain (option-1 narrow port of ProcessTurn's convoy
         # route BFS — see moves/convoy.py:populate_convoy_routes).  Without
         # this, the CTO branches in trial.py:553 and :1046 silently fall
         # back to direct moves and no CVY orders are ever emitted.
         populate_convoy_routes(state, p)
-    compute_safe_reach(state)
-    build_support_opportunities(state)

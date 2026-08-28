@@ -19,6 +19,283 @@ from ..state import InnerGameState
 from ._primitives import _safe_pow, _float_to_int64
 
 
+def _runtime_province_count(state: InnerGameState) -> int:
+    """Return the active board-array bound used by the C runtime loops."""
+    count = int(getattr(state, 'num_valid_provinces', 0))
+    if count > 0:
+        return count
+    valid = getattr(state, 'valid_provinces', ())
+    if valid:
+        return max(int(province) for province in valid) + 1
+    return int(state.g_heat_movement.shape[1])
+
+
+def _populate_contact_matrices(state: InnerGameState) -> None:
+    """Port ApplyInfluenceScores.c:746-782's SC-controller pass."""
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    state.g_contact_count.fill(0)
+    state.g_contact_weighted.fill(0)
+    state.g_contact_owner_count.fill(0)
+
+    for power in range(num_powers):
+        for province in getattr(state, 'sc_provinces', ()):
+            province = int(province)
+            owner = int(state.g_sc_owner[province])
+            if not 0 <= owner < num_powers or owner == power:
+                continue
+            if float(state.g_influence_ratio[power, province]) <= 1.0:
+                continue
+            state.g_contact_count[power, owner] += 1
+            state.g_contact_weighted[power, owner] += int(
+                state.g_unit_adjacency_count[power, province]
+            )
+            state.g_contact_owner_count[power, owner] += int(
+                state.g_unit_adjacency_count[owner, province]
+            )
+
+
+def _populate_influence_ratio(state: InnerGameState) -> None:
+    """Port ApplyInfluenceScores.c:330-379's controlled-SC heat ratios."""
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    state.g_influence_ratio.fill(0.0)
+
+    for outer_power in range(num_powers):
+        for province in getattr(state, 'sc_provinces', ()):
+            province = int(province)
+            owner = int(state.g_sc_owner[province])
+            if not 0 <= owner < num_powers:
+                continue
+            denominator = float(state.g_heat_score[owner, province]) + 1.0
+            if owner == outer_power:
+                numerator = max(
+                    (float(state.g_heat_score[power, province])
+                     for power in range(num_powers)
+                     if power != outer_power),
+                    default=0.0,
+                )
+            else:
+                numerator = float(state.g_heat_score[outer_power, province])
+            state.g_influence_ratio[outer_power, province] = (
+                numerator / denominator
+            )
+
+
+def _apply_heat_nodes(state: InnerGameState) -> dict[int, list[tuple[int, str, str]]]:
+    """Build ApplyInfluenceScores' province/unit-token key domain."""
+    valid = sorted(getattr(state, 'valid_provinces', ()) or state.adj_matrix)
+    nodes_by_province: dict[int, list[tuple[int, str, str]]] = {}
+    coast_map: dict[int, list[str]] = {}
+    for (province, coast), _adj in getattr(state, 'fleet_coast_adj', {}).items():
+        coast_map.setdefault(int(province), []).append(str(coast).upper())
+
+    for province in valid:
+        nodes: list[tuple[int, str, str]] = []
+        if province not in getattr(state, 'water_provinces', set()):
+            nodes.append((province, 'A', ''))
+        if province not in getattr(state, 'land_provinces', set()):
+            coasts = sorted(set(coast_map.get(province, ())))
+            if coasts:
+                nodes.extend((province, 'F', coast) for coast in coasts)
+            else:
+                nodes.append((province, 'F', ''))
+        if nodes:
+            nodes_by_province[province] = nodes
+    return nodes_by_province
+
+
+def _compute_apply_heat_score(state: InnerGameState) -> None:
+    """Port ApplyInfluenceScores.c:68-305's six token-key score sets.
+
+    Set zero is seeded from live units; sets one through five use
+    ``(self + sum(max score per adjacent province)) / 5``. Fleet coast keys
+    remain separate, while duplicate coast variants of one destination use the
+    source's maximum-before-add rule.
+    """
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    nodes_by_province = _apply_heat_nodes(state)
+    all_nodes = [node for nodes in nodes_by_province.values() for node in nodes]
+    state.g_heat_score.fill(0)
+
+    reverse_fleet_coasts: dict[tuple[int, int], list[str]] = {}
+    for (destination, coast), adjacencies in getattr(
+        state, 'fleet_coast_adj', {}
+    ).items():
+        for source in adjacencies:
+            reverse_fleet_coasts.setdefault(
+                (int(source), int(destination)), []
+            ).append(str(coast).upper())
+
+    for power in range(num_powers):
+        scores = {node: 0 for node in all_nodes}
+        for province, unit in state.unit_info.items():
+            if int(unit.get('power', -1)) != power:
+                continue
+            unit_type = str(unit.get('type', 'A')).upper()
+            if unit_type in ('A', 'AMY', 'ARMY'):
+                key = (int(province), 'A', '')
+            else:
+                coast = str(unit.get('coast', '')).upper()
+                if coast and not coast.startswith('/'):
+                    coast = '/' + coast
+                key = (int(province), 'F', coast)
+                if key not in scores:
+                    fleet_nodes = [
+                        node for node in nodes_by_province.get(int(province), ())
+                        if node[1] == 'F'
+                    ]
+                    if len(fleet_nodes) == 1:
+                        key = fleet_nodes[0]
+            if key in scores:
+                scores[key] = 5000
+
+        aggregate_scores = scores
+        for _round in range(5):
+            next_scores: dict[tuple[int, str, str], int] = {}
+            for node in all_nodes:
+                province, unit_type, coast = node
+                if unit_type == 'A':
+                    adjacent_provinces = [
+                        adj for adj in state.get_unit_adjacencies(province)
+                        if adj not in getattr(state, 'water_provinces', set())
+                    ]
+                elif coast:
+                    adjacent_provinces = list(
+                        state.fleet_coast_adj.get((province, coast), ())
+                    )
+                else:
+                    adjacent_provinces = list(
+                        state.fleet_adj_matrix.get(province, ())
+                    )
+
+                total = int(scores[node])
+                for adjacent in adjacent_provinces:
+                    candidates = []
+                    if unit_type == 'A':
+                        candidates.append((int(adjacent), 'A', ''))
+                    else:
+                        destination_coasts = reverse_fleet_coasts.get(
+                            (province, int(adjacent)), ()
+                        )
+                        if destination_coasts:
+                            candidates.extend(
+                                (int(adjacent), 'F', dst_coast)
+                                for dst_coast in destination_coasts
+                            )
+                        else:
+                            candidates.append((int(adjacent), 'F', ''))
+                    total += max(
+                        (int(scores[candidate]) for candidate in candidates
+                         if candidate in scores),
+                        default=0,
+                    )
+                next_scores[node] = total // 5
+            scores = next_scores
+            if _round == 1:
+                # Binary 0x436996 looks up +0x3634 (set two) while walking
+                # +0x361c (set-zero) keys for the g_HeatScore accumulation.
+                aggregate_scores = scores
+
+        for province, nodes in nodes_by_province.items():
+            state.g_heat_score[power, province] = sum(
+                int(aggregate_scores[node]) for node in nodes
+            )
+
+
+def _normalize_movement_heat(state: InnerGameState) -> None:
+    """Normalize GenerateOrders' two heat copies as C:448-505."""
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    num_provinces = _runtime_province_count(state)
+    for power in range(num_powers):
+        primary = state.g_heat_movement[power, :num_provinces]
+        primary_max = float(np.max(primary))
+        state.g_heat_movement[power, :num_provinces] = np.floor(
+            primary * 100.0 / (primary_max + 1.0)
+        )
+        secondary = state.g_heat_movement_b[power, :num_provinces]
+        secondary_max = float(np.max(secondary))
+        if secondary_max > 0.0:
+            state.g_heat_movement_b[power, :num_provinces] = np.floor(
+                secondary * 100.0 / secondary_max
+            )
+
+
+def _populate_unit_adjacency_count(state: InnerGameState) -> None:
+    """Port C:389-447's active-unit, type-filtered reach counter."""
+    state.g_unit_adjacency_count.fill(0)
+    for province, unit in state.unit_info.items():
+        province = int(province)
+        power = int(unit.get('power', -1))
+        if not 0 <= power < int(getattr(state, 'g_num_powers', 7)):
+            continue
+        unit_type = str(unit.get('type', 'A')).upper()
+        if unit_type in ('F', 'FLT', 'FLEET'):
+            coast = str(unit.get('coast', '')).upper()
+            if coast and not coast.startswith('/'):
+                coast = '/' + coast
+            if coast and (province, coast) in state.fleet_coast_adj:
+                adjacencies = state.fleet_coast_adj[(province, coast)]
+            else:
+                adjacencies = state.fleet_adj_matrix.get(province, ())
+        else:
+            adjacencies = [
+                adjacent for adjacent in state.get_unit_adjacencies(province)
+                if adjacent not in getattr(state, 'water_provinces', set())
+            ]
+        for adjacent in adjacencies:
+            state.g_unit_adjacency_count[power, int(adjacent)] += 1
+        state.g_unit_adjacency_count[power, province] += 1
+
+
+def _max_pair_support_score(
+    state: InnerGameState,
+    support_scores: np.ndarray,
+    power_a: int,
+    power_b: int,
+) -> int:
+    """Return C:602-634's max outside both powers' home-SC sets."""
+    excluded = set(getattr(state, 'home_centers', {}).get(power_a, ()))
+    excluded.update(getattr(state, 'home_centers', {}).get(power_b, ()))
+    valid = getattr(state, 'valid_provinces', ()) or range(len(support_scores))
+    return max(
+        (int(support_scores[province]) for province in valid
+         if int(province) not in excluded),
+        default=0,
+    )
+
+
+def _is_append_order_province(state: InnerGameState, province: int) -> bool:
+    """Return ApplyInfluenceScores.c:676-713's normal append eligibility.
+
+    The source first requires the unit-set lookup to return ``end``. It then
+    appends a non-supply province directly; an empty supply centre takes the
+    board-token branch and is rejected by its ``0x14`` empty-unit sentinel.
+    Python has one synchronized unit view, so the observable gate is exactly
+    "unoccupied non-supply province".
+    """
+    province = int(province)
+    return (
+        province not in state.unit_info
+        and province not in getattr(state, 'sc_provinces', ())
+    )
+
+
+def _populate_global_province_score(state: InnerGameState) -> None:
+    """Port C:507-549's int64 sum and integer normalization."""
+    num_powers = int(getattr(state, 'g_num_powers', 7))
+    num_provinces = _runtime_province_count(state)
+    totals = np.sum(
+        state.g_heat_movement[:num_powers, :num_provinces],
+        axis=0,
+        dtype=np.float64,
+    )
+    maximum = float(np.max(totals))
+    state.g_global_province_score.fill(0.0)
+    if maximum > 0.0:
+        state.g_global_province_score[:num_provinces] = np.floor(
+            totals * 100.0 / maximum
+        )
+
+
 def apply_influence_scores(state: InnerGameState, own_power: int):
     """
     Port of ApplyInfluenceScores (sole caller of AppendOrder / FUN_00419d80).
@@ -52,97 +329,35 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                     copy of g_influence_matrix_raw (same gate/heat as Phase 1h,
                     GenerateOrders.c:352-383).
     """
-    NUM_POWERS = 7
-    NUM_PROVINCES = 256
+    NUM_POWERS = int(getattr(state, 'g_num_powers', 7))
+    NUM_PROVINCES = _runtime_province_count(state)
 
-    # ── Pass 1: Zero accumulators + 10-round BFS influence propagation ────────
-    #
-    # For each power:
-    #   • All provinces in adjacency lists initialised to score 0 in ordered set
-    #   • Own-power units seeded at base score 5000
-    #   • 10 rounds: each province = sum(adjacent scores) / 5
-    #   • Own-unit provinces re-pinned to 5000 each round (source stays "on")
-    # Result written to g_heat_score and to g_heat_movement / g_heat_movement_b
-    # (the two arrays consumed by Pass 5's score formula).
-    # Updated 2026-04-21: 10 rounds to match C (ScoreProvinces.c:492-638).
-    state.g_heat_score.fill(0)
-    state.g_heat_movement.fill(0)
-    state.g_heat_movement_b.fill(0)
-
-    for power in range(NUM_POWERS):
-        scores = np.zeros(NUM_PROVINCES, dtype=np.int64)
-
-        for prov_id, info in state.unit_info.items():
-            if info['power'] == power:
-                scores[prov_id] = 5000
-
-        for _ in range(10):
-            nxt = np.zeros(NUM_PROVINCES, dtype=np.int64)
-            for prov in range(NUM_PROVINCES):
-                adj = state.get_unit_adjacencies(prov)
-                if adj:
-                    nxt[prov] = sum(scores[q] for q in adj) // 5
-            for prov_id, info in state.unit_info.items():
-                if info['power'] == power:
-                    nxt[prov_id] = 5000
-            scores = nxt
-
-        # ── Pass 2: Accumulate g_heat_score ───────────────────────────────────
-        for prov in range(NUM_PROVINCES):
-            state.g_heat_score[power, prov] = int(scores[prov])
-
-        # Mirror into the two movement-heat arrays consumed by Pass 5.
-        # DAT_004ec2f0 (g_heat_movement) is power_b's input; DAT_005af0e8
-        # (g_heat_movement_b) is power_a's input. Both are filled identically
-        # here and normalised to 100-scale in Pass 6 before Pass 5 reads them.
-        state.g_heat_movement[power] = scores.astype(np.float64)
-        state.g_heat_movement_b[power] = scores.astype(np.float64)
+    # ── Pass 1-2: private token-key, five-round heat diffusion ───────
+    # GenerateOrders owns the two movement-heat inputs. ApplyInfluenceScores'
+    # six ordered sets independently produce g_heat_score and clear the
+    # per-call attack-history accumulator.
+    state.g_attack_history.fill(0)
+    _compute_apply_heat_score(state)
 
     # ── Pass 3: g_influence_ratio normalisation ────────────────────────────────
     #
-    # For army-occupied provinces:
-    #   owner == own_power → ratio = heat_a / global_max(g_heat_score)
-    #   otherwise          → ratio = heat_a / heat_owner   (may exceed 1.0)
-    state.g_influence_ratio.fill(0.0)
-    global_heat_max = float(np.max(state.g_heat_score)) or 1.0
-
-    for power_a in range(NUM_POWERS):
-        for prov in range(NUM_PROVINCES):
-            info = state.unit_info.get(prov)
-            if info is None or info['type'] != 'A':
-                continue
-            owner = info['power']
-            heat_a = float(state.g_heat_score[power_a, prov])
-            if owner == own_power:
-                state.g_influence_ratio[power_a, prov] = heat_a / global_heat_max
-            else:
-                heat_owner = float(state.g_heat_score[owner, prov])
-                state.g_influence_ratio[power_a, prov] = (
-                    heat_a / heat_owner if heat_owner > 0.0 else 0.0
-                )
+    # For each controlled SC, compare every outer power's heat against the
+    # controller heat + 1. The controller's own row uses the strongest other
+    # power as its numerator (ApplyInfluenceScores.c:330-379).
+    _populate_influence_ratio(state)
 
     # ── Pass 4: g_unit_adjacency_count ─────────────────────────────────────────
     #
     # g_unit_adjacency_count[power][province] = count of power's units that can
     # reach province (each unit counts its own province + all adjacencies).
-    state.g_unit_adjacency_count.fill(0)
-    for prov_id, info in state.unit_info.items():
-        pw = info['power']
-        for adj in state.get_unit_adjacencies(prov_id):
-            state.g_unit_adjacency_count[pw, adj] += 1
-        state.g_unit_adjacency_count[pw, prov_id] += 1
+    _populate_unit_adjacency_count(state)
 
     # ── Pass 6 (early): Normalise g_heat_movement / g_heat_movement_b to 100 ───
     #
     # Must run before Pass 5 so the score formula has normalised inputs.
-    # spec: DAT_004ec2f0[power][province] = value * 100 / max  (__allmul+__alldiv)
-    for power in range(NUM_POWERS):
-        max_mv = float(np.max(state.g_heat_movement[power]))
-        if max_mv > 0.0:
-            state.g_heat_movement[power] *= 100.0 / max_mv
-        max_mv_b = float(np.max(state.g_heat_movement_b[power]))
-        if max_mv_b > 0.0:
-            state.g_heat_movement_b[power] *= 100.0 / max_mv_b
+    # DAT_004ec2f0 divides by max+1; DAT_005af0e8 divides by max. Both use
+    # integer division in the binary.
+    _normalize_movement_heat(state)
 
     # ── Pass 5: Per-pair scores + AppendOrder ─────────────────────────────────
     #
@@ -200,7 +415,9 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                 support_scores[prov] = int(sp / DENOM_SUPPORT) if DENOM_SUPPORT > 0 else 0
 
             best_move    = int(np.max(move_scores))
-            best_support = int(np.max(support_scores))
+            best_support = _max_pair_support_score(
+                state, support_scores, power_a, power_b
+            )
 
             # g_attack_history accumulation (= g_PerPowerMoveBonus, DAT_005a48e8)
             # C: g_attack_history[power_a, prov] += FloatToInt64(heat_a)
@@ -220,14 +437,14 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                     )
                     if sort_key == 0:
                         continue
-                    if prov not in state.unit_info:
+                    if not _is_append_order_province(state, prov):
                         continue
 
                     flag1 = True
                     flag2 = True
                     flag3 = False
 
-                    owner = int(state.g_sc_owner[prov])
+                    owner = int(state.g_order_dip_owner[prov])
                     # ApplyInfluenceScores.c packs these into node+0x1c:
                     # byte 0 (flag1) is cleared when the other power owns the
                     # province; byte 1 (flag2) is cleared when Albert owns it.
@@ -235,14 +452,6 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                         flag1 = False
                     elif owner == own_power:
                         flag2 = False
-
-                    unit = state.unit_info[prov]
-                    if unit['type'] == 'A':
-                        unit_power = unit['power']
-                        if unit_power == own_power:
-                            flag1 = False
-                        elif unit_power == power_b:
-                            flag2 = False
 
                     # AppendOrder = std::map<int,OrderEntry>::insert keyed by sort_key
                     state.g_order_list.append({
@@ -257,40 +466,20 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                         'done': False,
                     })
 
-    # g_order_list mirrors std::map sort (ascending key = lowest score first in map;
-    # ProposeDMZ iterates in order — descending score = highest priority first)
+    # AppendOrder's comparator routes a larger numeric key to the left subtree;
+    # the tree's begin()/iterator walk therefore visits scores in descending
+    # numeric order. Keep that priority order for the Python list consumers.
     state.g_order_list.sort(key=lambda e: e['score'], reverse=True)
 
     # ── Pass 6 (cont.): g_global_province_score + inter-power contact matrices ──
-    state.g_global_province_score.fill(0.0)
-    for prov in range(NUM_PROVINCES):
-        for power in range(NUM_POWERS):
-            state.g_global_province_score[prov] += state.g_heat_movement[power, prov]
-    global_prov_max = float(np.max(state.g_global_province_score)) or 1.0
-    state.g_global_province_score *= 100.0 / global_prov_max
+    _populate_global_province_score(state)
 
     # Contact matrices: C layout is a single flat BSS region, stride 63
     # (= 3×21 slots/row): g_contact_count at base−21 int32s, g_contact_weighted
     # at base, g_contact_owner_count at base+21 int32s.  Each 21-slot block
     # holds 7 values (other_power 0..6) + 14 padding.  Python (7,7) arrays
     # capture this correctly; reads must use the three separate arrays.
-    state.g_contact_count.fill(0)
-    state.g_contact_weighted.fill(0)
-    state.g_contact_owner_count.fill(0)
-    for prov_id, info in state.unit_info.items():
-        pw = info['power']
-        for adj in state.get_unit_adjacencies(prov_id):
-            owner_r = int(state.g_sc_owner[adj])
-            if owner_r < 0 or owner_r >= NUM_POWERS or owner_r == pw:
-                continue
-            if state.g_influence_ratio[pw, adj] > 1.0:
-                state.g_contact_count[pw, owner_r] += 1
-                state.g_contact_weighted[pw, owner_r] += int(
-                    state.g_unit_adjacency_count[pw, adj]
-                )
-                state.g_contact_owner_count[pw, owner_r] += int(
-                    state.g_unit_adjacency_count[owner_r, adj]
-                )
+    _populate_contact_matrices(state)
 
 
 def compute_alliance_score(state: InnerGameState) -> None:
@@ -362,19 +551,29 @@ def set_opening_targets(state: InnerGameState) -> None:
         best_int = 0
         best_prov = -1
 
-        for prov in range(NUM_PROVINCES):
-            if prov not in state.unit_info:
-                continue
-            unit = state.unit_info[prov]
-            if unit['type'] in ('A', 'AMY'):
-                # C filter: unit_type != 'A' OR secondary_byte == 0x14
-                # 0x14 (army-coast secondary) not tracked in Python — skip armies
-                continue
-            # Opening target must be an enemy/neutral fleet province.
-            # Own fleet provinces always win the heat comparison (re-pinned at 100)
-            # but Adjustment 4 in ScoreProvinces is inside the non-own/non-ally branch,
-            # so they can never receive the +150 boost — exclude them here.
-            if unit.get('power') == power:
+        # C gate (GenerateOrders.c:626-628):
+        #     if ((board[3 + prov*0x24] != '\0')                     <- SC flag
+        #         && (((unit_field >> 8) != 'A')                     <- not an army
+        #             || ((unit_field & 0xff) == 0x14)))             <- OR no unit
+        #
+        # Fixed 2026-08-18: the port required a unit to be present
+        # (`if prov not in state.unit_info: continue`) and never checked the
+        # supply-centre flag.  C's `(unit_field & 0xff) == 0x14` branch is
+        # precisely the "province is EMPTY" case, and byte +3 is the
+        # supply-centre flag (see §1.1).  So the eligible set is
+        # "supply centres not occupied by an army", which is exactly the
+        # empty neutral centres — SPA, POR, BEL, TUN — that the port could
+        # never select.  Adjustment 4 in score_provinces gives the opening
+        # target 150 instead of the 75 default, doubling its BFS seed.
+        # Sorted: C walks the province array in index order, and the `>`
+        # comparison below keeps the FIRST maximum, so iteration order is
+        # part of the result.
+        sc_provs = sorted(getattr(state, 'sc_provinces', None) or ())
+        for prov in sc_provs:
+            unit = state.unit_info.get(prov)
+            if unit is not None and unit.get('type') in ('A', 'AMY'):
+                # An army sitting here disqualifies the province; a fleet or
+                # an empty province does not.
                 continue
             g_prov = float(state.g_global_province_score[prov])
             if g_prov == 0.0:

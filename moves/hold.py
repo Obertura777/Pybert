@@ -6,7 +6,7 @@ Early-pipeline helpers run by ``generate_orders`` before support and convoy
 enumeration:
 
   * ``enumerate_hold_orders``   — full port of ``EnumerateHoldOrders``
-    (``FUN_00455fd0``).  Populates ``g_hold_weight``, builds per-power
+    (``FUN_00455fd0``).  Populates the token-keyed candidate weights, builds per-power
     ordered province sets, and fills ``g_unit_province_reach`` /
     ``g_max_non_ally_reach`` (consumed by ``EvaluateAllianceScore``).
     Phase 6 builds per-power default-hold DAIDE token sequences
@@ -100,7 +100,7 @@ def _get_ally_trust_for_adj(state: InnerGameState,
 def enumerate_hold_orders(state: InnerGameState, power_idx: int):
     """Full port of EnumerateHoldOrders (FUN_00455fd0).
 
-    Called once per power by ``generate_orders``.  On the **first call**
+    Called once per power by the Python ``send_GOF`` pass.  On the **first call**
     (``power_idx == 0``) the function zeroes and rebuilds the global
     reach matrices for ALL powers (Phase 1-2 in the C code operate across
     all powers before Phase 6 iterates per-power).  Subsequent calls with
@@ -118,7 +118,7 @@ def enumerate_hold_orders(state: InnerGameState, power_idx: int):
     slots), insert it into the unit's power's ordered set; if the resulting
     rank exceeds the current ``g_max_non_ally_reach``, update it.
 
-    **Phase 5** — Hold-weight population (the only part the prior stub had).
+    **Phase 5** — Seed each unit key's owner-weight slot with 30.
 
     **Phase 6** — Per-power hold-order sequence generation.  Calls
     ``BuildOrder_RTO`` (sets order type = HLD), ``FUN_00463690`` (DAIDE
@@ -131,18 +131,22 @@ def enumerate_hold_orders(state: InnerGameState, power_idx: int):
     # ── Phase 1 + 2: Reach matrices (run once, on first power) ────────────
     # The C code loops all powers in Phase 1 and all units in Phase 2
     # before entering the per-power Phase 6 loop.  We gate on power_idx == 0
-    # to avoid redundant rebuilds — generate_orders calls us in a
+    # to avoid redundant rebuilds — the send_GOF pass calls us in a
     # ``for p in range(NUM_POWERS): enumerate_hold_orders(state, p)`` loop.
     if power_idx == 0:
         _build_reach_matrices(state)
-
-    # ── Phase 5: Hold-weight population ───────────────────────────────────
-    for prov in range(NUM_PROVINCES):
-        if state.has_own_unit(power_idx, prov):
-            if state.g_threat_level[power_idx, prov] > 0:
-                state.g_hold_weight[prov] = max(state.g_hold_weight[prov], 0.4)
-            else:
-                state.g_hold_weight[prov] = 1.0
+        # ── Phase 5: token-key candidate-weight seed ──────────────────────
+        # EnumerateHoldOrders.c:170-224 first clears record[0x15+p] for every
+        # map key, then writes 30 to the occupying unit key's owner slot.
+        state.g_key_weight.fill(0)
+        state.g_key_weight_flt.fill(0)
+        for prov, unit in state.unit_info.items():
+            unit_power = int(unit.get('power', -1))
+            if not 0 <= unit_power < NUM_POWERS:
+                continue
+            state.add_key_weight(
+                unit_power, prov, 30, unit.get('type', 'A')
+            )
 
     # ── Phase 6: Hold-order sequence generation ─────────────────────────
     # Port of EnumerateHoldOrders.c lines 227-293.
@@ -204,8 +208,9 @@ def _build_reach_matrices(state: InnerGameState):
         # C (lines 68-87): for each power, OrderedSet_FindOrInsert →
         #   g_unit_province_reach[province + power*256] = *result
         for p in range(NUM_POWERS):
-            state.g_unit_province_reach[p, prov_id] = \
-                state.final_score_set[p, prov_id]
+            state.g_unit_province_reach[p, prov_id] = state.fss(
+                p, prov_id, unit_type
+            )
 
         # 2b. Get type-filtered adjacencies.
         # C (line 99): AdjacencyList_FilterByUnitType(gamestate, unit_type)
@@ -234,7 +239,7 @@ def _build_reach_matrices(state: InnerGameState):
         for adj_prov in adj_list:
             trust = _get_ally_trust_for_adj(state, unit_power, adj_prov)
             if trust == 0:
-                adj_score = float(state.final_score_set[unit_power, adj_prov])
+                adj_score = state.fss(unit_power, adj_prov, unit_type)
                 cur_max = state.g_max_non_ally_reach[unit_power, prov_id]
                 if adj_score > cur_max:
                     state.g_max_non_ally_reach[unit_power, prov_id] = adj_score
@@ -304,13 +309,18 @@ def compute_safe_reach(state: InnerGameState):
     # (ordinal ranks) instead of the scores.
     for prov_id, unit_data in _unit_snapshot:
         unit_power = unit_data['power']
-        adj = state.get_unit_adjacencies(prov_id)
+        unit_type = unit_data.get('type', 'A')
+        raw_adj = state.get_unit_adjacencies(prov_id)
+        if unit_type in ('F', 'FLT'):
+            adj = [p for p in raw_adj if p not in state.land_provinces]
+        else:
+            adj = [p for p in raw_adj if p not in state.water_provinces]
 
-        score = float(state.final_score_set[unit_power, prov_id])
+        score = state.fss(unit_power, prov_id, unit_type)
         is_safe = (contested[prov_id, unit_power] != 1)
 
         for adj_prov in adj:
-            adj_score = float(state.final_score_set[unit_power, adj_prov])
+            adj_score = state.fss(unit_power, adj_prov, unit_type)
             if adj_score > score:
                 score = adj_score
             if contested[adj_prov, unit_power] == 1:
@@ -384,14 +394,6 @@ def _build_hold_order_seqs(state: InnerGameState, power_idx: int) -> None:
 
     # Step 2: Per-power loop
     for power in range(num_powers):
-        # C lines 204-226: clear per-power province reach arrays BEFORE
-        # generating hold sequences.  C zeros g_UnitProvinceReach and
-        # g_MaxNonAllyReach for each province before each power's pass.
-        # Fixed 2026-04-23 (audit finding MOV-3): was missing, leaving
-        # stale reach data from prior powers.
-        state.g_unit_province_reach[power, :] = 0
-        state.g_max_non_ally_reach[power, :] = 0
-
         # 2a. ResetPerTrialState — clear build list, size counter, and waive count
         state.g_build_order_list.clear()
         state.g_build_order_list_size = 0
@@ -448,7 +450,7 @@ def assign_hold_supports(state: InnerGameState, candidates) -> None:
       4. score = (_rand() // 0x17) % 0x7c17 + 500
          MSVC _rand() ∈ [0, RAND_MAX=32767=0x7fff]
          → score ∈ [500, 1924]
-      5. ScoreConvoyFleet(this+0x4cfc, buf, &score) → bisect.insort
+      5. ScoreConvoyFleet(this+0x4cfc, buf, &score) → stable descending insert
 
     *candidates* may be any iterable of province ints (or a dict whose
     keys are province ints — matching the caller in monte_carlo/trial.py).

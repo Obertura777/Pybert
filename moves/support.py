@@ -67,9 +67,13 @@ def build_support_opportunities(state: InnerGameState):
         for p, info in list(state.unit_info.items()):
             if info.get('power') != power:
                 continue
+            unit_type = info.get('type', 'A')
+            unit_coast = info.get('coast', '')
 
             # --- first adjacency: q = potential attack target ---------------
             for q in state.get_adjacent_provinces(p):
+                if not state.can_reach_by_type(p, q, unit_type, unit_coast):
+                    continue
                 # Gate 1: g_top_reach_flag[q] == 1
                 if int(state.g_top_reach_flag[q]) != 1:
                     continue
@@ -79,11 +83,17 @@ def build_support_opportunities(state: InnerGameState):
                 # Gate 3: ordered-set node value == g_MaxProvinceScore[power, q].
                 # C checks lo+hi int64 fields (lines 110-111); hi-word is always 0
                 # for non-negative scores, so this reduces to a single float compare.
-                if float(state.final_score_set[power, q]) != float(state.g_max_prov_score_per_power[power, q]):
+                if state.fss(power, q, unit_type) != float(state.g_max_prov_score_per_power[power, q]):
                     continue
 
                 # --- second adjacency: r = potential supporter province -----
+                # C does not walk the province-only adjacency here: after
+                # canonicalising q's token key it calls
+                # AdjacencyList_FilterByUnitType again.  Keep the same moving
+                # unit channel across the complete p-q-r-p triangle.
                 for r in state.get_adjacent_provinces(q):
+                    if not state.can_reach_by_type(q, r, unit_type):
+                        continue
                     # Supporter must be on own SC territory
                     if int(state.g_sc_ownership[power, r]) != 1:
                         continue
@@ -92,14 +102,16 @@ def build_support_opportunities(state: InnerGameState):
                         continue
 
                     # --- third adjacency: s; if s == p the triangle closes ---
-                    if p in state.get_adjacent_provinces(r):
+                    if state.can_reach_by_type(r, p, unit_type):
                         state.g_support_opportunities_set.append({
                             'power':           power,
                             'score':           float(state.g_max_province_score[q]),
                             'mover_prov':      p,   # U source (p)
                             'target_prov':     q,   # U destination (q)
                             'supporter_prov':  r,   # W position (r)
-                            # coast tokens omitted (Python adj matrix is coast-agnostic)
+                            # C retains edge coast tokens in the record.  Python
+                            # consumers use province identity and re-check the
+                            # actual supporter's coast before emitting an order.
                         })
 
     # C stores entries in a BST keyed on score (ScoreSupportOpp.c).  Consumers
@@ -163,42 +175,53 @@ def assign_support_order(
     go_to_score = reach_eq_0 or bVar16
 
     # ── Section 2 — Occupancy check (C lines 66-104) ──────────────────────
-    # Province record: byte at offset 3 = occupancy (0=empty); ushort at
-    # offset 0x20 = (hi='A' if Army)(lo=power_idx).
+    # Province record: byte at offset 3 = the SUPPLY-CENTRE flag (NOT
+    # occupancy — see project_scoring_pipeline; ComputeBuildDelta uses the
+    # identical test to tally each power's centres).  ushort at offset 0x20 =
+    # (hi='A' if Army)(lo=power_idx).  The corrected decision tree is spelled
+    # out at the gate below.
+    # CORRECTED 2026-08-25.  The comment above read province-record byte +3 as
+    # OCCUPANCY; it is the SUPPLY-CENTRE flag -- established in
+    # project_scoring_pipeline, where ComputeBuildDelta uses the identical test
+    # `pbVar5[-0x1d] != 0` to build each power's centre tally.  So C's decision
+    # tree here is about SUPPLY CENTRES, not about who is standing where:
     #
-    # C decision tree for src_prov:
-    #   - empty (byte==0)            → LAB_00441475  (score)
-    #   - own army (hi=='A', lo==pow) → LAB_00441475  (score)
-    #   - else (non-own OR own fleet) → check dst_prov:
-    #       - dst empty              → fall-through to LAB_0044150f (skip score)
-    #       - dst army (byte=='\x01') AND own → LAB_0044150f (skip score)
-    #       - dst army non-own, or fleet     → LAB_00441475  (score)
+    #   src NOT a supply centre                      -> LAB_00441475 (score)
+    #   src IS a supply centre:
+    #       own ARMY on src                          -> LAB_00441475 (score)
+    #       else, dst NOT a supply centre            -> LAB_0044150f (skip)
+    #       else, dst IS a supply centre:
+    #           own ARMY on dst                      -> LAB_0044150f (skip)
+    #           else                                 -> LAB_00441475 (score)
     #
-    # Previous port missed two cases: (a) src non-own + dst empty was kept
-    # go_to_score=True instead of False; (b) own fleet at dst incorrectly
-    # skipped score — C only special-cases '\x01' (army), not fleet.
-    if go_to_score:
-        src_unit = state.unit_info.get(src_prov)
-        if src_unit is not None:
-            src_is_own_army = (src_unit['power'] == power_idx
-                               and src_unit.get('type') == 'A')
-            if not src_is_own_army:
-                # src has non-own unit or own fleet
-                dst_unit = state.unit_info.get(dst_prov)
-                if dst_unit is None:
-                    # dst empty → fall through to LAB_0044150f
+    # (Both unit tests downgrade a non-army occupant to the 0x14 sentinel
+    # first, C:86-89 and :98-101 -- finding 13 in project_port_audit_patterns.)
+    # The port gated on occupancy instead, which is why supports came out at
+    # 66 against Albert's 111.
+    if go_to_score and src_prov in state.sc_provinces:
+        _su = state.unit_info.get(src_prov)
+        _src_own_army = (_su is not None
+                         and _su.get('type', 'A') in ('A', 'AMY')
+                         and int(_su.get('power', -1)) == power_idx)
+        if not _src_own_army:
+            if dst_prov not in state.sc_provinces:
+                go_to_score = False
+            else:
+                _du = state.unit_info.get(dst_prov)
+                _dst_own_army = (_du is not None
+                                 and _du.get('type', 'A') in ('A', 'AMY')
+                                 and int(_du.get('power', -1)) == power_idx)
+                if _dst_own_army:
                     go_to_score = False
-                elif (dst_unit.get('type') == 'A'
-                      and dst_unit['power'] == power_idx):
-                    # dst has own army → LAB_0044150f
-                    go_to_score = False
-                # dst non-own or fleet → LAB_00441475 (go_to_score stays True)
 
     # ── LAB_00441475 — Score threshold and SUP assignment ──────────────────
     if go_to_score:
         # Scores from Albert.final_score_set[power] (this+pow*0xc+0x4000)
-        score_dst = float(state.final_score_set[power_idx, dst_prov])
-        score_src = float(state.final_score_set[power_idx, src_prov])
+        # The destination lookup uses the source unit's token/coast (the stack
+        # word immediately after param_3), not the unit occupying destination.
+        _st = (state.unit_info.get(src_prov) or {}).get('type')
+        score_dst = state.fss(power_idx, dst_prov, _st)
+        score_src = state.fss(power_idx, src_prov, _st)
         # g_ProvinceBaseScore = DAT_006040e8 (state.g_attack_count)
         base_score = float(state.g_attack_count[power_idx, src_prov])
 
@@ -557,7 +580,8 @@ def build_order_sup_mto(
     state.g_order_table[supporter, _F_DEST_PROV]     = float(target)
     state.g_order_table[supporter, _F_INCOMING_MOVE] = 1.0
 
-    score_lo = float(state.final_score_set[power_idx, supporter])
+    score_lo = state.fss(power_idx, supporter,
+                         (state.unit_info.get(supporter) or {}).get('type'))
     state.g_convoy_chain_score[supporter]            = score_lo
     state.g_order_table[supporter, _F_CONVOY_LO]     = score_lo
     state.g_order_table[supporter, _F_CONVOY_HI]     = 0.0
@@ -715,7 +739,8 @@ def build_order_sup_hld(
     state.g_order_table[src_prov, _F_DEST_PROV]     = float(dst_prov)
     state.g_order_table[src_prov, _F_INCOMING_MOVE] = 1.0
 
-    score_lo = float(state.final_score_set[power_idx, src_prov])
+    score_lo = state.fss(power_idx, src_prov,
+                         (state.unit_info.get(src_prov) or {}).get('type'))
     state.g_convoy_chain_score[src_prov]         = score_lo
     state.g_order_table[src_prov, _F_CONVOY_LO]  = score_lo
     state.g_order_table[src_prov, _F_CONVOY_HI]  = 0.0

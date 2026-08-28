@@ -20,7 +20,7 @@ import logging as _logging
 
 from ...state import InnerGameState
 from ...heuristics.win import compute_build_delta
-from ..parsers import _extract_top_paren_groups
+from ..parsers import _extract_top_paren_groups, _split_top_level_groups
 
 _log = _logging.getLogger(__name__)
 
@@ -35,26 +35,26 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
 
     Extracts power, unit type (A/F), and province from a unit token list.
     Handles three province/coast encodings:
-      - subgroup:       token[2]=='(' → inner ( province coast ) group
-                        (C: FUN_004658e0 detects first element of local_b4 is a sub-list)
+      - subgroup:       token[2] is ``[province, coast]``
+                        (C: FUN_004658e0 detects a sub-list)
       - embedded coast: 'SPA/SC'
       - separate token: 'SPA', 'SC' — FLT only (C: else-if FLT branch, lines 164-169)
-    Writes the extracted unit info into ``state.unit_info`` keyed by integer
-    province ID (via ``state.prov_to_id``).
+    A five-element ``power unit location MRT retreat-list`` record is
+    dislodged and is written to ``state.dislodged_unit_info``. Ordinary units
+    are written to the active ``state.unit_info`` set.
 
     The C code writes into two separate ordered-set/map structures:
-      - inner+0x2450 (all-powers non-coasted unit set)
-      - inner+0x245c (all-powers coasted unit set)
-      - inner+0x24b4 / inner+0x24c0 (own-power unit maps, non-coast / coast)
-    Python consolidates all four into ``state.unit_info``.
+      - inner+0x2450 (all-powers ordinary/active unit set)
+      - inner+0x245c (all-powers dislodged unit set)
+      - inner+0x24b4 / inner+0x24c0 (own-power active/dislodged maps)
 
     Args:
         state: InnerGameState; must have ``prov_to_id`` populated by
                ``synchronize_from_game`` before this is called.
-        unit_tokens: whitespace-split tokens from one NOW unit group,
-                     e.g. ['AUS', 'AMY', 'BUD'] or ['FRA', 'FLT', 'SPA/SC']
-                     or ['FRA', 'FLT', 'SPA', 'SC'] or
-                     ['ENG', 'FLT', '(', 'LON', 'NC', ')'].
+        unit_tokens: top-level items from one NOW unit group, e.g.
+                     ``['AUS', 'AMY', 'BUD']``,
+                     ``['RUS', 'FLT', ['STP', 'SCS']]``, or
+                     ``['ENG', 'FLT', 'ENG', 'MRT', ['LON', 'IRI']]``.
 
     Returns:
         True if unit parsed and recorded; False on any parse error
@@ -87,14 +87,11 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
         _log.warning("parse_now_unit: invalid unit_type %r", unit_type_str)
         return False
 
-    # --- province + optional coast (element 2, optionally element 3) ---
+    # --- province + optional coast (element 2) ---
     # C: GetSubList(2...) → local_b4; FUN_004658e0 tests whether local_b4[0] is a sublist.
     #
     # Encoding 1 — subgroup ( prov coast ):
-    #   After _extract_top_paren_groups strips the outer NOW-unit parens, a
-    #   DAIDE fleet-at-coast group like "ENG FLT ( LON NC )" is split by
-    #   whitespace into ["ENG","FLT","(","LON","NC",")"].  Detect the leading
-    #   "(" and collect the inner tokens.
+    #   _split_top_level_groups represents the location as ["STP", "SCS"].
     #   C equivalent: FUN_004658e0(local_b4)==true branch (lines 76-90).
     #
     # Encoding 2 — separate coast token:
@@ -106,22 +103,9 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
     prov_code: str
     coast_suffix: str
 
-    if str(unit_tokens[2]) == '(':
-        # Subgroup format: collect tokens until matching ')'.
-        inner: list[str] = []
-        depth = 1
-        j = 3
-        while j < len(unit_tokens):
-            t = str(unit_tokens[j])
-            if t == '(':
-                depth += 1
-            elif t == ')':
-                depth -= 1
-                if depth == 0:
-                    break
-            else:
-                inner.append(t.upper())
-            j += 1
+    location = unit_tokens[2]
+    if isinstance(location, list):
+        inner = [str(token).upper() for token in location if str(token) not in ('(', ')')]
         if not inner:
             _log.warning("parse_now_unit: empty province sub-group in %r", unit_tokens)
             return False
@@ -130,16 +114,20 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
         # NOTE: C 5-token ParseDestinationWithCoast loop (ParseNOWUnit lines
         # 122-138) is not implemented; that path handles an extended DAIDE
         # format not seen in standard Standard-map NOW messages.
-    elif '/' in str(unit_tokens[2]):
+    elif '/' in str(location):
         # Embedded coast: 'SPA/SC'
-        prov_code, coast_tag = str(unit_tokens[2]).upper().split('/', 1)
+        prov_code, coast_tag = str(location).upper().split('/', 1)
         coast_suffix = '/' + coast_tag
-    elif unit_type_char == 'F' and len(unit_tokens) >= 4:
+    elif (
+        unit_type_char == 'F'
+        and len(unit_tokens) >= 4
+        and str(unit_tokens[3]).upper() != 'MRT'
+    ):
         # C else-if (FLT == uVar1) — separate coast token, FLT only.
-        prov_code = str(unit_tokens[2]).upper()
+        prov_code = str(location).upper()
         coast_suffix = '/' + str(unit_tokens[3]).upper()
     else:
-        prov_code = str(unit_tokens[2]).upper()
+        prov_code = str(location).upper()
         coast_suffix = ''
 
     # --- province ID lookup (C uses integer province index; Python mirrors this) ---
@@ -152,18 +140,41 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
         _log.warning("parse_now_unit: unknown province %r", prov_code)
         return False
 
-    # --- duplicate province check ---
-    # C: AdjacencyList_LowerBound + if (local_cc[1] == local_90) → local_c8 = 2.
-    if prov_id in state.unit_info:
-        _log.warning("parse_now_unit: duplicate province %r (id=%d)", prov_code, prov_id)
-        return False
-
-    # --- write into state.unit_info (C: UnitList_FindOrInsert at inner+0x2450/0x245c) ---
-    state.unit_info[prov_id] = {
+    is_dislodged = (
+        len(unit_tokens) == 5 and str(unit_tokens[3]).upper() == 'MRT'
+    )
+    info = {
         'power': power_idx,
         'type': unit_type_char,
         'coast': coast_suffix,
     }
+
+    if is_dislodged:
+        retreat_items = unit_tokens[4]
+        if not isinstance(retreat_items, list):
+            retreat_items = [retreat_items]
+        # The final MRT sub-list may contain bare province tokens or nested
+        # coast locations. Preserve resolved province/coast pairs for retreat
+        # consumers while keeping the active unit set untouched.
+        parsed_retreats = []
+        for item in _split_top_level_groups(retreat_items):
+            if isinstance(item, list):
+                if not item:
+                    continue
+                dest = str(item[0]).upper()
+                dest_coast = str(item[1]).upper() if len(item) > 1 else ''
+            else:
+                dest = str(item).upper()
+                dest_coast = ''
+            if '/' in dest:
+                dest, dest_coast = dest.split('/', 1)
+            dest_id = prov_to_id.get(dest, -1)
+            if dest_id >= 0:
+                parsed_retreats.append({'province': dest_id, 'coast': dest_coast})
+        info['retreats'] = parsed_retreats
+        state.dislodged_unit_info[prov_id] = info
+    else:
+        state.unit_info[prov_id] = info
 
     _log.debug(
         "parse_now_unit: power=%s(%d) type=%s prov=%s(id=%d) coast=%r",
@@ -182,7 +193,8 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     units it explicitly clears all per-turn unit snapshot structures (C clears
     six separate data structures; Python consolidates them):
 
-      - ``state.unit_info``               ← C inner+0x2450 / +0x245c ordered sets
+      - ``state.unit_info``               ← C inner+0x2450 active-unit set
+      - ``state.dislodged_unit_info``     ← C inner+0x245c dislodged-unit set
       - ``state.g_build_order_list``      ← C inner+0x2478 BST
       - ``state.g_build_order_list_size`` ← C inner+0x247c BST size
       - ``state.g_waive_count``           ← C inner+0x2480
@@ -190,15 +202,15 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     After all units are parsed, performs the WIN-season post-processing from
     C ParseNOW lines 122-172: finds own-power units occupying enemy home SCs
     and records them in ``state.g_enemy_home_occupied`` (Python equivalent of
-    the C ordered set / map at inner+0x2450 / inner+0x24cc that inner+0x24cc
-    has no known reader per SetOwnPower.c analysis, so functional impact is
+    the C ordered set / map at inner+0x2450 / inner+0x24cc. The latter has no
+    known reader per SetOwnPower.c analysis, so functional impact is
     informational only).
 
     NOW message format:
-      NOW ( season ) ( year ) ( unit1 ) ( unit2 ) ... ( unitN )
+      NOW ( season year ) ( unit1 ) ( unit2 ) ... ( unitN )
 
     Example:
-      NOW ( SUM ) ( 1901 ) ( AUS A BUD ) ( ENG F LON )
+      NOW ( SUM 1901 ) ( AUS A BUD ) ( ENG F LON )
 
     Error recovery: C stops processing remaining units at the first
     ParseNOWUnit failure (SEH-based break-on-exception).  Python mirrors this
@@ -211,14 +223,25 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     Returns:
         True if parse successful, False on error
     """
-    # Extract top-level paren groups: groups[0]=season, [1]=year, [2:]=units
+    # Canonical DAIDE uses one turn group: NOW ( SUM 1901 ) ( unit ) ... .
+    # Retain compatibility with the old Python-only NOW (SUM) (1901) shape.
     groups = _extract_top_paren_groups(message)
-    if len(groups) < 2:
+    if not groups:
         _log.warning("parse_now: message too short: %r", message[:100])
         return False
 
-    season_str = groups[0].strip()
-    year_str   = groups[1].strip()
+    header = _split_top_level_groups(groups[0].split())
+    if len(header) >= 2:
+        season_str = str(header[0]).upper()
+        year_str = str(header[1])
+        unit_groups = groups[1:]
+    elif len(groups) >= 2:
+        season_str = groups[0].strip().upper()
+        year_str = groups[1].strip()
+        unit_groups = groups[2:]
+    else:
+        _log.warning("parse_now: missing year group: %r", message[:100])
+        return False
 
     valid_seasons = ['SPR', 'SUM', 'FAL', 'AUT', 'WIN']
     if season_str not in valid_seasons:
@@ -238,17 +261,15 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     # --- Explicit list-clearing (C ParseNOW lines 69-99) ---
     # C clears six linked-list / BST structures before repopulating from the
     # incoming NOW snapshot.  Python equivalents:
-    state.unit_info.clear()                # inner+0x2450 (all-unit ordered set)
-                                           # inner+0x245c (coasted-unit ordered set)
-                                           # inner+0x24b4 (own-power non-coast map)
-                                           # inner+0x24c0 (own-power coast map)
+    state.unit_info.clear()                # inner+0x2450 (active-unit ordered set)
+    state.dislodged_unit_info.clear()       # inner+0x245c (dislodged-unit set)
     state.g_build_order_list      = []     # inner+0x2478 (WIN build BST)
     state.g_build_order_list_size = 0      # inner+0x247c
     state.g_waive_count           = 0      # inner+0x2480
 
     # --- Parse each unit entry (groups[2:]) ---
-    for i, unit_group in enumerate(groups[2:]):
-        unit_tokens = unit_group.split()
+    for i, unit_group in enumerate(unit_groups):
+        unit_tokens = _split_top_level_groups(unit_group.split())
         if not unit_tokens:
             continue
 
@@ -258,8 +279,10 @@ def parse_now(state: InnerGameState, message: str) -> bool:
             _log.warning("parse_now: parse_now_unit failed at index %d: %r", i, unit_group)
             return False
 
-    _log.info("parse_now: parsed %d units (season=%s year=%d)",
-              len(state.unit_info), season_str, year)
+    _log.info(
+        "parse_now: parsed %d active and %d dislodged units (season=%s year=%d)",
+        len(state.unit_info), len(state.dislodged_unit_info), season_str, year,
+    )
 
     # --- WIN-season post-processing (C ParseNOW lines 122-172) ---
     # C line 122-123: if season==WIN, call ComputeBuildDelta (FUN_0040ab10)

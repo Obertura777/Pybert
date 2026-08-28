@@ -4,7 +4,7 @@ Split from bot.py during the 2026-04 refactor.
 
 Contains the decompile's strategy-layer functions:
 
-- ``_stab_enemy_slot_remove`` / ``_stab_clear_ally_list`` — 3-slot queue helpers
+- ``_stab_ally_slot_remove`` / ``_stab_clear_ally_list`` — 3-slot queue helpers
 - ``_destroy_inner_list`` / ``free_list`` / ``_destroy_candidate_tree`` — C++ list/tree
   destructor ports (absorbed as Python list ops)
 - ``_stabbed``                 — stab detection + ally-slot promotion
@@ -45,11 +45,21 @@ def _rand_stride() -> int:
     return val
 
 
-def _stab_enemy_slot_remove(slots, target):
-    """Remove target from the 3-slot g_enemy_slot queue.
+def _int64_words(value: int) -> tuple[int, int]:
+    """Return C's unsigned low and signed high int32 words for an int64."""
+    bits = int(value) & 0xFFFFFFFFFFFFFFFF
+    low = bits & 0xFFFFFFFF
+    high = (bits >> 32) & 0xFFFFFFFF
+    if high & 0x80000000:
+        high -= 0x100000000
+    return low, high
 
-    Slot[0] removal left-shifts remaining entries (C lines 418-426 / 430-436).
-    Slot[1] or slot[2] removal just clears that slot (C lines 437-455).
+
+def _stab_ally_slot_remove(slots, target, *, promote_third=False):
+    """Remove target from the DAT_004c6bc4/c8/cc best-ally queue.
+
+    Slot[0] removal always left-shifts.  Slot[1] removal promotes slot[2]
+    only when Albert is the stabber; the victim-side arm simply clears slot[1].
     """
     if slots[0] == target:
         slots[0] = slots[1] if slots[1] != -1 else -1
@@ -57,9 +67,35 @@ def _stab_enemy_slot_remove(slots, target):
             slots[1] = slots[2] if slots[2] != -1 else -1
             slots[2] = -1
     elif slots[1] == target:
-        slots[1] = -1
+        if promote_third and slots[2] != -1:
+            slots[1] = slots[2]
+            slots[2] = -1
+        else:
+            slots[1] = -1
     elif slots[2] == target:
         slots[2] = -1
+
+
+# Backward-compatible import name from before DAT_004c6bc4/c8/cc was
+# identified as the best-ally queue.
+_stab_enemy_slot_remove = _stab_ally_slot_remove
+
+
+def _get_best_ally_slots(state) -> list[int]:
+    return [
+        int(getattr(state, f"g_best_ally_slot{index}", -1))
+        for index in range(3)
+    ]
+
+
+def _set_best_ally_slots(state, slots) -> None:
+    values = [int(value) for value in slots[:3]]
+    while len(values) < 3:
+        values.append(-1)
+    for index, value in enumerate(values):
+        setattr(state, f"g_best_ally_slot{index}", value)
+    # Compatibility mirror for callers predating the address identification.
+    state.g_enemy_slot = np.array(values, dtype=np.int32)
 
 
 def _destroy_inner_list(container):
@@ -203,67 +239,62 @@ def _stabbed(state: InnerGameState) -> None:
       g_some_coop_score (DAT_0062c580) if SPR;
       g_coop_flag (DAT_0062be98) if FAL.
 
-    Phase 1 — unit-list proposed-order check (Albert+0x2450/54):
-      For each unit of power col (not row): check if the unit's province has a
-      per-province alliance record (Albert+prov*0x24) whose ally field == row.
-      Python proxy: g_ally_designation_a/B[prov] == row.
-      Sets stab_flag for this (row,col) pair.
+    Phase 1 — unit / controlled-SC consistency check (Albert+0x2450/54):
+      For each active unit of power col, inspect the province's SC flag and
+      controller token. A unit on an SC controlled by another power row marks
+      (row,col).
 
     Phase 2 — submitted-order stab check (Albert+0x248c/90):
       For each submitted order by col (not row):
-        MTO/CTO (type 2/6): dest must appear in g_AllyCounterList[col] (when
+        MTO/CTO (type 2/6): a dest appearing in g_AllyCounterList[col] (when
           col attacked row=own_power) or g_AllyPromiseList[row] (when col=own
-          attacked row).
+          attacked row) is a stab.
         SUP-MTO (type 4): same check using support-target province.
       If destination not found in expected list → stab_flag set.
 
     On stab (stab_flag==True):
       g_stab_flag[row, col] = 1.
       If row==own_power (victim): log + set g_stabbed_flag + clear stabber's
-        ally lists + update g_enemy_slot (removal) + g_opening_sticky_mode.
+        ally lists + update best-ally slots (removal) + g_opening_sticky_mode.
       If col==own_power (stabber): clear victim's ally lists.
       Always: bilateral g_some_coop_score or g_coop_flag; bilateral trust reset.
     """
     own_power = int(getattr(state, "albert_power_idx", 0))
-    num_powers = 7
+    num_powers = int(getattr(state, "g_num_powers", 7))
     season = state.g_season
 
     # ── Phase 0: Init pass ────────────────────────────────────────────────────
     # Arrays: int[pow*21+other], stride 0x54=21*4 per row, 4 per col.
-    # In Python they are (7,7); fill(0) is equivalent.
-    state.g_stab_flag.fill(0)
-    state.g_neutral_flag.fill(0)
-    state.g_cease_fire.fill(0)
-    state.g_peace_signal.fill(0)
+    # C visits only the live num_powers × num_powers prefix.
+    active = np.s_[:num_powers, :num_powers]
+    state.g_stab_flag[active] = 0
+    state.g_neutral_flag[active] = 0
+    state.g_cease_fire[active] = 0
+    state.g_peace_signal[active] = 0
     if season == "SPR":
-        state.g_coop_score_flag_a.fill(0)
-    elif season == "FAL":
-        state.g_coop_score_flag_b.fill(0)
+        state.g_coop_score_flag_a[active] = 0
+    if season == "FAL":
+        state.g_coop_score_flag_b[active] = 0
 
-    # ── Phase 1: unit-list province-designation check (Albert+0x2450/54) ─────
+    # ── Phase 1: active-unit / controlled-SC check (Albert+0x2450/54) ────────
     # C: for each unit node (iVar15) where unit.power==col and col!=row:
     #   byte  at Albert+3+prov*0x24        → nonzero = has ally designation
     #   ushort at Albert+0x20+prov*0x24    → hi='A', lo=designated ally power
     #   if hi!='A': lo = 0x14 (invalid)
     #   if lo == row: uStack_92 |= 1
-    # Python proxy: g_ally_designation_a[prov]==row or g_ally_designation_b[prov]==row.
+    # Province byte +3 is the SC flag and +0x20 is its controlling-power token.
+    # This arm detects an active unit standing on another power's controlled SC;
+    # it does not read an occupant or alliance-designation table.
     stab_unit = np.zeros((num_powers, num_powers), dtype=bool)
     for prov, unit in state.unit_info.items():
         col = int(unit["power"])
-        prov_id = int(prov) if not isinstance(prov, int) else prov
-        if prov_id >= 256:
+        if not (0 <= col < num_powers):
             continue
-        desig_a = int(state.g_ally_designation_a[prov_id])
-        desig_a_hi = int(state.g_ally_designation_a_hi[prov_id])
-        desig_b = int(state.g_ally_designation_b[prov_id])
-        desig_b_hi = int(state.g_ally_designation_b_hi[prov_id])
-        for row in range(num_powers):
-            if row == col:
-                continue
-            if (desig_a_hi >= 0 and desig_a == row) or (
-                desig_b_hi >= 0 and desig_b == row
-            ):
-                stab_unit[row, col] = True
+        if prov not in state.sc_provinces:
+            continue
+        row = int(state.g_sc_owner[prov])
+        if 0 <= row < num_powers and row != col:
+            stab_unit[row, col] = True
 
     # ── Phase 2: submitted-order stab check (Albert+0x248c/90) ───────────────
     # g_AllyCounterList[col]: set of expected dest provinces for col's moves
@@ -278,14 +309,28 @@ def _stabbed(state: InnerGameState) -> None:
         if lst is None:
             return False
         if isinstance(lst, dict):
-            return dest in lst.get(power, set())
+            entries = lst.get(power, [])
         if isinstance(lst, (list, np.ndarray)):
             try:
-                entry = lst[power]
-                if isinstance(entry, set):
-                    return dest in entry
+                entries = lst[power]
             except (IndexError, KeyError):
-                pass
+                return False
+        if not isinstance(lst, (dict, list, np.ndarray)):
+            return False
+        if isinstance(entries, dict):
+            entries = entries.values()
+        for entry in entries:
+            if isinstance(entry, dict):
+                value = entry.get(
+                    "dest_prov", entry.get("province", entry.get("dst_prov", -1))
+                )
+            else:
+                value = entry
+            try:
+                if int(value) == dest:
+                    return True
+            except (TypeError, ValueError):
+                continue
         return False
 
     stab_order = np.zeros((num_powers, num_powers), dtype=bool)
@@ -318,18 +363,18 @@ def _stabbed(state: InnerGameState) -> None:
         # Case A: attacker (col) hits own_power (row==own_power)
         if col != own_power:
             row = own_power
-            if not _in_list(ally_counter, col, dest):
+            if _in_list(ally_counter, col, dest):
                 stab_order[row, col] = True
         # Case B: own_power (col) moves into other power's (row) territory
         elif col == own_power:
             for row in range(num_powers):
                 if row == col:
                     continue
-                if not _in_list(ally_promise, row, dest):
+                if _in_list(ally_promise, row, dest):
                     stab_order[row, col] = True
 
     # ── Phase 3: apply stab consequences ─────────────────────────────────────
-    slots = list(map(int, state.g_enemy_slot))
+    slots = _get_best_ally_slots(state)
     for row in range(num_powers):
         for col in range(num_powers):
             if row == col:
@@ -342,8 +387,10 @@ def _stabbed(state: InnerGameState) -> None:
             # Victim == own_power (C lines 270-367)
             if row == own_power:
                 logger.info("We have been stabbed by (%d) during the turn", col)
+                build_alliance_msg(state, 10)
                 state.g_stabbed_flag = 1
                 logger.info("Enemy desired because of stab")
+                build_alliance_msg(state, 30)
                 _stab_clear_ally_list(state, "g_ally_promise_list", col)
                 _stab_clear_ally_list(state, "g_ally_counter_list", col)
 
@@ -366,18 +413,18 @@ def _stabbed(state: InnerGameState) -> None:
             state.g_ally_trust_score[col, row] = 0
             state.g_ally_trust_score_hi[col, row] = 0
 
-            # g_enemy_slot removal — victim==own: remove stabber;
+            # Best-ally-slot removal — victim==own: remove stabber;
             # stabber==own: remove victim (C lines 414-455).
             # Slot[0] removal left-shifts; slot[1]/[2] just cleared.
             if row == own_power:
-                _stab_enemy_slot_remove(slots, col)
+                _stab_ally_slot_remove(slots, col)
                 # g_opening_sticky_mode (C lines 415-417)
                 if state.g_opening_sticky_mode == 1 and col != state.g_opening_enemy:
                     state.g_opening_sticky_mode = 0
             if col == own_power:
-                _stab_enemy_slot_remove(slots, row)
+                _stab_ally_slot_remove(slots, row, promote_third=True)
 
-    state.g_enemy_slot = np.array(slots[:3], dtype=np.int32)
+    _set_best_ally_slots(state, slots)
 
 
 def _deviate_move(state: InnerGameState) -> None:
@@ -391,19 +438,64 @@ def _deviate_move(state: InnerGameState) -> None:
       Phase 3 – movement-order deviation stab (g_order_hist_list; LAB_0043a175 line 382)
       On stab detected → _apply_deviate_stab consequences
     """
-    own_power = getattr(state, "albert_power_idx", 0)
-    num_powers = 7
+    own_power = int(getattr(state, "albert_power_idx", 0))
+    num_powers = int(getattr(state, "g_num_powers", 7))
     season = state.g_season
 
     # Phase 0: Init pass — identical stride/layout in both STABBED and DEVIATE_MOVE
-    state.g_stab_flag.fill(0)
-    state.g_neutral_flag.fill(0)
-    state.g_cease_fire.fill(0)
-    state.g_peace_signal.fill(0)
+    active = np.s_[:num_powers, :num_powers]
+    state.g_stab_flag[active] = 0
+    state.g_neutral_flag[active] = 0
+    state.g_cease_fire[active] = 0
+    state.g_peace_signal[active] = 0
     if season == "SPR":
-        state.g_coop_score_flag_a.fill(0)
-    elif season == "FAL":
-        state.g_coop_score_flag_b.fill(0)
+        state.g_coop_score_flag_a[active] = 0
+    if season == "FAL":
+        state.g_coop_score_flag_b[active] = 0
+
+    def _positive_trust(row: int, col: int) -> bool:
+        lo = int(state.g_ally_trust_score[row, col])
+        hi = int(state.g_ally_trust_score_hi[row, col])
+        return hi >= 0 and (hi > 0 or lo != 0)
+
+    def _exact_snapshot(prefix: str, province: int, power: int) -> bool:
+        lo = getattr(state, prefix)
+        hi = getattr(state, prefix + "_hi")
+        return (
+            0 <= province < len(lo)
+            and int(lo[province]) == power
+            and int(hi[province]) == 0
+        )
+
+    def _spr_designates(province: int, power: int) -> bool:
+        return any(
+            _exact_snapshot(name, province, power)
+            for name in ("g_spr_desig_b", "g_spr_desig_a", "g_spr_desig_c")
+        )
+
+    def _sum_designates(province: int, power: int) -> bool:
+        return any(
+            _exact_snapshot(name, province, power)
+            for name in ("g_sum_desig_b", "g_sum_desig_a")
+        )
+
+    def _protected(container, power: int, province: int) -> bool:
+        entries = (container or {}).get(power, [])
+        if isinstance(entries, dict):
+            entries = entries.values()
+        for entry in entries:
+            if isinstance(entry, dict):
+                value = entry.get(
+                    "dest_prov", entry.get("province", entry.get("dst_prov", -1))
+                )
+            else:
+                value = entry
+            try:
+                if int(value) == province:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     # Phases 1 & 3 share one do-loop over the Albert+0x248c/0x2490 list
     # (decompile line 162; Phase 3 continues at LAB_0043a175 line 382;
@@ -417,160 +509,166 @@ def _deviate_move(state: InnerGameState) -> None:
     # commented onto the wrong attributes, so this phase iterated retreat
     # records while testing for movement order types — it never matched.
     # Corrected 2026-08-12.
-    retreat_list = getattr(state, "g_order_hist_list", [])
+    movement_list = getattr(state, "g_order_hist_list", [])
     # g_AttackMap (DAT_005d98e8) is a retreat-phase snapshot of g_target_flag
-    # (SnapshotProvinceState.c:729-732 copies g_target_flag → g_AttackMap).  The
-    # Python port doesn't run SnapshotProvinceState's copy pass, so we use
-    # g_target_flag directly when g_AttackMap isn't populated — same shape
-    # (7, 256) and same semantic (2 = active attacker).
+    # (SnapshotProvinceState.c:729-732 copies g_target_flag → g_AttackMap).
+    # Keep the fallback for focused synthetic fixtures that call DEVIATE_MOVE
+    # without first running SnapshotProvinceState.
     attack_map = getattr(state, "g_AttackMap", None)
     if attack_map is None:
         attack_map = getattr(state, "g_target_flag", None)
 
     for p in range(num_powers):
-        for rec in retreat_list:
+        for rec in movement_list:
             other = int(rec.get("power", -1))
             if not (0 <= other < num_powers) or other == p:
                 continue
 
             src_prov = int(rec.get("src_province", -1))
             dst_prov = int(rec.get("dst_province", -1))
+            unit_type = "F" if int(rec.get("unit_type", 0)) == 1 else "A"
 
             # ── Phase 1: retreat-zone peace signal (LAB_0043a000 do-loop) ───────
             # AdjacencyList_FilterByUnitType on src_prov → adjacent attack sources.
-            # For each adj: if adj designated to p AND dst_prov designated to p
-            #               → g_peace_signal[p, other] = 1.
+            # For each unit-type-reachable adj: if adj is exactly designated to
+            # p and the order belongs to another power, set the peace signal.
             # C reads SPR/FAL snapshots: 004d0e10=g_spr_desig_b, 004d1610=g_spr_desig_a,
             # 004d1e10=g_spr_desig_c.
-            if 0 <= dst_prov < 256:
-                for adj in state.adj_matrix.get(src_prov, []):
-                    if adj >= 256:
-                        continue
-                    adj_in_p = (
-                        int(state.g_spr_desig_a[adj]) == p
-                        or int(state.g_spr_desig_b[adj]) == p
-                        or int(state.g_spr_desig_c[adj]) == p
-                    )
-                    dst_in_p = (
-                        int(state.g_spr_desig_a[dst_prov]) == p
-                        or int(state.g_spr_desig_b[dst_prov]) == p
-                        or int(state.g_spr_desig_c[dst_prov]) == p
-                    )
-                    if adj_in_p and dst_in_p:
-                        state.g_peace_signal[p, other] = 1
-                        break
+            for adj in state.adj_matrix.get(src_prov, []):
+                if (
+                    adj < 256
+                    and state.can_reach_by_type(src_prov, adj, unit_type)
+                    and _spr_designates(adj, p)
+                ):
+                    state.g_peace_signal[p, other] = 1
+                    break
 
             # ── Phase 3: movement-order deviation stab (LAB_0043a175) ───────────
             order_type = int(rec.get("order_type", -1))
             sup_src = int(rec.get("sup_src", -1))
             sup_dst = int(rec.get("sup_dst", -1))
-            # End-game override (C LAB_0043aeb9): curr_sc_cnt[uStack_1c0=victim p] > 2.
-            # rec+0x6b is a separate flag for the cStack_1a1 relation-score path, not this gate.
-            endgame_override = (
-                state.g_near_end_game_factor >= 4.0 and int(state.sc_count[p]) > 2
+            # XDO expectations are indexed by the victim perspective, then by
+            # the submitted order's source province.  A present move contract
+            # takes precedence over a support contract, exactly as the two C
+            # tree probes at 0x43a1d5/0x43a21c do.
+            missing = object()
+            expected_move = (
+                (getattr(state, "g_xdo_mto_opp_score", {}) or {})
+                .get(p, {})
+                .get(src_prov, missing)
+            )
+            expected_support = (
+                (getattr(state, "g_xdo_sup_attacker_score", {}) or {})
+                .get(p, {})
+                .get(src_prov, missing)
             )
 
-            # Determine if this record constitutes a deviation into power p's territory
-            deviation = False
-
-            if order_type in (2, 6):  # MTO or CTO
-                if 0 <= dst_prov < 256:
-                    if (
-                        int(state.g_ally_designation_a[dst_prov]) == p
-                        or int(state.g_ally_designation_b[dst_prov]) == p
-                        or int(state.g_ally_designation_c[dst_prov]) == p
-                    ):
-                        deviation = True
-                        # "Unduly pressured" sub-case (C:521-533): the attacker
-                        # already had an active attack at dst (AttackMap == 2)
-                        # AND the victim also has a non-zero AttackMap there
-                        # → cease-fire, not a stab.
-                        #
-                        # C applies the cease-fire for EVERY victim power; only
-                        # the log line is gated on victim == own_power.  Gating
-                        # the whole sub-case on `p == own_power` (as this did
-                        # before 2026-08-12) turned every other power's mutual
-                        # pressure into a recorded stab.  The victim-side
-                        # AttackMap test was missing entirely.
-                        if (
-                            attack_map is not None
-                            and 0 <= other < 7
-                            and 0 <= dst_prov < 256
-                            and int(attack_map[other, dst_prov]) == 2
-                            and int(attack_map[p, dst_prov]) != 0
-                        ):
-                            state.g_cease_fire[p, other] = 1
-                            if p == own_power:
-                                logger.info(
-                                    "We have unduly pressured by (%d) during this turn",
-                                    other,
-                                )
-                            deviation = False  # cease-fire set; not a stab
-
-            elif order_type == 4:  # SUP-MTO
-                if 0 <= sup_dst < 256:
-                    if (
-                        int(state.g_ally_designation_a[sup_dst]) == p
-                        or int(state.g_ally_designation_b[sup_dst]) == p
-                        or int(state.g_ally_designation_c[sup_dst]) == p
-                    ):
-                        deviation = True
-                elif 0 <= sup_src < 256:
-                    for adj in state.adj_matrix.get(sup_src, []):
-                        if adj >= 256:
-                            continue
-                        if (
-                            int(state.g_ally_designation_a[adj]) == p
-                            or int(state.g_ally_designation_b[adj]) == p
-                            or int(state.g_ally_designation_c[adj]) == p
-                        ):
-                            deviation = True
-                            break
+            relation_override = False
+            if expected_move is not missing:
+                deviation = order_type not in (2, 6) or dst_prov != int(expected_move)
                 if deviation and p == own_power:
-                    logger.info(
-                        "Power (%d) did not make his expected support order this turn",
-                        other,
-                    )
-
-            elif order_type == 3:  # SUP-HLD
-                if 0 <= sup_src < 256:
-                    for adj in state.adj_matrix.get(sup_src, []):
-                        if adj >= 256:
-                            continue
-                        if (
-                            int(state.g_ally_designation_a[adj]) == p
-                            or int(state.g_ally_designation_b[adj]) == p
-                            or int(state.g_ally_designation_c[adj]) == p
-                        ):
-                            deviation = True
-                            break
-                if deviation and p == own_power:
-                    logger.info(
-                        "Power (%d) did not make his expected support order this turn",
-                        other,
-                    )
-
-            else:
-                # Type ≠ 2/3/4/6 (e.g. RTO=7, DSB=8, HLD=1): "did not make expected move"
-                # Only log when p is our own power (research.md §Phase 3).
-                if p == own_power:
                     logger.info(
                         "Power (%d) did not make his expected move this turn", other
                     )
-                # No designation check; flag as deviation only for own-power victim.
-                deviation = p == own_power
+            elif expected_support is not missing:
+                try:
+                    expected_sup_src, expected_sup_dst = map(int, expected_support)
+                except (TypeError, ValueError):
+                    expected_sup_src = expected_sup_dst = -1
+                if order_type == 4:
+                    fulfilled = (
+                        sup_src == expected_sup_src and sup_dst == expected_sup_dst
+                    )
+                elif order_type == 3:
+                    fulfilled = (
+                        sup_src == expected_sup_src
+                        and expected_sup_dst == expected_sup_src
+                    )
+                else:
+                    fulfilled = False
+                deviation = not fulfilled
+                if deviation and p == own_power:
+                    logger.info(
+                        "Power (%d) did not make his expected support order this turn",
+                        other,
+                    )
+            elif order_type in (2, 6):  # MTO or CTO, with no XDO contract
+                deviation = _spr_designates(dst_prov, p)
+                if deviation:
+                    relation_override = (
+                        dst_prov in state.sc_provinces
+                        and int(state.g_sc_owner[dst_prov]) == p
+                        and int(rec.get("flag_c", 0)) == 1
+                    )
+                elif other != own_power and p == own_power:
+                    deviation = _protected(
+                        getattr(state, "g_ally_counter_list", {}), other, dst_prov
+                    )
+                elif other == own_power and p != own_power:
+                    deviation = _protected(
+                        getattr(state, "g_ally_promise_list", {}), p, dst_prov
+                    )
+
+                # C's near-end gate makes the move a deviation, but does not
+                # by itself classify it as a stab.
+                if state.g_near_end_game_factor >= 4.0 and int(state.sc_count[p]) > 2:
+                    deviation = True
+
+                # When no territory/protected-list rule was violated, exact
+                # active pressure by both parties becomes a cease-fire.
+                if (
+                    not deviation
+                    and attack_map is not None
+                    and 0 <= dst_prov < 256
+                    and int(attack_map[other, dst_prov]) == 2
+                    and int(attack_map[p, dst_prov]) > 0
+                ):
+                    state.g_cease_fire[p, other] = 1
+                    if p == own_power:
+                        logger.info(
+                            "We have unduly pressured by (%d) during this turn", other
+                        )
+                        build_alliance_msg(state, 10)
+            elif order_type == 4:  # SUP-MTO, with no XDO contract
+                deviation = (
+                    _spr_designates(sup_dst, p)
+                    and not _exact_snapshot("g_spr_desig_a", sup_src, p)
+                )
+                if not deviation and other != own_power and p == own_power:
+                    deviation = _protected(
+                        getattr(state, "g_ally_counter_list", {}), other, sup_dst
+                    )
+                if not deviation and other == own_power and p != own_power:
+                    deviation = _protected(
+                        getattr(state, "g_ally_promise_list", {}), p, sup_dst
+                    )
+            elif order_type == 3:  # SUP-HLD, with no XDO contract
+                deviation = (
+                    _exact_snapshot("g_spr_desig_b", sup_src, p)
+                    and not _exact_snapshot("g_spr_desig_a", sup_src, p)
+                )
+            else:
+                # With neither XDO tree populated, other order types are safe.
+                deviation = False
 
             if not deviation:
                 continue
 
-            # Final stab/neutral marking (LAB_0043aacd):
-            # endgame_override OR trust[p][other] > 0 → stab
-            if endgame_override or int(state.g_ally_trust_score[p, other]) > 0:
+            # Final classification checks signed 64-bit trust in both
+            # directions, followed by the flag_c/relation-score override.
+            if (
+                _positive_trust(p, other)
+                or _positive_trust(other, p)
+                or (
+                    relation_override
+                    and int(state.g_relation_score[p, other]) > -10
+                )
+            ):
                 _apply_deviate_stab(state, other, p, own_power, num_powers, season)
             else:
-                state.g_neutral_flag[p, other] = 1
-                if p == own_power:
-                    logger.info("We have been attacked by (%d) during the turn", other)
+                _apply_deviate_neutral(
+                    state, other, p, own_power, num_powers, season
+                )
 
     # Phase 2: retreat-phase stab detection (C: Albert+0x2498/0x249c — the
     # RETREAT list; decompile line 248 tests node+0x20 == 7 = RTO, and the
@@ -588,7 +686,7 @@ def _deviate_move(state: InnerGameState) -> None:
                 continue
 
             # Gate: trust[attacker + p*21] > 0  → NumPy [p, attacker] (p=victim row, attacker=col)
-            if int(state.g_ally_trust_score[p, attacker]) <= 0:
+            if not _positive_trust(p, attacker):
                 continue
 
             order_type = int(rec.get("order_type", -1))
@@ -603,34 +701,22 @@ def _deviate_move(state: InnerGameState) -> None:
             if expected_dest < 0:
                 continue
 
-            # Check expected_dest against ally designation tables
-            # C: DAT_004cf610/DAT_004cfe10 (two per-province designation arrays).
-            # Python approximation via g_ally_designation_a/B indexed by province.
-            desig_a = (
-                int(state.g_ally_designation_a[expected_dest])
-                if expected_dest < 256
-                else -1
-            )
-            desig_b = (
-                int(state.g_ally_designation_b[expected_dest])
-                if expected_dest < 256
-                else -1
-            )
-            if desig_a != p and desig_b != p:
+            if not _sum_designates(expected_dest, p):
                 continue  # dest not in p's designated ally territory
 
             # Reverse-trust check determines stab vs neutral (C: lines 260-274)
             # Inner re-check uses same index as outer gate (attacker + p*21 = [p, attacker]);
             # neutral path is dead code after the outer gate, but model it for completeness.
-            trust_pa = int(state.g_ally_trust_score[p, attacker])
-            if trust_pa <= 0:
-                # neutral_flag[p, attacker] = DAT_0062b7b0[attacker + p*21]
-                state.g_neutral_flag[p, attacker] = 1
-                if p == own_power:
-                    logger.info(
-                        "We have been attacked by (%d) during the retreat phase",
-                        attacker,
-                    )
+            if not _positive_trust(p, attacker) and not _positive_trust(attacker, p):
+                _apply_deviate_neutral(
+                    state,
+                    attacker,
+                    p,
+                    own_power,
+                    num_powers,
+                    season,
+                    retreat_phase=True,
+                )
             else:
                 # At least one direction > 0 → stab (LAB_0043bad4)
                 _apply_deviate_stab(
@@ -649,91 +735,130 @@ def _apply_deviate_stab(
 ):
     """Apply stab consequences from DEVIATE_MOVE (LAB_0043bad4 / LAB_0043b0b2).
 
-    Sets g_stab_flag[attacker,p], bilateral CoopScoreFlag (season-dependent),
-    bilateral trust reset, and — when p==own_power — clears AllyMatrix rows,
-    manages g_enemy_slot (removal-based, C lines 1263-1321), g_opening_sticky_mode.
+    The C matrix layout is victim-row/attacker-column.  Retreat deviations stop
+    after flags, logging, and trust reset; movement deviations continue through
+    the promise/counter, ally-matrix, and enemy-slot consequences.
     """
-    state.g_stab_flag[attacker, p] = 1
+    state.g_stab_flag[p, attacker] = 1
 
-    # Bilateral CoopScoreFlag update (C lines 306-325):
-    #   SUM or FAL → g_coop_score_flag_a[attacker+p*21] and [attacker*21+p]
-    #   AUT, WIN, SPR → g_coop_score_flag_b (same indices)
+    # SUM/FAL write flag A; AUT/WIN/SPR write flag B.
     if season in ("SUM", "FAL"):
-        state.g_coop_score_flag_a[attacker, p] = 1
         state.g_coop_score_flag_a[p, attacker] = 1
-    else:
-        state.g_coop_score_flag_b[attacker, p] = 1
+        state.g_coop_score_flag_a[attacker, p] = 1
+    if season in ("AUT", "WIN", "SPR"):
         state.g_coop_score_flag_b[p, attacker] = 1
-
-    # Bilateral trust reset (C DEVIATE_MOVE.c lines 1185-1193: clears both lo and hi)
-    state.g_ally_trust_score[attacker, p] = 0
-    state.g_ally_trust_score_hi[attacker, p] = 0
-    state.g_ally_trust_score[p, attacker] = 0
-    state.g_ally_trust_score_hi[p, attacker] = 0
+        state.g_coop_score_flag_b[attacker, p] = 1
 
     if p == own_power:
         if retreat_phase:
             logger.info(
                 "We have been stabbed by (%d) during the retreat phase", attacker
             )
+            build_alliance_msg(state, 12)
         else:
             logger.info("We have been stabbed by (%d) during the turn", attacker)
+            build_alliance_msg(state, 10)
 
-        # Clear per-power designation lists via _destroy_inner_list (FUN_00401950):
-        # C: FUN_00401950(*(int**)(DAT_00bb6f2c[attacker*3]+4))  → g_AllyPromiseList
-        #    FUN_00401950(*(int**)(DAT_00bb702c[attacker*3]+4))   → g_AllyCounterList
+            # A stab against Albert can reset old peace counters for powers
+            # that now share the attacker as an enemy (C 0x43b22d-0x43b31b).
+            for power in range(num_powers):
+                if (
+                    power != own_power
+                    and power != attacker
+                    and int(state.g_ally_trust_score[power, attacker]) == 0
+                    and int(state.g_ally_trust_score_hi[power, attacker]) == 0
+                    and int(state.sc_count[power]) > 2
+                ):
+                    state.g_peace_counter[power] = 0
+                    build_alliance_msg(state, 10)
+    elif not retreat_phase and attacker != own_power:
+        # A third party stabbed by a mutual enemy may likewise have its peace
+        # counter reset, subject to the source's bilateral-trust and SC gates.
+        if (
+            int(state.g_ally_trust_score[own_power, p]) == 0
+            and int(state.g_ally_trust_score_hi[own_power, p]) == 0
+            and int(state.g_ally_trust_score[own_power, attacker]) == 0
+            and int(state.g_ally_trust_score_hi[own_power, attacker]) == 0
+            and int(state.sc_count[own_power]) <= int(state.sc_count[attacker])
+            and int(state.sc_count[p]) <= int(state.sc_count[attacker])
+        ):
+            state.g_peace_counter[p] = 0
+            build_alliance_msg(state, 10)
+
+    _apply_deviate_consequences(
+        state,
+        attacker,
+        p,
+        own_power,
+        num_powers,
+        retreat_phase=retreat_phase,
+    )
+
+
+def _apply_deviate_neutral(
+    state, attacker, p, own_power, num_powers, season, retreat_phase=False
+):
+    """Apply the neutral-attack arm of DEVIATE_MOVE."""
+    state.g_neutral_flag[p, attacker] = 1
+
+    if p == own_power:
+        if retreat_phase:
+            logger.info(
+                "We have been attacked by (%d) during the retreat phase", attacker
+            )
+            build_alliance_msg(state, 13)
+        else:
+            logger.info("We have been attacked by (%d) during the turn", attacker)
+            build_alliance_msg(state, 11)
+
+    _apply_deviate_consequences(
+        state,
+        attacker,
+        p,
+        own_power,
+        num_powers,
+        retreat_phase=retreat_phase,
+    )
+
+
+def _apply_deviate_consequences(
+    state, attacker, p, own_power, num_powers, *, retreat_phase=False
+):
+    """Shared post-classification state changes from DEVIATE_MOVE."""
+
+    # Bilateral trust reset (C DEVIATE_MOVE.c lines 1185-1193: clears both lo and hi)
+    state.g_ally_trust_score[p, attacker] = 0
+    state.g_ally_trust_score_hi[p, attacker] = 0
+    state.g_ally_trust_score[attacker, p] = 0
+    state.g_ally_trust_score_hi[attacker, p] = 0
+
+    # The retreat arm rejoins its list walk immediately after clearing trust.
+    if retreat_phase:
+        return
+
+    if p == own_power:
         _stab_clear_ally_list(state, "g_ally_promise_list", attacker)
         _stab_clear_ally_list(state, "g_ally_counter_list", attacker)
 
-        # Clear g_ally_matrix[attacker row] (C lines 1219-1222)
-        for j in range(num_powers):
-            state.g_ally_matrix[attacker, j] = 0
-
-        # g_enemy_slot: REMOVAL-based management (C lines 1253-1321).
-        # slot[0] removal left-shifts remaining entries (C lines 1263-1275).
-        # slot[1] / slot[2] removal just clears that slot (C blocks B/D,
-        # lines 1290-1296 and 1307-1313). All three checks run as sequential
-        # ifs (not elif) matching the C structure.
-        slots = list(getattr(state, "g_enemy_slot", np.array([-1, -1, -1])))
-        if slots[0] >= 0 and attacker == slots[0]:
-            slots[0] = -1
-            if slots[1] >= 0:
-                slots[0] = slots[1]
-                slots[1] = -1
-                if slots[2] >= 0:
-                    slots[1] = slots[2]
-                    slots[2] = -1
-        if slots[1] >= 0 and attacker == slots[1]:
-            slots[1] = -1
-        if slots[2] >= 0 and attacker == slots[2]:
-            slots[2] = -1
-        state.g_enemy_slot = np.array(slots[:3], dtype=np.int32)
-
-        # g_opening_sticky_mode (C lines 1254-1261)
         if getattr(state, "g_opening_sticky_mode", 0) == 1:
             if getattr(state, "g_opening_enemy", -1) != attacker:
                 state.g_opening_sticky_mode = 0
 
-    elif attacker == own_power:
-        # We (own_power) stabbed victim p: clear victim's AllyMatrix row (C lines 1243-1249,
-        # g_ally_matrix + uStack_1c0 * 0x15 where uStack_1c0 = p the victim)
-        for j in range(num_powers):
-            state.g_ally_matrix[p, j] = 0
+    if attacker == own_power:
+        _stab_clear_ally_list(state, "g_ally_promise_list", p)
+        _stab_clear_ally_list(state, "g_ally_counter_list", p)
 
-        # g_enemy_slot cascade: if we attacked the slot0 enemy, remove it and left-shift
-        # the queue (C lines 1283-1289). uVar17=old slot1, uVar8=old slot2 saved before
-        # the condition; side effects inside the condition do the shift.
-        slots = list(map(int, state.g_enemy_slot))
-        if slots[0] >= 0 and p == slots[0]:
-            old_slot1, old_slot2 = slots[1], slots[2]
-            slots[0] = -1
-            if old_slot1 >= 0:
-                slots[1] = -1
-                slots[0] = old_slot1
-                if old_slot2 >= 0:
-                    slots[2] = -1
-                    slots[1] = old_slot2
-            state.g_enemy_slot = np.array(slots, dtype=np.int32)
+    # Victim==own clears the attacker's row; attacker==own clears victim's row.
+    if p == own_power or attacker == own_power:
+        row = attacker if p == own_power else p
+        state.g_ally_matrix[row, :num_powers] = 0
+
+    slots = _get_best_ally_slots(state)
+    if p == own_power:
+        _stab_ally_slot_remove(slots, attacker)
+    if attacker == own_power:
+        _stab_ally_slot_remove(slots, p, promote_third=True)
+    _set_best_ally_slots(state, slots)
 
 
 def _friendly(state: InnerGameState) -> None:
@@ -809,9 +934,10 @@ def _hostility(state: InnerGameState) -> None:
                     continue  # mandatory inner filter
                 r_own_c = int(rank_mtx[own_power, c])
                 is_committed = (
-                    enemy_desired
-                    and c == state.g_committed_enemy
-                    and int(state.g_enemy_flag[c]) != 0
+                    int(state.g_enemy_flag[c]) == 1
+                    and int(state.g_enemy_flag_hi[c]) == 0
+                    and int(state.g_other_power_lead_flag) == 1
+                    and c == int(state.g_near_victory_power)
                 )
                 if r_own_c >= 4 and not is_committed:
                     continue
@@ -918,7 +1044,7 @@ def _hostility(state: InnerGameState) -> None:
                     state.g_diplomacy_state_a[p] = lo
                     state.g_diplomacy_state_b[p] = hi
                     # C: if ((int)hi < 1) && ((int)hi < 0 || lo < 5) → clear trust
-                    if hi < 1 and (hi < 0 or lo < 5):
+                    if hi < 1 and (hi < 0 or (lo & 0xFFFFFFFF) < 5):
                         state.g_ally_trust_score[own_power, p] = 0
                         state.g_ally_trust_score_hi[own_power, p] = 0
                     _send_ally_press_by_power(state, p)  # HOSTILITY.c:319
@@ -938,12 +1064,14 @@ def _hostility(state: InnerGameState) -> None:
             # Peace-counter loop (DAT_004cf4c0/c4 int64, HOSTILITY.c:340–363).
             # C: piVar18 = g_relation_score[own_power, *]; piVar8 = trust[own_power, *].
             for p in range(num_powers):
-                if p == own_power or int(state.g_enemy_flag[p]) != 0:
-                    continue
                 trust_op_lo = int(state.g_ally_trust_score[own_power, p])
                 trust_op_hi = int(state.g_ally_trust_score_hi[own_power, p])
-                # Increment when no enemy flag (already filtered) and trust == 0.
-                if trust_op_lo == 0 and trust_op_hi == 0:
+                enemy_clear = (
+                    int(state.g_enemy_flag[p]) == 0
+                    and int(state.g_enemy_flag_hi[p]) == 0
+                )
+                # C includes own_power in this bookkeeping loop.
+                if enemy_clear and trust_op_lo == 0 and trust_op_hi == 0:
                     state.g_peace_counter[p] += 1
 
                 # Reset when (trust > 0 AND relation > 14) OR relation < 0.
@@ -954,7 +1082,10 @@ def _hostility(state: InnerGameState) -> None:
                     state.g_peace_counter[p] = 0
 
                 # Clear when counter_lo >= 10 and season == SPR (C lines 354-358).
-                if int(state.g_peace_counter[p]) >= 10 and phase == "SPR":
+                peace_lo, peace_hi = _int64_words(state.g_peace_counter[p])
+                if (peace_hi >= 0
+                        and (peace_hi > 0 or peace_lo > 9)
+                        and phase == "SPR"):
                     state.g_peace_counter[p] = 0
 
             # SendAllyPressByPower for all powers when history > 0 (HOSTILITY.c:365-369).
@@ -981,6 +1112,7 @@ def _hostility(state: InnerGameState) -> None:
                     trust_op_lo == 0
                     and trust_op_hi == 0
                     and int(state.g_enemy_flag[p]) == 0
+                    and int(state.g_enemy_flag_hi[p]) == 0
                     and proximity > 0.0
                     and relation >= 0
                 ):
@@ -995,12 +1127,16 @@ def _hostility(state: InnerGameState) -> None:
             # C: g_history_counter==0 path goes directly to LAB_0042f95f; history>0 path
             #    checks PCE in press history (TRY stance tokens) first.
             for p in range(num_powers):
-                if p == own_power or int(state.g_enemy_flag[p]) != 0:
+                if (p == own_power
+                        or int(state.g_enemy_flag[p]) != 0
+                        or int(state.g_enemy_flag_hi[p]) != 0):
                     continue
-                # C: history>0 → skip unless power p declared PCE stance via TRY.
+                # Albert.exe 0x42f928-0x42f959 searches the fixed first
+                # DAT_00bb6e10 tree on every iteration. Unlike
+                # ExecuteThennAction, HOSTILITY does not add a power stride.
                 if (
                     state.g_history_counter > 0
-                    and _TOK_PCE not in state.g_press_history.get(p, set())
+                    and _TOK_PCE not in state.g_press_history.get(0, set())
                 ):
                     continue
                 sc = int(state.sc_count[p])
@@ -1024,23 +1160,23 @@ def _hostility(state: InnerGameState) -> None:
                 if int(state.g_relation_score[p, own_power]) < 0:
                     continue
                 # Random 15% gate OR peace counter lo-word < 2 (C line 448).
-                peace_lo = int(state.g_peace_counter[p]) & 0xFFFFFFFF
-                rand_pass = (_rand_stride() < 15) or (peace_lo < 2)
+                peace_lo, peace_hi = _int64_words(state.g_peace_counter[p])
+                low_counter = (
+                    peace_hi < 1 and (peace_hi < 0 or peace_lo < 2)
+                )
+                rand_pass = (_rand_stride() < 15) or low_counter
                 if not rand_pass:
                     continue
                 # History or deceit gate: history==0 OR DeceitLevel > 1.
                 if not (state.g_history_counter == 0 or state.g_deceit_level > 1):
                     continue
 
-                # Form peace: set bilateral trust; reset relation if not already at 50.
-                # NO_PRESS: skip trust assignment (no actual diplomacy → no trust
-                # agreements; trust=1 would block cross-border moves via the trust gate).
+                # Form peace: C always sets bilateral trust, including NO_PRESS.
                 prev_relation = int(state.g_relation_score[own_power, p])
-                if getattr(state, "g_minimal_press_mode", 0) != 1:
-                    state.g_ally_trust_score[own_power, p] = 1
-                    state.g_ally_trust_score_hi[own_power, p] = 0
-                    state.g_ally_trust_score[p, own_power] = 1
-                    state.g_ally_trust_score_hi[p, own_power] = 0
+                state.g_ally_trust_score[own_power, p] = 1
+                state.g_ally_trust_score_hi[own_power, p] = 0
+                state.g_ally_trust_score[p, own_power] = 1
+                state.g_ally_trust_score_hi[p, own_power] = 0
                 if prev_relation != 50:
                     state.g_relation_score[own_power, p] = 0
                     state.g_relation_score[p, own_power] = 0

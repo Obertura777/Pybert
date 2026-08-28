@@ -550,7 +550,7 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             Element 0 of sublist 2 → ppiStack_7c = destination province.
             Loop over g_xdo_candidate_list (in_stack_00000018):
               ScoreSupportOpp(DAT_00bb67f8 + entry.power * 0xc, buf,
-                               (dest_prov, dest_prov))
+                               (order_source, destination))
       6b. If SUP:
             local_2c = GetSubList(local_40, 2)  (the supported unit sub-token)
             sublist-1 element 0 → unused (supported unit identity)
@@ -564,13 +564,13 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
                                (ppiVar14, ppiVar16))
               Loop over g_xdo_candidate_list:
                 FUN_004193f0(DAT_00bb68f8 + entry.power*0xc, buf,
-                              (dest_prov, dest_prov))
+                              (supporter_source, supported_source, destination))
             Else (SUP HLD):
               StdMap_FindOrInsert(DAT_00bb6af8 + bVar3*0xc, ...,
                                    ppiStack_7c)
               Loop over g_xdo_candidate_list:
                 FUN_004193f0(DAT_00bb68f8 + entry.power*0xc, buf,
-                              (dest_prov, dest_prov))
+                              (supporter_source, supported_source, supported_source))
       7. Log "Recalculating: Because we have applied a XDO: (%s)" +
          BuildAllianceMsg(0x66).
       8. Clear local_74 sentinel via SerializeOrders (absorbed as no-op).
@@ -668,7 +668,12 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
         # pvStack_88 = pvStack_80 = src_prov  →  key = src_prov
         for entry in candidate_list:
             entry_power: int = int(entry.get('power', entry.get('node_power', 0)))
-            _score_support_opp(state, 'DAT_00bb67f8', entry_power, (src_prov, mto_dest))
+            _score_support_opp(
+                state,
+                'DAT_00bb67f8',
+                entry_power,
+                (province_id(src_prov), province_id(mto_dest)),
+            )
 
     elif order_cmd == 'SUP':
         # ── Step 6b: SUP ──────────────────────────────────────────────────────
@@ -710,7 +715,16 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             # pvStack_50 = pvStack_80 = src_prov  →  key = src_prov
             for entry in candidate_list:
                 entry_power = int(entry.get('power', entry.get('node_power', 0)))
-                _score_sup_attacker(state, 'DAT_00bb68f8', entry_power, (src_prov, src_prov))
+                _score_sup_attacker(
+                    state,
+                    'DAT_00bb68f8',
+                    entry_power,
+                    (
+                        province_id(src_prov),
+                        province_id(sup_unit_prov),
+                        province_id(ppiVar16),
+                    ),
+                )
         else:
             # SUP HLD: StdMap_FindOrInsert(DAT_00bb6af8 + bVar3_reread*0xc, ..., ppiStack_7c)
             # table index = bVar3_reread = sup_power_idx; key = ppiStack_7c = sup_unit_prov
@@ -721,7 +735,16 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
             # pvStack_50 = pvStack_80 = src_prov  →  key = src_prov
             for entry in candidate_list:
                 entry_power = int(entry.get('power', entry.get('node_power', 0)))
-                _score_sup_attacker(state, 'DAT_00bb68f8', entry_power, (src_prov, src_prov))
+                _score_sup_attacker(
+                    state,
+                    'DAT_00bb68f8',
+                    entry_power,
+                    (
+                        province_id(src_prov),
+                        province_id(sup_unit_prov),
+                        province_id(sup_unit_prov),
+                    ),
+                )
 
     # ── Step 7: log + BuildAllianceMsg ───────────────────────────────────────
     _log.debug(
@@ -751,8 +774,7 @@ def _score_support_opp(
 
     this     = &table[power * 0xc]  — per-power (or per-province) map object
     param_1  = output: [0]=iterator_base, [1]=node_ptr, [2]=was_inserted
-    param_2  = pointer to key (= args[0]); args[1] passed through to the
-               BST insert helper FUN_00403ca0 but not used by this function.
+    param_2  = pointer to the contiguous key/value pair (args[0], args[1]).
 
     Node layout (MSVC release std::map<int,int>):
       +0x00  left child ptr      (ppiVar4[0])
@@ -765,8 +787,8 @@ def _score_support_opp(
 
     Algorithm: BST lower-bound walk; if key already present return its node
     (was_inserted=False); else allocate a node via FUN_00403ca0
-    (was_inserted=True).  DAT_00bb69f8 passes a two-int source/destination
-    pair; the simpler opportunity maps only rely on a default-zero value.
+    (was_inserted=True).  XDO passes a two-int source/destination pair for
+    both DAT_00bb67f8 and DAT_00bb69f8.
     FUN_00401400 = BST iterator-decrement (predecessor).
 
     Python tables:
@@ -791,9 +813,10 @@ def _score_support_opp(
     key = args[0]  # province name (str) in Python port; int in C
     was_inserted: bool = key not in sub
     if was_inserted:
-        # DAT_00bb69f8 receives the full {source, destination} pair at XDO.c:166.
-        # Other ScoreSupportOpp users retain their existing zero-valued insert.
-        sub[key] = args[1] if base_offset == 'DAT_00bb69f8' else 0
+        # XDO.c builds a contiguous {source, destination} pair for both
+        # DAT_00bb67f8 and DAT_00bb69f8.  DEVIATE_MOVE reads node+0x10 as the
+        # expected destination from the former table.
+        sub[key] = args[1]
     return sub, key, was_inserted
 
 
@@ -804,21 +827,23 @@ def _score_sup_attacker(
     args: tuple,
 ) -> tuple:
     """
-    Port of FUN_004193f0 — MSVC std::map<int,int> find-or-insert.
+    Port of FUN_004193f0 — MSVC std::map<int,pair<int,int>> find-or-insert.
 
     C signature (decompiled.txt lines 2–50):
       void __thiscall FUN_004193f0(void *this, void **param_1, int *param_2)
 
     this     = &DAT_00bb68f8 + entry_power*0xc  — per-power attacker-score map
     param_1  = output: [0]=iterator_base, [1]=node_ptr, [2]=was_inserted
-    param_2  = pointer to key (args[0])
+    param_2  = pointer to contiguous
+               (key, supported_source, supported_destination) words
 
     Algorithm is structurally identical to ScoreSupportOpp (FUN_00404fd0):
       BST lower-bound walk using the node layout
         +0x00 left, +0x04 parent, +0x08 right, +0x0C key (int),
-        +0x10 value (int), +0x19 isnil byte (== '\\0' → real node)
+        +0x10 first mapped int, +0x14 second mapped int,
+        +0x19 isnil byte (== '\\0' → real node)
       If key found: return existing node, was_inserted=False.
-      Else: allocate zero-valued node via FUN_004136d0, was_inserted=True.
+      Else: allocate the three-word record via FUN_004136d0, was_inserted=True.
       FUN_0040e5f0 = BST iterator-decrement (predecessor).
 
     Python table:
@@ -836,7 +861,9 @@ def _score_sup_attacker(
     key = args[0]  # province name (str) in Python port; int in C
     was_inserted: bool = key not in sub
     if was_inserted:
-        sub[key] = 0   # zero-initialise mapped int (mirrors default-construct)
+        # XDO.c passes {order source, supported source, supported destination};
+        # DEVIATE_MOVE compares the two mapped values at node+0x10/+0x14.
+        sub[key] = (args[1], args[2])
     return sub, key, was_inserted
 
 

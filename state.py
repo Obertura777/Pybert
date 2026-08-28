@@ -166,7 +166,6 @@ class InnerGameState:
     g_support_opportunities_set: "Any"
     g_support_proposals: "Any"
     g_support_trust_adj: "Any"
-    g_trial_list2: "Any"
     g_trial_map: "Any"
     g_unit_presence: "Any"
     g_victory_threshold: "Any"
@@ -205,7 +204,22 @@ class InnerGameState:
         # DAT_00535ce8[pow*0x800+prov*8] — int64[pow*256+prov]; 1 = enemy can reach
         # Fixed 2026-04-20: int32→int64 to match C stride
         self.g_enemy_reach_score = np.zeros((7, 256), dtype=np.int64)
+        # DAT_00520ce8 — despite the name, C's g_SCOwnership is a *unit
+        # presence* flag: ScoreProvinces.c:786 is its only writer and it sets
+        # [power, prov] = 1 while walking the unit list.  synchronize_from_game
+        # additionally seeds it from real centre ownership so the pre-scoring
+        # consumers (WIN build/remove candidates) can read it, but the first
+        # score_provinces call of a phase overwrites it with unit presence.
+        # Anything that means "does this power own the supply centre here"
+        # must read g_board_sc_ownership instead — see below.
         self.g_sc_ownership = np.zeros((7, 256), dtype=np.int32)
+        # Board supply-centre ownership, [power, prov] = 1 when `power` owns
+        # the centre at `prov`.  This is the Python stand-in for C's
+        # GameBoard_GetPowerRec(province_record, ..., &power) membership test,
+        # which reads the board directly and is therefore immune to the
+        # per-trial scratch tables.  Written only by synchronize_from_game;
+        # never cleared by score_provinces.
+        self.g_board_sc_ownership = np.zeros((7, 256), dtype=np.int32)
         # M10 fix: int32→int64 to match C stride 0x800=2048 bytes/row
         # (consistent with g_enemy_presence and g_enemy_reach_score upgrades).
         self.g_target_flag = np.zeros((7, 256), dtype=np.int64)
@@ -249,9 +263,15 @@ class InnerGameState:
         self.g_contact_weighted = np.zeros((7, 7), dtype=np.int32)
         # DAT_00b75620[pow*0x3f+other] — owner-side adjacency count
         self.g_contact_owner_count = np.zeros((7, 7), dtype=np.int32)
-        # DAT_00ba2f70[province] — per-province SC owner index; -1 = unoccupied
-        # Alias of g_sc_owner (written by SnapshotProvinceState / ParseNOW)
+        # Board province token +0x20 — current SC controller; -1 = neutral.
+        # This is not DAT_00ba2f70: InitPositionForOrders builds that separate
+        # adjacency-spread scratch table below.
         self.g_sc_owner = np.full(256, -1, dtype=np.int32)
+        # DAT_00ba2f70[province] — home-SC controller spread used by
+        # ApplyInfluenceScores and ComputeOrderDipFlags. -2 means conflicting
+        # adjacent spreads and -1 means no qualifying controller.
+        self.g_order_dip_owner = np.full(256, -1, dtype=np.int32)
+        self.g_position_orders_initialized = False
         # DAT_004DA2F0 was misidentified as a separate "history gate" array.
         # Q-AIS-NEW-1 (resolved): it is the tail of g_heat_score; the real Pass 5
         # gate is g_unit_adjacency_count (DAT_004e1af0). No separate array needed.
@@ -342,10 +362,11 @@ class InnerGameState:
         # Mirrors the char flag at this->ptr_at_8 + fleet * 0x24 + 4 in the C++ original.
         self.g_convoy_fleet_registered: set = set()
 
-        # Albert+0x4CFC — sorted convoy fleet candidate list: list[tuple[int, int]] = (score, prov).
+        # Albert+0x4CFC — score-descending, equal-key-stable convoy candidates:
+        # list[tuple[int, int]] = (score, prov).
         # Populated by ScoreConvoyFleet (FUN_00419790) in process_turn Phase 1g;
-        # drained by MoveCandidate (FUN_00411cf0) in Phase 2.  Sorted ascending by
-        # score (remaining fleet count); Phase 2 processes from the front (lowest score).
+        # drained by MoveCandidate (FUN_00411cf0) in Phase 2. Phase 2 processes
+        # from the front, matching C's highest-score-first tree walk.
         self.g_convoy_fleet_candidates: list = []
 
         # DAT_00bb65a0 / DAT_00bb65a4 — convoy destination list.
@@ -393,9 +414,27 @@ class InnerGameState:
         self.g_enemy_home_occupied: frozenset = frozenset()
 
         self.final_score_set = np.zeros((7, 256), dtype=np.float64)
+        # ARMY-vs-FLEET score channel.  C keys final_score_set (and the BFS
+        # round sets) by the PAIR (province, unit-type/coast token) -- see
+        # ScoreProvinces.c:465-495 writing a two-word key and
+        # ScoreOrderCandidates_AllPowers.c:92-93 reading it back, with Phase 1c
+        # gating on `AMY == (short)local_e0`, the KEY's token.  So army-space
+        # and fleet-space hold DIFFERENT values for the same province.  The
+        # port stored one number per province; `final_score_set` now carries the
+        # ARMY channel and this carries the FLEET channel.
+        self.final_score_set_flt = np.zeros((7, 256), dtype=np.float64)
         self.g_winter_score_a = np.zeros(256, dtype=np.float64)
         self.g_winter_score_b = np.zeros(256, dtype=np.float64)
 
+        # DAT_00baed7c record slots +0x15..+0x1b.  The map is keyed by
+        # (province, unit/coast token), just like final_score_set; each record
+        # stores one live candidate weight per power.  EnumerateHoldOrders
+        # seeds the occupying unit's cell with 30 and UpdateAllyOrderScore
+        # clears/rebuilds these weights for every candidate group.
+        self.g_key_weight = np.zeros((7, 256), dtype=np.int32)      # AMY keys
+        self.g_key_weight_flt = np.zeros((7, 256), dtype=np.int32)  # FLT keys
+        # Legacy compatibility view.  The former per-province 0.4/1.0 model
+        # had no C counterpart and has no production reader.
         self.g_hold_weight = np.zeros(256, dtype=np.float64)
         # DAT_00baedb0[prov*0x1e] — g_OrderTable field 4.
         self.g_unit_move_prob = self.g_order_table[:, 4]
@@ -502,9 +541,13 @@ class InnerGameState:
         #             'dest','priority','from_power','to_power'}
         self.g_xdo_press_proposals: list = []
 
-        # DAT_00bb67f8[power*0xc] — per-power MTO/CTO attacker scoring map.
-        # ScoreSupportOpp (FUN_00404fd0): key = dest_prov, value = int score.
+        # DAT_00bb67f8[power*0xc] — expected MTO/CTO orders received via XDO.
+        # key = submitted unit source, value = promised destination.
         self.g_xdo_mto_opp_score: dict = {}
+
+        # DAT_00bb68f8[power*0xc] — expected support orders received via XDO.
+        # key = submitted supporter source, value = (supported source, destination).
+        self.g_xdo_sup_attacker_score: dict = {}
 
         # DAT_00bb69f8[power*0xc] — accepted XDO move constraints.
         # XDO.c:166 stores the supported unit's source → proposed destination;
@@ -550,8 +593,15 @@ class InnerGameState:
 
         # DAT_0062be94 — early-game adjacency score accumulator (Turn 1 only).
         self.g_early_game_bonus: int = 0
+        # DAT_0062b7ac — per-trial count produced by ProcessTurn's late scan
+        # of the DAT_00bbf644 support-opportunity map.
+        self.g_other_score: int = 0
+        # DAT_00bbf644/648 — std::map<int,int> populated by Step 3's
+        # ScoreSupportOpp(source, destination) calls and consumed late in the
+        # same trial to compute g_other_score.
+        self.g_support_opp_map: dict[int, int] = {}
 
-        # DAT_00bbf60c — global list of candidate proposal records.
+        # DAT_00bbf60c — globally key-sorted unique candidate proposal records.
         # Each entry: {'power', 'orders', 'score', 'heat_scores', 'deviation', 'pressure_cost'}.
         self.g_candidate_record_list: list = []
 
@@ -642,9 +692,9 @@ class InnerGameState:
         self.g_enemy_count = np.zeros(7, dtype=np.int32)
         # DAT_00633e68[power] — 1 = ally is distressed (attacked by both top enemies)
         self.g_ally_distress_flag = np.zeros(7, dtype=np.int32)
-        # DAT_00633780[pow*21+other] — -2=self, -1=unranked, 1-N=rank
-        self.g_rank_matrix = np.full((7, 7), -1, dtype=np.int32)
-        np.fill_diagonal(self.g_rank_matrix, -2)
+        # DAT_00633780: CAL_BOARD's enemy-count-with-column-excluded matrix.
+        # This is distinct from DAT_006340c0 / g_influence_rank_flag.
+        self.g_rank_matrix = np.zeros((7, 7), dtype=np.int32)
         # DAT_00baed6a — 1 = Albert dominant leader (>75% SC influence, gap >2%)
         self.g_leading_flag: int = 0
         # DAT_0062480c — index of power close to solo victory
@@ -789,8 +839,10 @@ class InnerGameState:
         # Written by _init_scoring_state; may be consumed by undecompiled downstream functions.
         self.g_urgency_ratio = np.full((7, 7), 10.0, dtype=np.float64)
 
-        # top-3 enemy priority queue (-1=empty)
-        # DAT_004c6bc4 / _004c6bc8 / _004c6bcc — three consecutive int32s, sentinel 0xffffffff
+        # Legacy array mirror of the authoritative g_best_ally_slot0/1/2
+        # fields below. DAT_004c6bc4/c8/cc are best-ally candidates, not an
+        # independent enemy queue; strategy consequence helpers keep this
+        # compatibility view synchronized.
         self.g_enemy_slot: Any = np.full(3, -1, dtype=np.int32)
 
         # ── PostProcessOrders (move-history matrix) ──────────────────────────
@@ -893,6 +945,10 @@ class InnerGameState:
         #   [0]=0x1f4(imm) [1]=EAX [2]=0x1e(imm) [3]=EBP [4]=0x6(imm)
         #   [5]=EBX=5      [6–8 follow as immediates] [9]=EAX=1000
         # dominance_weight (war-mode bonus) = fal[0] - spr[0] = 500.
+        # Rounds 2-9 share the same constructor stores for SPR and FAL.  In
+        # particular EAX still holds 0x3e8 at the round-9 stores, so both final
+        # weights are 1000.  A corpus-tuned SPR value of 1 briefly improved
+        # submitted-order matches but contradicted the recovered constructor.
         self.g_spr_round_weights: list = [500, 1000, 30, 10, 6, 5, 4, 3, 2, 1000]
         self.g_fal_round_weights: list = [1000,  500, 30, 10, 6, 5, 4, 3, 2, 1000]
 
@@ -928,6 +984,10 @@ class InnerGameState:
         self.g_trial_prev_score_baseline: int = 0
         # DAT_00bbf690/94[pow*0x3c] — current best order sequence per-power
         self.g_current_best_order: dict = {}
+        # Direct candidate-record pointers for the same slots.  The C table
+        # stores node pointers; retaining them alongside the compatibility
+        # order lists avoids reconstructing semantic keys during rescoring.
+        self.g_current_best_order_records: dict = {}
         # DAT_00bc0a40/44[pow*0xf0] — backup of best orders at best-trial point
         self.g_best_order_backup: dict = {}
         # DAT_00baed94/98 — press deal records (earlier proposals received)
@@ -967,8 +1027,8 @@ class InnerGameState:
         self.g_press_instant: int = 0
         # DAT_00624ef4 — move time limit in seconds; 0 = no deadline
         self.g_move_time_limit_sec: int = 0
-        # SetTurnDeadline target — absolute epoch-seconds; set by process_hst.
-        # Consumers read mtl_expired (set externally when time.time() >= g_turn_deadline).
+        # SetTurnDeadline target — absolute epoch-seconds. process_hst seeds it
+        # for the current phase; GenerateAndSubmitOrders rearms it every turn.
         self.g_turn_deadline: float = 0.0
 
         # ── CancelPriorPress globals ─────────────────────────────────────────
@@ -1020,6 +1080,15 @@ class InnerGameState:
         # e.g. '/NC', '/SC', '/EC'.  Only populated for provinces with coasts.
         # can_reach_by_type checks this when a fleet has a known coast.
         self.fleet_coast_adj: dict = {}
+        # Multi-coast provinces: base prov_id → tuple of coast-variant prov_ids
+        # (e.g. SPA → (SPA/NC, SPA/SC)).  C keys its score trees by
+        # (province, unit/coast TOKEN), so a coastal supply centre carries one
+        # FLT key per coast and no plain-FLT key at all.  The port splits keys
+        # across province ids instead, which leaves the base id holding a
+        # fleet node with no fleet adjacency; this map lets the fleet BFS and
+        # `fss()` recombine the coast tokens back into the base province the
+        # way C's per-province dedup does.
+        self.coast_variants: dict = {}
         # Fleet-specific adjacency matrix: prov_id → [adj_prov_ids] containing
         # only fleet-reachable neighbours.  Built during synchronize_from_game
         # using game.map.abuts('F', src, '-', dst) as the authoritative check.
@@ -1027,7 +1096,11 @@ class InnerGameState:
         # that the terrain-only filter (not in land_provinces) missed.
         # Used by can_reach_by_type and MC trial fleet filtering.
         self.fleet_adj_matrix: dict = {}
+        # ParseNOWUnit keeps ordinary and dislodged units in distinct C sets
+        # (+0x2450 and +0x245c).  `unit_info` is the ordinary/active set used
+        # by movement generation; dislodged units must never appear there.
         self.unit_info = {} # prov_id -> {'power': int, 'type': 'A'/'F', 'coast': str}
+        self.dislodged_unit_info = {}
         # Set of province IDs whose underlying province type is 'WATER' (sea zones).
         # Populated once during synchronize_from_game from game.map.area_type().
         # Mirrors the flag at inner_state + prov_id * 0x24 + 4 == '\0' in the C++ original.
@@ -1068,7 +1141,9 @@ class InnerGameState:
         self.g_triple_front_flag: int = 0
 
         # ── HOSTILITY globals (FUN_~0x42F200) ────────────────────────────────
-        # DAT_00b9fdd8[power] — best mutual enemy per power (-1 = none)
+        # DAT_00b9fdd8[power] — best mutual enemy per power (-1 = none).
+        # CAL_BOARD temporarily fills the same storage with the near-victory
+        # power before HOSTILITY's mutual-enemy rebuild.
         self.g_mutual_enemy_table = np.full(7, -1, dtype=np.int32)
         # DAT_004cf4c0[power*2] / DAT_004cf4c4[power*2] — per-power int64 peace counter.
         # Incremented (HOSTILITY Block 5) each turn that trust[own,p]==0 and
@@ -1092,9 +1167,6 @@ class InnerGameState:
         self.g_diplomacy_state_b  = np.zeros(7, dtype=np.int32)
         # DAT_0062480c — power index of the committed strategic enemy
         self.g_committed_enemy: int = -1
-        # DAT_00633f20[power*5+rank] — pre-sorted power proximity ranks (stride 5)
-        # Populated by map-init; None until set externally.
-        self.g_power_proximity_rank: np.ndarray | None = None
         # DAT_00b84948[pow*21+other] — second influence scratch matrix (zeroed each turn)
         self.g_influence_matrix_b = np.zeros((7, 7), dtype=np.float64)
         # DAT_004d53d8[power*2] — lo-word: 1 = PCE proposal sent to this power this turn
@@ -1285,6 +1357,13 @@ class InnerGameState:
                     coast_pid = self.prov_to_id.get(prov, -1)
                     if coast_pid >= 0 and coast_adjs:
                         self.fleet_adj_matrix[coast_pid] = sorted(coast_adjs)
+                        self.coast_variants.setdefault(pid, []).append(coast_pid)
+
+            # Freeze and sort so BFS iteration order is deterministic.
+            self.coast_variants = {
+                base: tuple(sorted(set(variants)))
+                for base, variants in self.coast_variants.items()
+            }
 
             self.water_provinces = frozenset(water_prov_ids)
             self.land_provinces = frozenset(land_prov_ids)
@@ -1333,9 +1412,12 @@ class InnerGameState:
 
         # Reset turn specific structures
         self.g_sc_ownership.fill(0)
+        self.g_board_sc_ownership.fill(0)
         self.g_sc_owner.fill(-1)
+        self.g_order_dip_owner.fill(-1)
         self.g_own_reach_score.fill(0)
         self.unit_info.clear()
+        self.dislodged_unit_info.clear()
         # ── Per-call resets (mirror GenerateAndSubmitOrders.c top-of-fn) ──
         # The C binary explicitly reinitialises these at the top of every
         # GenerateAndSubmitOrders call:
@@ -1385,16 +1467,20 @@ class InnerGameState:
                     if prov in self.prov_to_id:
                         prov_id = self.prov_to_id[prov]
                         self.g_sc_ownership[p_id, prov_id] = 1
+                        self.g_board_sc_ownership[p_id, prov_id] = 1
                         self.g_sc_owner[prov_id] = p_id
                         
-        # Register Unit Ownership
+        # Register unit ownership. diplomacy.Game.get_units() deliberately
+        # includes dislodged units with a leading '*'; C ParseNOWUnit stores
+        # those in +0x245c rather than the active +0x2450 set.
         for power_name, units in game.get_units().items():
             if power_name in power_to_id:
                 p_id = power_to_id[power_name]
                 for unit_str in units:
                     parts = unit_str.split()
                     if len(parts) >= 2:
-                        unit_type = parts[0]
+                        is_dislodged = parts[0].startswith('*')
+                        unit_type = parts[0].lstrip('*')
                         prov = parts[1].split('/')[0]
                         coast = parts[1].split('/')[1] if '/' in parts[1] else ''
                         if prov in self.prov_to_id:
@@ -1403,7 +1489,19 @@ class InnerGameState:
                             # populates it during scoring.  Do NOT seed to 1 here.
                             # Fixed 2026-04-23 (audit finding STA-1): was incorrectly
                             # setting to 1, inflating reach counts before scoring.
-                            self.unit_info[prov_id] = {'power': p_id, 'type': unit_type, 'coast': coast}
+                            info = {
+                                'power': p_id,
+                                'type': unit_type,
+                                'coast': coast,
+                            }
+                            if is_dislodged:
+                                power = getattr(game, 'powers', {}).get(power_name)
+                                retreat_map = getattr(power, 'retreats', {}) if power else {}
+                                retreat_key = f"{unit_type} {parts[1]}"
+                                info['retreats'] = list(retreat_map.get(retreat_key, []))
+                                self.dislodged_unit_info[prov_id] = info
+                            else:
+                                self.unit_info[prov_id] = info
                             
         # Populate sc_count from current centers
         self.sc_count.fill(0)
@@ -1696,6 +1794,28 @@ class InnerGameState:
 
     def candidate_set_contains(self, power: int, province: int) -> bool:
         return self.g_candidate_bfs[power, 0, province] > 0
+
+    def fss(self, power: int, province: int, unit_type=None) -> float:
+        """final_score_set for the (province, token) key implied by unit_type.
+
+        C looks this up with a two-word key; the port splits it into an ARMY
+        channel (`final_score_set`) and a FLEET channel (`final_score_set_flt`).
+        Callers that know which unit is moving must say so.
+        """
+        if unit_type in ('F', 'FLT'):
+            return float(self.final_score_set_flt[power, province])
+        return float(self.final_score_set[power, province])
+
+    def key_weight(self, power: int, province: int, unit_type=None) -> int:
+        """Return DAT_00baed7c's live +0x15 weight for a token key."""
+        table = self.g_key_weight_flt if unit_type in ('F', 'FLT') else self.g_key_weight
+        return int(table[power, province])
+
+    def add_key_weight(self, power: int, province: int, value: int,
+                       unit_type=None) -> None:
+        """Accumulate one UpdateAllyOrderScore group into a token key."""
+        table = self.g_key_weight_flt if unit_type in ('F', 'FLT') else self.g_key_weight
+        table[power, province] += int(value)
 
     def get_candidate_score(self, power: int, province: int, iteration: int) -> float:
         return float(self.g_candidate_bfs[power, iteration, province])

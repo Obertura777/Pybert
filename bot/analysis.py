@@ -549,42 +549,72 @@ def _rank_candidates_for_power(state: InnerGameState, power_idx: int,
     # ── Phase 3: Pareto-dominance filter ────────────────────────────────
     # Dominated nodes are erased from the temporary tree immediately.  Keep
     # local_ad outside the loop: the C only resets it for an unprocessed node.
-    temp_recs = list(power_recs)
+    temp_recs = []
     local_ad = 0
     # local_b8 is a reused 32-bit stack slot. The raw dword write of 1 at
     # 00424b2a is mis-typed by Ghidra as the float denormal 1.4013e-45; the
     # following comparisons and increment consume it as an integer rank.
     rank_counter = 1
-    i = 0
-    while i < len(temp_recs):
-        cand = temp_recs[i]
+    start_dim = 2 if n_trials > 7 else 0
+    dimension_count = max(n_trials - start_dim + 1, 0)
+    survivor_scores = np.zeros(
+        (len(power_recs), dimension_count), dtype=np.int64
+    )
+    survivor_final_dims = np.zeros(len(power_recs), dtype=np.int64)
+    survivor_count = 0
+
+    for cand in power_recs:
         if not cand.get('processed', 0):
             local_ad = 0
             other_score = int(cand.get('other_score', 0))  # field 0x13
             penalty = 100 if other_score == 0 else (50 if other_score == 1 else 0)
             trial_scores_c = cand.get('trial_scores', [])
             final_dim_c = int(cand.get('final_dim_score', 0))
-            for prev in temp_recs[:i]:
-                trial_scores_p = prev.get('trial_scores', [])
-                start_dim = 2 if n_trials > 7 else 0
-                if all(
-                    (trial_scores_p[t] if t < len(trial_scores_p) else 0)
-                    >= (trial_scores_c[t] if t < len(trial_scores_c) else 0) + penalty
-                    for t in range(start_dim, n_trials + 1)
-                ) and int(prev.get('final_dim_score', 0)) != final_dim_c:
+            candidate_dimensions = np.zeros(dimension_count, dtype=np.int64)
+            if dimension_count:
+                available = min(
+                    max(len(trial_scores_c) - start_dim, 0),
+                    dimension_count,
+                )
+                if available:
+                    candidate_dimensions[:available] = trial_scores_c[
+                        start_dim:start_dim + available
+                    ]
+            if survivor_count:
+                dominates = np.all(
+                    survivor_scores[:survivor_count]
+                    >= candidate_dimensions[None, :] + penalty,
+                    axis=1,
+                )
+                dominates &= (
+                    survivor_final_dims[:survivor_count] != final_dim_c
+                )
+                if np.any(dominates):
                     local_ad = 1
-                    break
             cand['pareto_flag'] = local_ad
 
         if local_ad == 1:
-            temp_recs.pop(i)
             continue
+        trial_scores_c = cand.get('trial_scores', [])
+        if dimension_count:
+            available = min(
+                max(len(trial_scores_c) - start_dim, 0),
+                dimension_count,
+            )
+            if available:
+                survivor_scores[
+                    survivor_count, :available
+                ] = trial_scores_c[start_dim:start_dim + available]
+        survivor_final_dims[survivor_count] = int(
+            cand.get('final_dim_score', 0)
+        )
+        survivor_count += 1
+        temp_recs.append(cand)
         if rank_counter < int(cand.get('min_rank', 10000)):
             cand['min_rank'] = rank_counter
         if int(cand.get('max_rank', 0)) < rank_counter:
             cand['max_rank'] = rank_counter
         rank_counter += 1
-        i += 1
 
     # ── Phase 4: probability scoring ────────────────────────────────────
     # The C iterators walk following surviving nodes.  Their node field 3 is

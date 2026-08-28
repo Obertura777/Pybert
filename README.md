@@ -1,58 +1,113 @@
-# Albert DAIDE Python Rewrite
+# Pybert
 
-Welcome to the Python rewrite of the **Albert** Diplomacy AI bot!
+Pybert is a Python port of Albert, a DAIDE Diplomacy bot. The implementation
+is reconstructed from the recovered C routines in [`Source/`](Source/) and
+uses [ALLAN-DIP/diplomacy](https://github.com/ALLAN-DIP/diplomacy) for game
+state, order validation, and server integration.
 
-This directory (`albert/`) contains the structural rewrite of the original C++ Albert binary into modern standard Python, utilizing numpy for array acceleration and integrating cleanly with the modern [ALLAN-DIP/diplomacy](https://github.com/ALLAN-DIP/diplomacy) package for server integration..
+The project is still a fidelity port rather than a finished drop-in
+replacement. The current implementation generates Albert's complete opening
+order set for all seven powers in the bounded `game_10.json` candidate oracle,
+and the test suite contains 256 regressions. Exact submitted-order matching is
+not yet a reliable oracle because the saved references do not include Albert's
+PRNG call history or structured DAIDE press state. See
+[`progress.md`](progress.md) for the current evidence and remaining work.
 
-## Modules
+## Requirements and setup
 
-- `bot.py`: The `AlbertClient` orchestrator. Main `asyncio` loop connecting to the diplomacy server.
-- `communications.py`: Parser and dispatcher for DAIDE press messages (`FRM`, `ALY`, `PRP`, `HLO`, `HST`, etc.).
-- `dispatch.py`: `DispatchSingleOrder` — serialises a single order from the order table into a DAIDE `SUB` token sequence.
-- `heuristics.py`: Province and position scoring (`EvaluateProvinceScore`, `ScoreProvinces`, `ComputeInfluenceMatrix`, etc.).
-- `main.py`: CLI entry point — parses server, game, and press arguments, then launches the bot.
-- `monte_carlo.py`: Monte Carlo order evaluation loop (`TrialEvaluateOrders`, `EvaluateOrderScore`), order-table field constants, and turn processing.
-- `moves.py`: Move enumeration (`EnumerateConvoyReach`, `ComputeSafeReach`, `BuildSupportOpportunities`, etc.).
-- `state.py`: `InnerGameState` — all numeric globals as numpy arrays (mirrors the binary's global address space).
-- `utils.py`: DAIDE token ↔ DipNet string converters and province/power index helpers.
+- Python 3.13 or newer
+- [uv](https://docs.astral.sh/uv/)
+- A compatible `diplomacy` server when running live bots
 
-## Running
-
-The bot is launched via `main.py`, which accepts CLI arguments for the server connection, game selection, press mode, and authentication.
-
-### Quick start
-
-```bash
-# Connect to localhost, join the first available game as France with full press
-python -m albert.main --power FRANCE
-
-# Specify a remote server and game
-python -m albert.main --host 192.168.1.10 --port 8433 --power ENGLAND --game-id game_123
-```
-
-### Full usage
-
-```
-python -m albert.main --power POWER [options]
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--power` | *(required)* | Power to play: `AUSTRIA`, `ENGLAND`, `FRANCE`, `GERMANY`, `ITALY`, `RUSSIA`, or `TURKEY`. |
-| `--host` | `localhost` | Server hostname or IP address. |
-| `--port` | `8432` | Server port. |
-| `--game-id` | *(auto)* | Game ID to join. Omit to join the first available game. |
-| `--username` | `Albert_<POWER>` | Account username for authentication. |
-| `--password` | `password` | Account password. |
-| `--press` | `max` | Press mode: `none` (all messaging disabled) or `max` (full press: PCE, ALY, VSS, DMZ, XDO, AND, ORR). |
-| `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-
-### Examples
+Install the locked dependencies from the repository root:
 
 ```bash
-# Play as Russia with no press on a remote server
-python -m albert.main --host dipserver.local --port 16713 --power RUSSIA --press none
-
-# Play as Austria with debug logging and custom credentials
-python -m albert.main --power AUSTRIA --username my_bot --password s3cret --log-level DEBUG
+uv sync
 ```
+
+## Run a local seven-bot game
+
+`run_7bots.py` creates a game and launches one Pybert process for each power:
+
+```bash
+uv run run_7bots.py --host localhost --port 8433 --deadline 0
+```
+
+Useful options:
+
+| Option | Default | Description |
+|---|---:|---|
+| `--host` | `localhost` | Diplomacy server hostname. Port 443 uses TLS. |
+| `--port` | `8433` | Diplomacy server port. |
+| `--deadline` | `0` | Seconds per phase; zero waits for every bot. |
+| `--press` | off | Create a full-press game and enable bot messaging. |
+| `--pause-phase` | `W1910A` | Pause and save the game at this short phase name. |
+
+Saved games and the detailed debug log are written under `games/`, which is
+ignored by Git.
+
+`main.py` contains the single-power client CLI. Its arguments can be inspected
+with:
+
+```bash
+uv run python main.py --help
+```
+
+## Verify the port
+
+Run the regression suite:
+
+```bash
+uv run python -m pytest -q
+```
+
+Compare generated orders with the saved Albert references:
+
+```bash
+# Small movement-phase smoke comparison
+uv run compare_albert.py --max-games 5
+
+# One bounded candidate-coverage run
+uv run compare_albert.py \
+  --game game_10.json \
+  --phase S1901M \
+  --candidate-coverage \
+  --candidate-seed-count 8
+
+# Check whether the reference corpus contains replayable DAIDE press
+uv run compare_albert.py --audit-press-inputs
+```
+
+The comparison commands require matching files in `all_games/` and
+`all_games_albert/`. Those corpora are local test data and are ignored by Git.
+Candidate coverage is the structural oracle; submitted-order equality is only
+diagnostic unless the original PRNG and press context are available.
+
+## Repository layout
+
+- `bot/` — client lifecycle, turn analysis, order submission, and strategy.
+- `communications/` — inbound and outbound DAIDE press handling.
+- `dispatch/` — order parsing, legality checks, serialization, and validation.
+- `heuristics/` — board, influence, province, alliance, and adjustment scoring.
+- `monte_carlo/` — candidate generation, evaluation, ranking, and turn trials.
+- `moves/` — hold, support, and convoy construction.
+- `utils/` — DAIDE token and DipNet translation helpers.
+- `state.py` — the numeric and container state corresponding to Albert's
+  process globals.
+- `Source/` — recovered C routines used as the behavioral authority.
+- `tests/` — source-backed regression tests.
+- `compare_albert.py` — offline reference and candidate-coverage harness.
+- `run_7bots.py` — live seven-power integration runner.
+- `progress.md` — current verified checkpoint and implementation history.
+
+## Known limitations
+
+- The reference games contain human-readable press, not structured DAIDE
+  messages, so XDO/ALY/DMZ state cannot be replayed faithfully.
+- Exact final selection depends on an uncaptured process-wide MSVC CRT random
+  stream and timing-dependent calls.
+- The game 10 `S1904R` reference is inconsistent with its paired NOW state:
+  the reference retreats `A ROM` to `VEN`, while the state permits only `APU`.
+- Game 10 `S1902M` Russia still has a complete-candidate combination gap; all
+  six reference orders are individually reachable, but the best current
+  complete candidate matches four.

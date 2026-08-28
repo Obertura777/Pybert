@@ -14,7 +14,7 @@ Contents (by broad role):
     - ``propose_dmz``                            (FUN_00432960)
     - ``friendly``                               (FUN_00418100 — peace-signal step)
     - ``_friendly_peace_signal_check``           (FUN_00418100 inner helper)
-    - ``_update_relation_history``               (FUN_00417e90 / per-turn bookkeeping)
+    - ``_update_relation_history``               (FUN_0040d7e0 / per-turn bookkeeping)
 
 * Press-queue lifecycle
     - ``cancel_prior_press``                     (FUN_00419060)
@@ -565,20 +565,21 @@ def _update_relation_history(state: InnerGameState) -> None:
     """
     Port of UpdateRelationHistory (FUN_0040d7e0).
 
-    Enforces a _safe_pow(1.8, trust_lo/10) minimum floor on every positive
+    Enforces a _safe_pow(1.8, relation_score/10) minimum floor on every positive
     g_ally_trust_score[row][col] entry.  Called by friendly() (always) and by
     _hostility() when g_press_flag==0 or g_near_end_game_factor>3.0.
 
     The C function stores trust as a 64-bit int split into lo (puVar6[0]) and
     hi (puVar6[1]) uint words.  The floor is computed as:
-        floor64 = int64(pow(1.8, trust_lo // 10))
+        floor64 = int64(pow(1.8, trunc_zero(relation_score / 10)))
         floor_lo = floor64 & 0xFFFFFFFF
         floor_hi = arithmetic_right_shift_31(floor_lo)   # 0 for positive values
 
     Trust is raised to floor when (trust_hi, trust_lo) < (floor_hi, floor_lo)
-    in 64-bit lexicographic order.  Both words are updated on raise.
+    using a signed high-word and unsigned low-word comparison.  Both words are
+    updated on raise.
     """
-    num_powers = 7
+    num_powers = int(getattr(state, 'g_num_powers', 7))
     for row in range(num_powers):
         for col in range(num_powers):
             trust_lo = int(state.g_ally_trust_score[row, col])
@@ -586,12 +587,17 @@ def _update_relation_history(state: InnerGameState) -> None:
             # Guard: trust > 0 — C: (-1 < trust_hi) AND (0 < trust_hi OR trust_lo != 0)
             if not (trust_hi >= 0 and (trust_hi > 0 or trust_lo != 0)):
                 continue
-            floor64  = int(1.8 ** (trust_lo // 10))
+            relation = int(state.g_relation_score[row, col])
+            exponent = (relation // 10 if relation >= 0
+                        else -((-relation) // 10))
+            floor64  = int(1.8 ** exponent)
             floor_lo = floor64 & 0xFFFFFFFF
             # C: uVar4 = (int)uVar3 >> 0x1f  — arithmetic shift, 0 for positive values
             floor_hi = -1 if (floor_lo >> 31) else 0
             # 64-bit comparison: (trust_hi, trust_lo) < (floor_hi, floor_lo)
-            if trust_hi <= floor_hi and (trust_hi < floor_hi or trust_lo < floor_lo):
+            if (trust_hi < floor_hi or
+                    (trust_hi == floor_hi and
+                     (trust_lo & 0xFFFFFFFF) < floor_lo)):
                 state.g_ally_trust_score[row, col]    = floor_lo
                 state.g_ally_trust_score_hi[row, col] = floor_hi
 
@@ -613,7 +619,7 @@ def friendly(state: InnerGameState) -> None:
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    num_powers = 7
+    num_powers = int(getattr(state, 'g_num_powers', 7))
     own_power  = getattr(state, 'albert_power_idx', 0)
     season     = getattr(state, 'g_season', 'SPR')
     season_rewards = season in ('FAL', 'WIN')
@@ -740,10 +746,8 @@ def friendly(state: InnerGameState) -> None:
                                 _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
                                                              neutral, peace_sig, relation, _log)
                         else:
-                            # Block C: set tentative trust (row != own_power only)
-                            # NO_PRESS: skip — no agreements exist to warrant trust.
-                            if (row != own_power
-                                    and getattr(state, 'g_minimal_press_mode', 0) != 1):
+                            # Block C: set tentative trust (row != own_power only).
+                            if row != own_power:
                                 state.g_ally_trust_score[row, col]    = 1
                                 state.g_ally_trust_score_hi[row, col] = 0
                                 state.g_relation_score[row, col]     = 0
@@ -758,7 +762,8 @@ def friendly(state: InnerGameState) -> None:
                 else:
                     # Block D: alliance confirmed — accumulate relation (+5 deceitful, +10 honest)
                     gain = 5 if state.g_deceit_level == 1 else 10
-                    state.g_relation_score[row, col] = relation + gain
+                    relation += gain
+                    state.g_relation_score[row, col] = relation
                     if row == own_power:
                         _friendly_peace_signal_check(state, col, trust_lo, trust_hi,
                                                      neutral, peace_sig, relation, _log)
@@ -769,16 +774,16 @@ def friendly(state: InnerGameState) -> None:
     _update_relation_history(state)
 
     # Phase 3 — g_ally_matrix alliance state transitions.
-    # trust_hi < 0 OR (trust_hi < 1 AND trust_lo < 5) → downgrade full (2) → tentative (1)
+    # trust_hi < 0 OR (trust_hi < 1 AND uint32(trust_lo) < 5)
+    # → downgrade full (2) → tentative (1)
     # otherwise → upgrade tentative (1) → full (2)
     for row in range(num_powers):
         for col in range(num_powers):
-            if row == col:
-                continue
             trust_lo = int(state.g_ally_trust_score[row, col])
             trust_hi = int(state.g_ally_trust_score_hi[row, col])
             ally_val = int(state.g_ally_matrix[row, col])
-            if trust_hi < 0 or (trust_hi < 1 and trust_lo < 5):
+            if (trust_hi < 0 or
+                    (trust_hi < 1 and (trust_lo & 0xFFFFFFFF) < 5)):
                 if ally_val == 2:
                     state.g_ally_matrix[row, col] = 1   # full → tentative
             else:
