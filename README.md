@@ -8,9 +8,9 @@ state, order validation, and server integration.
 The project is still a fidelity port rather than a finished drop-in
 replacement. The current implementation generates Albert's complete opening
 order set for all seven powers in the bounded `game_10.json` candidate oracle,
-and the test suite contains 256 regressions. Exact submitted-order matching is
-not yet a reliable oracle because the saved references do not include Albert's
-PRNG call history or structured DAIDE press state. See
+and the test suite contains 430 regressions. Exact submitted-order
+matching is not yet a reliable oracle because the saved references do not
+include Albert's PRNG call history or structured DAIDE press state. See
 [`progress.md`](progress.md) for the current evidence and remaining work.
 
 ## Requirements and setup
@@ -72,7 +72,7 @@ uv run compare_albert.py \
   --game game_10.json \
   --phase S1901M \
   --candidate-coverage \
-  --candidate-seed-count 8
+  --candidate-seed-count 10
 
 # Check whether the reference corpus contains replayable DAIDE press
 uv run compare_albert.py --audit-press-inputs
@@ -108,6 +108,6 @@ diagnostic unless the original PRNG and press context are available.
   stream and timing-dependent calls.
 - The game 10 `S1904R` reference is inconsistent with its paired NOW state:
   the reference retreats `A ROM` to `VEN`, while the state permits only `APU`.
-- Game 10 `S1902M` Russia still has a complete-candidate combination gap; all
-  six reference orders are individually reachable, but the best current
-  complete candidate matches four.
+- Exact submitted-order matching remains diagnostic even when the complete
+  reference set is generated, because the saved corpus lacks Albert's process
+  PRNG state and structured press state.

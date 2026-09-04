@@ -39,7 +39,7 @@ def _entry(state, *, province=10, ordering_power=1):
     return record
 
 
-def test_fleet_occupant_is_neutral_for_diplomatic_flags():
+def test_non_sc_unit_is_ignored_by_diplomatic_flags():
     state = InnerGameState()
     state.albert_power_idx = 0
     record = _entry(state)
@@ -47,18 +47,19 @@ def test_fleet_occupant_is_neutral_for_diplomatic_flags():
 
     compute_order_dip_flags(state)
 
-    # C only preserves the occupant power when the board token is AMY. A fleet
-    # becomes neutral 0x14: it does not clear flag1 and does set flag3.
+    # Province byte +3 and token +0x20 describe an SC and its controller.  A
+    # live unit on a non-SC does not participate in these two source blocks.
     assert record['flag1'] is True
-    assert record['flag2'] is False
-    assert record['flag3'] is True
+    assert record['flag2'] is True
+    assert record['flag3'] is False
 
 
 def test_same_province_enemy_requires_exact_low_and_high_words():
     state = InnerGameState()
     state.albert_power_idx = 0
     record = _entry(state)
-    state.unit_info[10] = {'power': 2, 'type': 'A', 'coast': ''}
+    state.sc_provinces = {10}
+    state.g_sc_owner[10] = 2
     state.g_enemy_flag[2] = 1
     state.g_enemy_flag_hi[2] = 1
     state.g_ally_trust_score[0, 2] = 5
@@ -75,7 +76,8 @@ def test_adjacent_enemy_requires_exact_low_and_high_words():
     state.albert_power_idx = 0
     record = _entry(state)
     state.adj_matrix[10] = [11]
-    state.unit_info[11] = {'power': 2, 'type': 'A', 'coast': ''}
+    state.sc_provinces = {11}
+    state.g_sc_owner[11] = 2
     state.g_enemy_flag[2] = 1
     state.g_enemy_flag_hi[2] = 1
     state.g_ally_trust_score[1, 2] = 5
@@ -92,7 +94,8 @@ def test_adjacent_trust_low_word_is_compared_as_unsigned():
     state.g_press_flag = 1
     record = _entry(state)
     state.adj_matrix[10] = [11]
-    state.unit_info[11] = {'power': 2, 'type': 'A', 'coast': ''}
+    state.sc_provinces = {11}
+    state.g_sc_owner[11] = 2
     state.g_ally_trust_score[0, 2] = -1
     state.g_diplomacy_state_a[2] = 5
     state.g_ally_trust_score[1, 2] = 5
@@ -109,7 +112,8 @@ def test_adjacent_diplomacy_low_word_is_compared_as_unsigned():
     state.g_press_flag = 1
     record = _entry(state)
     state.adj_matrix[10] = [11]
-    state.unit_info[11] = {'power': 2, 'type': 'A', 'coast': ''}
+    state.sc_provinces = {11}
+    state.g_sc_owner[11] = 2
     state.g_ally_trust_score[0, 2] = 5
     state.g_diplomacy_state_a[2] = -1
     state.g_ally_trust_score[1, 2] = 5

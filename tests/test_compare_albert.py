@@ -15,8 +15,10 @@ def test_candidate_seed_sweep_unions_pools_until_reference_is_found():
     calls = []
 
     def capture(_state, _phase, _power, *, seed, capture_candidates,
-                run_submission):
-        calls.append((seed, capture_candidates, run_submission))
+                run_submission, proposal_round_cap):
+        calls.append((
+            seed, capture_candidates, run_submission, proposal_round_cap,
+        ))
         pools = {
             0: [["A ROM - TUS", "A VEN - TRI"]],
             1: [["A ROM - TUS", "A VEN H"]],
@@ -25,11 +27,12 @@ def test_candidate_seed_sweep_unions_pools_until_reference_is_found():
 
     covered, seeds = _extend_candidate_seed_coverage(
         candidates, ["A VEN H", "A ROM - TUS"], {}, "S1901M", "ITALY",
-        primary_seed=42, seed_count=3, capture_fn=capture)
+        primary_seed=42, seed_count=3, capture_fn=capture,
+        proposal_round_cap=7)
 
     assert covered is True
     assert seeds == [42, 0, 1]
-    assert calls == [(0, True, False), (1, True, False)]
+    assert calls == [(0, True, False, 7), (1, True, False, 7)]
     assert ["A ROM - TUS", "A VEN H"] in candidates
 
 

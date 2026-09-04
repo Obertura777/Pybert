@@ -103,12 +103,11 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     # Step 5b — Zero g_ally_matrix (covers C's g_AllyMatrix zeroing).
     state.g_ally_matrix.fill(0)
 
-    # Step 6 — EnumerateConvoyReach (InitPositionForOrders.c:370). The C
-    # routine loops the complete board topology once; Python's port partitions
-    # its approximation by power, so exhaust all power slices here.
+    # Step 6 — EnumerateConvoyReach (InitPositionForOrders.c:370). The source
+    # routine walks every province/unit-token topology key once and builds the
+    # persistent DAT_00bc1e1c reach index; it has no power-index partition.
     from ..moves import enumerate_convoy_reach
-    for power in range(num_powers):
-        enumerate_convoy_reach(state, power)
+    enumerate_convoy_reach(state)
 
     # Step 7 — Zero g_move_history_matrix (C lines 371–393, g_MoveHistoryMatrix).
     if not hasattr(state, 'g_move_history_matrix'):
@@ -140,6 +139,38 @@ def _init_position_for_orders(state: InnerGameState) -> None:
     state.win_threshold      = victory_threshold
 
 
+def _build_position_urgency(state: InnerGameState) -> np.ndarray:
+    """Build InitScoringState's DAT_00624ef8 pressure table.
+
+    For each controlled supply-centre destination represented by an outer
+    DAT_00bc1e1c node, C walks its static reach records. A record contributes
+    only when its source province currently contains a unit with the same
+    unit/coast token, and contributes ``10000 / distance_score`` to that
+    unit's power.
+    """
+    urgency = np.zeros((7, 256), dtype=np.float64)
+    for destination, records in state.g_build_candidate_list.items():
+        if (destination not in state.sc_provinces
+                or not 0 <= int(state.g_sc_owner[destination]) < 7):
+            continue
+        for record in records:
+            source_unit = state.unit_info.get(record.source_province)
+            if source_unit is None:
+                continue
+            source_type = str(source_unit.get('type', '')).upper()
+            expected_type = 'A' if record.source_unit_type == 'AMY' else 'F'
+            if source_type not in (expected_type, record.source_unit_type):
+                continue
+            source_coast = str(source_unit.get('coast', '')).upper().lstrip('/')
+            if source_coast != record.source_coast:
+                continue
+            power = int(source_unit.get('power', -1))
+            if not 0 <= power < 7 or record.score <= 0.0:
+                continue
+            urgency[power, destination] += 10_000.0 / float(record.score)
+    return urgency
+
+
 def _init_scoring_state(state: InnerGameState) -> None:
     """
     Port of InitScoringState (Source/heuristics/InitScoringState.c).
@@ -148,10 +179,10 @@ def _init_scoring_state(state: InnerGameState) -> None:
     Steps:
       1. Copy curr_sc_cnt (state.sc_count) → state.g_target_sc_cnt.
       2. Build a per-power province urgency table from g_build_candidate_list:
-           urgency[power, prov] += 10000 for each unit of power adjacent to prov.
-         (C: 10000.0 / adjacency_weight; Python: weight = 1 for direct adjacency.)
-      3. For each (outer, inner) power pair and each province occupied by an army
-         of inner_power: if urgency[outer] > urgency[inner] AND outer×inner trust
+           urgency[power, prov] += 10000 / reach-distance score for each
+           matching live source-unit token in the destination's reach index.
+      3. For each (outer, inner) power pair and each SC controlled by
+         inner_power: if urgency[outer] > urgency[inner] AND outer×inner trust
          is (0, 0) — i.e. neither ally nor declared enemy — outer is projected to
          capture the province.  Adjust g_target_sc_cnt accordingly.
       4. Zero the 14 per-power×province arrays that GenerateOrders.c clears in
@@ -167,49 +198,27 @@ def _init_scoring_state(state: InnerGameState) -> None:
     state.g_target_sc_cnt[:] = state.sc_count
 
     # ── Step 2: Province build urgency (local — DAT_00624ef8) ──────────────
-    # Iterate g_build_candidate_list (DAT_00bc1e1c), the set of SC-target
-    # provinces populated by the prior turn's candidate pipeline.  For each
-    # target that is army-accessible (not water), accumulate 10000 urgency
-    # for every power whose unit stands adjacent to it.
-    build_urgency = np.zeros((num_powers, 256), dtype=np.float64)
-    water_provs = getattr(state, 'water_provinces', set())
-    occupied    = set(state.unit_info.keys())
-
-    for tprov in state.g_build_candidate_list:
-        if tprov in water_provs:
-            continue
-        for adj in state.adj_matrix.get(tprov, []):
-            if adj not in occupied:
-                continue
-            pw = state.unit_info[adj].get('power', -1)
-            if 0 <= pw < num_powers:
-                build_urgency[pw, tprov] += 10_000.0
+    build_urgency = _build_position_urgency(state)
 
     # ── Step 3: Urgency comparison → g_target_sc_cnt adjustment ────────────
-    # C: for each (outer, inner) pair, walk provinces where inner has an army.
+    # C: for each (outer, inner) pair, walk SCs controlled by inner.
     # If outer urgency > inner urgency AND g_AllyTrustScore[outer, inner] == (0, 0):
     #   outer projected to gain the SC → target_sc_cnt[outer] += 1
     #                                    target_sc_cnt[inner] -= 1
     ally_trust    = getattr(state, 'g_ally_trust_score',    None)
     ally_trust_hi = getattr(state, 'g_ally_trust_score_hi', None)
-    valid_provs   = getattr(state, 'valid_provinces', None) or range(256)
+    controlled_scs = sorted(getattr(state, 'sc_provinces', ()))
 
     for outer in range(num_powers):
         for inner in range(num_powers):
             if inner == outer:
                 continue
-            for prov in valid_provs:
-                unit = state.unit_info.get(prov)
-                if unit is None:
-                    continue
-                if unit.get('power') != inner:
-                    continue
-                # C gate: province ushort high-byte == 'A' (army present)
-                if unit.get('type', 'A') not in ('A', 'AMY'):
+            for prov in controlled_scs:
+                if int(state.g_sc_owner[prov]) != inner:
                     continue
                 sc_outer = build_urgency[outer, prov]
                 sc_inner = build_urgency[inner, prov]
-                if sc_inner <= 0 or sc_outer <= sc_inner:
+                if sc_outer <= sc_inner:
                     continue
                 tlo = float(ally_trust[outer, inner]) if ally_trust is not None else 0.0
                 thi = int(ally_trust_hi[outer, inner]) if ally_trust_hi is not None else 0
@@ -219,7 +228,7 @@ def _init_scoring_state(state: InnerGameState) -> None:
 
     # ── Step 3a: DAT_00624810 — avg urgency ratio per power pair ──────────────
     # For each (outer, inner) pair: gather build_urgency[outer,p]/build_urgency[inner,p]
-    # over provinces p where inner has an army and build_urgency[inner,p] > 0, then
+    # over SCs p controlled by inner and build_urgency[inner,p] > 0, then
     # average.  C uses a sorted-insert path (FUN_0041a180) and divides by count;
     # simple mean is equivalent.
     g_urgency_avg = np.zeros((num_powers, num_powers), dtype=np.float64)
@@ -228,11 +237,8 @@ def _init_scoring_state(state: InnerGameState) -> None:
             if outer == inner:
                 continue
             ratios = []
-            for prov in valid_provs:
-                unit = state.unit_info.get(prov)
-                if unit is None or unit.get('power') != inner:
-                    continue
-                if unit.get('type', 'A') not in ('A', 'AMY'):
+            for prov in controlled_scs:
+                if int(state.g_sc_owner[prov]) != inner:
                     continue
                 u_inner = build_urgency[inner, prov]
                 if u_inner <= 0.0:
@@ -252,17 +258,13 @@ def _init_scoring_state(state: InnerGameState) -> None:
                 state.g_urgency_ratio[outer, inner] = g_urgency_avg[outer, inner] / denom
 
     # ── Step 4: Zero 14 per-power×province arrays (GenerateOrders.c:102–130) ─
-    # Seven int64/float64 C arrays, each stored as a lo+hi int32 pair; Python
-    # keeps dual views (float64 and int64) for several of these addresses.
-    # Entries in parentheses are the hi-word partner of the preceding lo-word.
+    # Seven signed C values, each recovered from a lo+hi int32 pair. Python
+    # stores one numeric value per pair rather than exposing word aliases.
     state.g_candidate_scores.fill(0.0)       # g_CandidateScores         (DAT_0059a0ec hi)
     state.g_heat_movement_b.fill(0.0)        # DAT_005af0e8 lo            (DAT_005af0ec hi)
-    state.g_convoy_support.fill(0.0)         # DAT_005cf0e8 lo, float64 view
-    state.g_support_candidate_mark.fill(0)   # DAT_005cf0ec hi, int64 view
-    state.g_convoy_reach.fill(0.0)           # DAT_005c48e8 lo, float64 view
-    state.g_direct_reach_flag.fill(0)        # DAT_005c48ec hi, int64 view
-    state.g_support_reach.fill(0.0)          # DAT_005ba0e8 lo, float64 view
-    state.g_extended_reach_flag.fill(0)      # DAT_005ba0ec hi, int64 view
+    state.g_support_candidate_mark.fill(0)   # DAT_005cf0e8/ec signed int64
+    state.g_convoy_reach.fill(0.0)           # DAT_005c48e8/ec signed value
+    state.g_support_reach.fill(0.0)          # DAT_005ba0e8/ec signed value
     state.g_prov_target_flag.fill(0)         # g_ProvTargetFlag
     state.g_target_flag2.fill(0)             # DAT_005ee8ec hi partner
     state.g_target_flag.fill(0)              # g_TargetFlag
@@ -512,7 +514,8 @@ def _build_retreat_order_token(state: 'InnerGameState', node: dict) -> 'str | No
 # Coast suffix → DAIDE coast token (reverse of _DAIDE_COAST_TO_STR)
 _COAST_STR_TO_DAIDE = {
     'NC': 0x4600, 'NE': 0x4602, 'EC': 0x4604,
-    'SC': 0x4606, 'WC': 0x460C, 'NW': 0x460E,
+    'SE': 0x4606, 'SC': 0x4608, 'SW': 0x460A,
+    'WC': 0x460C, 'NW': 0x460E,
 }
 
 
@@ -829,11 +832,21 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
     id_to_prov = state._id_to_prov
 
-    unit_chr = ('A' if unit_data['type'] in ('A', 'AMY') else 'F')
-    prov_name = id_to_prov.get(prov, str(prov))
-    coast = unit_data.get('coast', '')
-    loc_str = f"{prov_name}/{coast}" if coast else prov_name
-    unit_str = f"{unit_chr} {loc_str}"
+    def _unit_string_at(unit_prov: int) -> str | None:
+        """Format FUN_0045ffa0's live unit token for text dispatch."""
+        data = state.unit_info.get(unit_prov)
+        if data is None:
+            return None
+        unit_chr = 'A' if data['type'] in ('A', 'AMY') else 'F'
+        unit_prov_name = id_to_prov.get(unit_prov, str(unit_prov))
+        unit_coast = str(data.get('coast', '')).upper().lstrip('/')
+        if unit_coast:
+            unit_prov_name = f"{unit_prov_name}/{unit_coast}"
+        return f"{unit_chr} {unit_prov_name}"
+
+    unit_str = _unit_string_at(prov)
+    if unit_str is None:
+        return None
 
     dest_id   = int(state.g_order_table[prov, _F_DEST_PROV])
     dest_name = id_to_prov.get(dest_id, str(dest_id))
@@ -861,33 +874,29 @@ def _build_order_seq_from_table(state: InnerGameState, prov: int) -> dict | None
         seq['coast']  = dest_coast
 
     elif order_type == _ORDER_CTO:
-        sec_data = state.unit_info.get(sec_id)
-        if sec_data:
-            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
-            seq['target_unit'] = f"{sec_chr} {sec_name}"
+        target_unit = _unit_string_at(sec_id)
+        if target_unit:
+            seq['target_unit'] = target_unit
         seq['target_dest'] = dest_name
 
     elif order_type == _ORDER_SUP_MTO:
-        sec_data = state.unit_info.get(sec_id)
-        if sec_data:
-            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
-            seq['target_unit'] = f"{sec_chr} {sec_name}"
+        target_unit = _unit_string_at(sec_id)
+        if target_unit:
+            seq['target_unit'] = target_unit
         seq['target_dest']  = dest_name
         seq['target_coast'] = dest_coast
 
     elif order_type == _ORDER_SUP_HLD:
         # SUP_HLD stores the supported unit in _F_DEST_PROV (col 2), not
         # _F_SECONDARY — see BuildOrder_SUP_HLD.c:28.
-        sup_data = state.unit_info.get(dest_id)
-        if sup_data:
-            sup_chr = 'A' if sup_data['type'] in ('A', 'AMY') else 'F'
-            seq['target_unit'] = f"{sup_chr} {dest_name}"
+        target_unit = _unit_string_at(dest_id)
+        if target_unit:
+            seq['target_unit'] = target_unit
 
     elif order_type == _ORDER_CVY:
-        sec_data = state.unit_info.get(sec_id)
-        if sec_data:
-            sec_chr = 'A' if sec_data['type'] in ('A', 'AMY') else 'F'
-            seq['target_unit'] = f"{sec_chr} {sec_name}"
+        target_unit = _unit_string_at(sec_id)
+        if target_unit:
+            seq['target_unit'] = target_unit
         seq['target_dest'] = dest_name
 
     return seq

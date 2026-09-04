@@ -40,6 +40,7 @@ def validate_and_dispatch_order(
     own_power_idx: int,
     order_seq: dict,
     commit: bool = True,
+    format_existing: bool = False,
 ) -> int:
     """
     Port of FUN_00422a90 — ValidateAndDispatchDaideOrder.
@@ -87,12 +88,31 @@ def validate_and_dispatch_order(
     order_type: str = order_seq.get('type', '')
     unit_str:   str = order_seq.get('unit', '')
 
+    def destination_parts(
+        value: object,
+        explicit_coast: object = '',
+    ) -> tuple[str, str]:
+        if isinstance(value, dict):
+            province = str(value.get('province', ''))
+            embedded_coast = value.get('coast', '')
+        elif isinstance(value, (tuple, list)):
+            province = str(value[0]) if value else ''
+            embedded_coast = value[1] if len(value) > 1 else ''
+        else:
+            text = str(value or '')
+            if '/' in text:
+                province, embedded_coast = text.split('/', 1)
+            else:
+                province, embedded_coast = text, ''
+        coast = explicit_coast or embedded_coast
+        return province.upper(), str(coast).upper().lstrip('/')
+
     # ── Unit existence + power ownership ─────────────────────────────────────
     # C: `if ((WVE != uStack_94) && (BLD != uStack_94))` block, lines 156–238.
     # WVE / BLD have no unit — skip the block for those tokens; they still hit
     # _ERR_UNKNOWN_ORDER at the dispatch switch below.
     if order_type not in ('WVE', 'BLD'):
-        # Parse "A PAR" → 'PAR', "F LON/NCS" → 'LON'
+        # Parse "A PAR" → 'PAR', "F STP/NC" → 'STP'
         parts = unit_str.split()
         if len(parts) < 2:
             logger.debug("validate_and_dispatch_order: malformed unit string %r", unit_str)
@@ -126,7 +146,10 @@ def validate_and_dispatch_order(
         # C: `if (HLD == uStack_94) goto LAB_00423fb5` — success, no
         # check_order_alliance call.  HLD has no destination.
         if commit:
-            dispatch_single_order(state, own_power_idx, order_seq)
+            dispatch_single_order(
+                state, own_power_idx, order_seq,
+                format_existing=format_existing,
+            )
         return 0
 
     if order_type == 'MTO':
@@ -134,10 +157,16 @@ def validate_and_dispatch_order(
         target = order_seq.get('target', '')
         if not target:
             return _ERR_NO_TARGET
-        dest_prov_id = state.prov_to_id.get(target.split('/')[0].upper())
+        target_province, _ = destination_parts(
+            target, order_seq.get('coast', '')
+        )
+        dest_prov_id = state.prov_to_id.get(target_province)
         # FUN_00460b30: adjacency / legal-move gate (with unit-type filtering).
         moving_unit_type = unit_data.get('type', '') if unit_data else ''
-        if dest_prov_id is None or not _is_legal_mto(state, prov_id, dest_prov_id, moving_unit_type):
+        moving_unit_coast = unit_data.get('coast', '') if unit_data else ''
+        if dest_prov_id is None or not _is_legal_mto(
+                state, prov_id, dest_prov_id,
+                moving_unit_type, moving_unit_coast):
             logger.debug(
                 "validate_and_dispatch_order: MTO adjacency check failed "
                 "%r → %r", prov_raw, target,
@@ -151,7 +180,10 @@ def validate_and_dispatch_order(
             if rc != 0:
                 return rc
         if commit:
-            dispatch_single_order(state, own_power_idx, order_seq)
+            dispatch_single_order(
+                state, own_power_idx, order_seq,
+                format_existing=format_existing,
+            )
         return 0
 
     if order_type == 'SUP':
@@ -174,16 +206,45 @@ def validate_and_dispatch_order(
         sup_prov_name = (sup_parts[1].split('/')[0].upper()
                          if len(sup_parts) >= 2 else '')
         sup_prov_id = state.prov_to_id.get(sup_prov_name) if sup_prov_name else None
-        check_prov_name = (target_dest if target_dest else
+        supported_unit = (
+            state.unit_info.get(sup_prov_id)
+            if sup_prov_id is not None else None
+        )
+        if supported_unit is None:
+            logger.debug(
+                "validate_and_dispatch_order: supported unit not found at %r",
+                sup_prov_name,
+            )
+            return _ERR_NO_SUP_UNIT
+        expected_supported_type = (
+            'A' if sup_unit_type in ('A', 'AMY') else
+            'F' if sup_unit_type in ('F', 'FLT') else ''
+        )
+        actual_supported_type = str(supported_unit.get('type', '')).upper()
+        if (not expected_supported_type
+                or actual_supported_type not in (
+                    expected_supported_type,
+                    'AMY' if expected_supported_type == 'A' else 'FLT',
+                )):
+            return _ERR_NO_SUP_UNIT
+        target_dest_province = (
+            destination_parts(
+                target_dest, order_seq.get('target_coast', '')
+            )[0] if target_dest else ''
+        )
+        check_prov_name = (target_dest_province if target_dest else
                            target_unit.split()[1].split('/')[0]
                            if len(target_unit.split()) >= 2 else '')
         check_prov_id = (state.prov_to_id.get(check_prov_name.upper())
                          if check_prov_name else None)
+        if check_prov_id is None:
+            return _ERR_ADJACENCY
         # FUN_004619f0: is_convoy_reachable on the supported unit → support target.
         # Applied for SUP-MTO (target_dest present); SUP-HLD trivially passes
         # (no destination province to validate convoy reachability against).
         if target_dest and sup_prov_id is not None and check_prov_id is not None:
-            if not is_convoy_reachable(state, sup_prov_id, sup_unit_type, check_prov_id):
+            if not is_convoy_reachable(
+                    state, sup_prov_id, sup_unit_type, check_prov_id):
                 logger.debug(
                     "validate_and_dispatch_order: SUP convoy-legality failed "
                     "%r → %r", sup_prov_name, target_dest,
@@ -194,9 +255,14 @@ def validate_and_dispatch_order(
         #   SUP-HLD: supporter must reach supported unit's province
         # prov_id is the supporter's province. check_prov_id is the province the
         # supporter needs to reach (target_dest for MTO, supported unit's prov
-        # for HLD). Plain adjacency — no convoy fallback for supporter.
+        # for HLD). IsLegalMove uses the supporter's exact unit/coast token;
+        # there is no convoy fallback for the supporter.
         if check_prov_id is not None and prov_id != check_prov_id:
-            if check_prov_id not in state.adj_matrix.get(prov_id, []):
+            supporter_type = unit_data.get('type', '') if unit_data else ''
+            supporter_coast = unit_data.get('coast', '') if unit_data else ''
+            if not _is_legal_mto(
+                    state, prov_id, check_prov_id,
+                    supporter_type, supporter_coast):
                 logger.debug(
                     "validate_and_dispatch_order: SUP supporter %r not adjacent "
                     "to %r", prov_raw, check_prov_name,
@@ -222,7 +288,10 @@ def validate_and_dispatch_order(
             if rc != 0:
                 return rc
         if commit:
-            dispatch_single_order(state, own_power_idx, order_seq)
+            dispatch_single_order(
+                state, own_power_idx, order_seq,
+                format_existing=format_existing,
+            )
         return 0
 
     if order_type == 'CTO':
@@ -230,7 +299,10 @@ def validate_and_dispatch_order(
         target_dest = order_seq.get('target_dest', '')
         if not target_dest:
             return _ERR_NO_TARGET
-        dest_prov_id = state.prov_to_id.get(target_dest.split('/')[0].upper())
+        target_dest_province, _ = destination_parts(target_dest)
+        dest_prov_id = state.prov_to_id.get(target_dest_province)
+        if dest_prov_id is None:
+            return _ERR_ADJACENCY
         # FUN_004619f0: is_convoy_reachable — ordering army (prov_id, unit_type) → dest.
         # param_1 = army unit_data, param_2 = dest_prov, param_3 = -1.
         cto_unit_type = unit_data.get('type', '') if unit_data else ''
@@ -249,7 +321,10 @@ def validate_and_dispatch_order(
             if rc != 0:
                 return rc
         if commit:
-            dispatch_single_order(state, own_power_idx, order_seq)
+            dispatch_single_order(
+                state, own_power_idx, order_seq,
+                format_existing=format_existing,
+            )
         return 0
 
     if order_type == 'CVY':
@@ -260,7 +335,8 @@ def validate_and_dispatch_order(
         target_dest = order_seq.get('target_dest', '')
         if not target_dest:
             return _ERR_NO_TARGET
-        dest_prov_id = state.prov_to_id.get(target_dest.split('/')[0].upper())
+        target_dest_province, _ = destination_parts(target_dest)
+        dest_prov_id = state.prov_to_id.get(target_dest_province)
         # Extract army from target_unit (e.g. "A BRE").
         # C: GetSubList(local_6c, .., 2) → army sublist; GetListElement(.., 2) = province id.
         cvy_army_str  = order_seq.get('target_unit', '')
@@ -268,6 +344,10 @@ def validate_and_dispatch_order(
         army_prov_id  = None
         if len(cvy_parts) >= 2:
             army_prov_id = state.prov_to_id.get(cvy_parts[1].split('/')[0].upper())
+        if dest_prov_id is None:
+            return _ERR_CVY_REACH
+        if army_prov_id is None:
+            return _ERR_CVY_NO_ARMY
         # C: AMY == unit.type check + FUN_004619f0 convoy-reachability.
         if dest_prov_id is not None and army_prov_id is not None:
             army_unit = state.unit_info.get(army_prov_id)
@@ -290,7 +370,10 @@ def validate_and_dispatch_order(
             if rc != 0:
                 return rc
         if commit:
-            dispatch_single_order(state, own_power_idx, order_seq)
+            dispatch_single_order(
+                state, own_power_idx, order_seq,
+                format_existing=format_existing,
+            )
         return 0
 
     # WVE / BLD and any unrecognised token — C: return -0x15f91 (lines 529–541)

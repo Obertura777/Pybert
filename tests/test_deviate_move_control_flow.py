@@ -11,10 +11,13 @@ if str(_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_ROOT.parent))
 
 _strategy = __import__(f"{_PKG}.bot.strategy", fromlist=["_deviate_move"])
-_state = __import__(f"{_PKG}.state", fromlist=["InnerGameState"])
+_state = __import__(
+    f"{_PKG}.state", fromlist=["InnerGameState", "_parse_movement_order"]
+)
 
 _deviate_move = _strategy._deviate_move
 InnerGameState = _state.InnerGameState
+_parse_movement_order = _state._parse_movement_order
 
 
 def _state3() -> InnerGameState:
@@ -46,6 +49,43 @@ def test_peace_signal_uses_reachable_adjacent_snapshot_not_order_destination():
     assert int(state.g_peace_signal[0, 1]) == 1
     assert not np.any(state.g_stab_flag[:3, :3])
     assert not np.any(state.g_neutral_flag[:3, :3])
+
+
+def test_movement_history_preserves_fleet_source_coast():
+    record = _parse_movement_order(
+        "F STP/SC - BOT", 1, {"STP": 5, "BOT": 6},
+    )
+
+    assert record is not None
+    assert record["src_province"] == 5
+    assert record["src_coast"] == "SC"
+
+
+def test_peace_signal_filters_movement_history_fleet_coast():
+    state = _state3()
+    split_coast, north_target, south_target = 5, 6, 7
+    state.g_order_hist_list = [
+        {
+            "power": 1,
+            "unit_type": 1,
+            "src_coast": "NC",
+            "src_province": split_coast,
+            "dst_province": north_target,
+            "order_type": 1,
+        }
+    ]
+    state.adj_matrix[split_coast] = [north_target, south_target]
+    state.fleet_adj_matrix[split_coast] = [north_target, south_target]
+    state.fleet_coast_adj = {
+        (split_coast, "/NC"): [north_target],
+        (split_coast, "/SC"): [south_target],
+    }
+    state.g_spr_desig_c[south_target] = 0
+    state.g_spr_desig_c_hi[south_target] = 0
+
+    _deviate_move(state)
+
+    assert int(state.g_peace_signal[0, 1]) == 0
 
 
 def test_snapshot_designation_requires_exact_zero_high_word():

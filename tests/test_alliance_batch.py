@@ -37,6 +37,8 @@ def test_batched_alliance_scores_match_scalar_candidates_exactly():
         20: {'power': 1, 'type': 'F', 'coast': ''},
         30: {'power': 2, 'type': 'A', 'coast': ''},
     }
+    state.sc_provinces = {10}
+    state.g_sc_owner[10] = 1
     state.water_provinces = {20, 21}
     state.fleet_adj_matrix = {20: [21], 21: [20, 22]}
     state.g_relation_score[:] = rng.integers(0, 25, size=(7, 7))

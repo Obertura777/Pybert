@@ -20,12 +20,15 @@ import logging as _logging
 
 from ...state import InnerGameState
 from ...heuristics.win import compute_build_delta
-from ..parsers import _extract_top_paren_groups, _split_top_level_groups
+from ..parsers import (
+    _extract_top_paren_groups,
+    _normalize_daide_coast,
+    _split_top_level_groups,
+)
 
 _log = _logging.getLogger(__name__)
 
 _DAIDE_POWER_NAMES = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
-
 
 def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
     """
@@ -110,14 +113,11 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
             _log.warning("parse_now_unit: empty province sub-group in %r", unit_tokens)
             return False
         prov_code = inner[0]
-        coast_suffix = ('/' + inner[1]) if len(inner) >= 2 else ''
-        # NOTE: C 5-token ParseDestinationWithCoast loop (ParseNOWUnit lines
-        # 122-138) is not implemented; that path handles an extended DAIDE
-        # format not seen in standard Standard-map NOW messages.
+        coast_suffix = _normalize_daide_coast(inner[1]) if len(inner) >= 2 else ''
     elif '/' in str(location):
         # Embedded coast: 'SPA/SC'
         prov_code, coast_tag = str(location).upper().split('/', 1)
-        coast_suffix = '/' + coast_tag
+        coast_suffix = _normalize_daide_coast(coast_tag)
     elif (
         unit_type_char == 'F'
         and len(unit_tokens) >= 4
@@ -125,7 +125,7 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
     ):
         # C else-if (FLT == uVar1) — separate coast token, FLT only.
         prov_code = str(location).upper()
-        coast_suffix = '/' + str(unit_tokens[3]).upper()
+        coast_suffix = _normalize_daide_coast(unit_tokens[3])
     else:
         prov_code = str(location).upper()
         coast_suffix = ''
@@ -162,12 +162,13 @@ def parse_now_unit(state: InnerGameState, unit_tokens: list) -> bool:
                 if not item:
                     continue
                 dest = str(item[0]).upper()
-                dest_coast = str(item[1]).upper() if len(item) > 1 else ''
+                dest_coast = _normalize_daide_coast(item[1]) if len(item) > 1 else ''
             else:
                 dest = str(item).upper()
                 dest_coast = ''
             if '/' in dest:
                 dest, dest_coast = dest.split('/', 1)
+                dest_coast = _normalize_daide_coast(dest_coast)
             dest_id = prov_to_id.get(dest, -1)
             if dest_id >= 0:
                 parsed_retreats.append({'province': dest_id, 'coast': dest_coast})
@@ -200,11 +201,9 @@ def parse_now(state: InnerGameState, message: str) -> bool:
       - ``state.g_waive_count``           ← C inner+0x2480
 
     After all units are parsed, performs the WIN-season post-processing from
-    C ParseNOW lines 122-172: finds own-power units occupying enemy home SCs
-    and records them in ``state.g_enemy_home_occupied`` (Python equivalent of
-    the C ordered set / map at inner+0x2450 / inner+0x24cc. The latter has no
-    known reader per SetOwnPower.c analysis, so functional impact is
-    informational only).
+    C ParseNOW lines 122-172: finds controlled, unoccupied own home SCs and
+    records them in ``state.g_available_home_centers`` (Python equivalent of
+    the C map at inner+0x24cc consumed by FUN_0044bd40).
 
     NOW message format:
       NOW ( season year ) ( unit1 ) ( unit2 ) ... ( unitN )
@@ -266,6 +265,8 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     state.g_build_order_list      = []     # inner+0x2478 (WIN build BST)
     state.g_build_order_list_size = 0      # inner+0x247c
     state.g_waive_count           = 0      # inner+0x2480
+    state.g_available_home_centers = frozenset()  # inner+0x24cc
+    state.g_selected_build_candidates = []
 
     # --- Parse each unit entry (groups[2:]) ---
     for i, unit_group in enumerate(unit_groups):
@@ -285,42 +286,44 @@ def parse_now(state: InnerGameState, message: str) -> bool:
     )
 
     # --- WIN-season post-processing (C ParseNOW lines 122-172) ---
-    # C line 122-123: if season==WIN, call ComputeBuildDelta (FUN_0040ab10)
-    # which stamps province[p]+0x20 with unit-holder token for every unit.
-    # C lines 125-168: iterate inner+0x243c (enemy home SCs from SetOwnPower),
-    # checking province[p]+0x20 == own_power_token; insert matching provinces
-    # into the ordered set at +0x2450 and map at +0x24cc (g_enemy_home_occupied).
-    # Python: compute_build_delta stamps g_sc_owner (equivalent of +0x20 field);
-    # home_centers supplies enemy home SCs (from handle_mdf+hlo_dispatch or
+    # C line 122-123: if season==WIN, call ComputeBuildDelta (FUN_0040ab10),
+    # which overlays active-unit power tokens on province[p]+0x20 without
+    # clearing existing controllers. That updates occupied centres after fall
+    # while empty centres retain their previous controller.
+    # C lines 125-168: iterate inner+0x243c (own home SCs from SetOwnPower),
+    # checking province[p]+0x20 == own_power_token and that the province is
+    # absent from the active-unit set; insert matching provinces into the map
+    # at +0x24cc (g_available_home_centers).
+    # Python: compute_build_delta updates g_sc_owner (equivalent of +0x20);
+    # home_centers supplies own home SCs (from handle_mdf+hlo_dispatch or
     # synchronize_from_game — same set as SetOwnPower's +0x243c map).
+    if season_str == 'WIN':
+        # ComputeBuildDelta is unconditional in C's winter path. HLO state is
+        # needed only for the own-power home-build-site follow-up below.
+        compute_build_delta(state)
+
     if season_str == 'WIN' and getattr(state, 'g_hlo_received', False):
         own_power = getattr(state, 'albert_power_idx', -1)
-        # Mirror C line 122-123: ComputeBuildDelta before enemy-home-SC loop.
-        compute_build_delta(state)
         home_centers = getattr(state, 'home_centers', {}) or {}
         if own_power >= 0 and not home_centers:
             _log.warning("parse_now: WIN season but home_centers empty — "
                          "synchronize_from_game or handle_mdf+hlo_dispatch not called; "
-                         "g_enemy_home_occupied will be empty")
+                         "g_available_home_centers will be empty")
         if own_power >= 0 and home_centers:
-            enemy_home_scs = frozenset(
-                p
-                for pid, provs in home_centers.items()
-                if pid != own_power
-                for p in provs
-            )
-            # C inner+0x24cc: enemy home SCs where province[p]+0x20 == own_power_token.
-            # g_sc_owner[prov] is the Python equivalent of that stamped field.
-            state.g_enemy_home_occupied = frozenset(
+            own_home_scs = home_centers.get(own_power, frozenset())
+            # C inner+0x24cc: own home SCs whose controller token is ours and
+            # which are absent from inner+0x2450 (the active-unit set).
+            state.g_available_home_centers = frozenset(
                 prov
-                for prov in enemy_home_scs
+                for prov in own_home_scs
                 if prov < 256 and state.g_sc_owner[prov] == own_power
+                and prov not in state.unit_info
             )
-            if state.g_enemy_home_occupied:
+            if state.g_available_home_centers:
                 _log.debug(
-                    "parse_now: own power(%d) occupies %d enemy home SC(s): %r",
-                    own_power, len(state.g_enemy_home_occupied),
-                    sorted(state.g_enemy_home_occupied),
+                    "parse_now: own power(%d) has %d available home build site(s): %r",
+                    own_power, len(state.g_available_home_centers),
+                    sorted(state.g_available_home_centers),
                 )
 
     return True

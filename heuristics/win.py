@@ -55,11 +55,13 @@ def compute_build_delta(state: InnerGameState) -> bool:
     struct are not needed in Python because candidate seeding is done by
     ``populate_build_candidates`` / ``populate_remove_candidates``.
     """
-    num_powers = 7
+    num_powers = int(getattr(state, 'g_num_powers', 7))
     unit_counts = [0] * num_powers
-    # Mirror C:79 — stamp province unit-holder field (province[prov]+0x20 = power|0x4100)
-    # so g_sc_owner is fresh before _hostility / compute_influence_matrix read it.
-    state.g_sc_owner.fill(-1)
+    # C:59-80 stamps every active unit's power token into province +0x20.
+    # Crucially, it does *not* clear that field first: empty supply centres
+    # retain their previous controller, while occupied centres change hands
+    # after the fall.  Clearing the Python array here erased every empty
+    # centre and made the winter delta equal "occupied SCs - units".
     for prov, info in state.unit_info.items():
         p = int(info['power'])
         if 0 <= p < num_powers:
@@ -67,10 +69,31 @@ def compute_build_delta(state: InnerGameState) -> bool:
             if prov < 256:
                 state.g_sc_owner[prov] = p
 
+    # C:81-94 then walks the province records and counts the category-0x41
+    # token at +0x20 only for supply centres.  Derive the delta from that
+    # updated controller view rather than from a possibly stale sc_count.
+    controlled_counts = [0] * num_powers
+    for prov in state.sc_provinces:
+        controller = int(state.g_sc_owner[prov])
+        if 0 <= controller < num_powers:
+            controlled_counts[controller] += 1
+
+    # Keep the Python-only materialized ownership views coherent with the
+    # province table. C has no separate board-ownership matrix; consumers read
+    # +0x20 directly. Without this refresh, raw DAIDE play could compute the
+    # right winter delta while later Python scorers still saw last turn's
+    # ownership in sc_count/g_board_sc_ownership.
+    state.g_board_sc_ownership.fill(0)
+    for prov in state.sc_provinces:
+        controller = int(state.g_sc_owner[prov])
+        if 0 <= controller < num_powers:
+            state.g_board_sc_ownership[controller, prov] = 1
+    state.sc_count[:num_powers] = controlled_counts
+
     imbalance = False
     build_delta: dict = {}
     for p in range(num_powers):
-        sc    = int(state.sc_count[p])
+        sc    = controlled_counts[p]
         units = unit_counts[p]
         if units < sc:
             build_delta[p] = {'flag': 1, 'delta': sc - units}
@@ -93,7 +116,7 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     build/remove pipeline is driven directly from
     `generate_and_submit_orders` (bot.py) after `synchronize_from_game`.  A province is eligible when:
       • it is one of own_power's home supply centres  (state.home_centers)
-      • own_power currently owns it                   (g_sc_ownership[own,prov]==1)
+      • own_power currently owns it             (g_board_sc_ownership[own,prov]==1)
       • no unit currently stands there                (prov not in unit_info)
 
     Preserves the g_attack_count-based BFS values from score_provinces for
@@ -107,18 +130,20 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
     Albert+0x4e50; limit (delta) at Albert+0x4e54.
     """
     home_provs = state.home_centers.get(own_power, frozenset())
+    available_home_centers: set[int] = set()
     state.g_adjustment_build_candidates = []
     state.g_adjustment_candidate_scores = {}
     state.g_adjustment_candidate_provinces = set()
     for prov in range(256):
         is_eligible = (
             prov in home_provs
-            and state.g_sc_ownership[own_power, prov] == 1
+            and state.g_board_sc_ownership[own_power, prov] == 1
             and prov not in state.unit_info
         )
         if not is_eligible:
             state.g_candidate_bfs[own_power, :, prov] = 0.0
             continue
+        available_home_centers.add(prov)
         state.g_adjustment_candidate_provinces.add(prov)
 
         # ScoreOrderCandidates_OwnPower iterates keys containing both the
@@ -140,6 +165,10 @@ def populate_build_candidates(state: InnerGameState, own_power: int) -> None:
             state.g_adjustment_build_candidates.append({
                 'province': prov, 'unit_type': 'FLT', 'coast': '',
             })
+
+    # Materialize the same legal-site map as ParseNOW's +0x24cc path for
+    # callers initialized directly from a diplomacy.Game rather than DAIDE.
+    state.g_available_home_centers = frozenset(available_home_centers)
 
 
 def populate_remove_candidates(state: InnerGameState, own_power: int) -> None:
@@ -176,8 +205,11 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
 
     Algorithm:
       1. Collect all provinces in the candidate set (candidate_set_contains).
-      2. Sort by g_candidate_scores descending (highest strategic value first).
-      3. Take up to `delta` provinces; any shortfall becomes waives.
+      2. Re-run ScoreProvinces and own-power candidate scoring before each
+         selection, feeding previously selected exact build tokens back into
+         the score tree with the recovered -2500 adjustment.
+      3. Select the highest score, exclude every other token at that province,
+         and repeat; any shortfall becomes waives.
       4. For each selected province determine unit type:
            FLT — if province is coastal (any adjacent province is a water province).
            AMY — otherwise (inland).
@@ -197,31 +229,57 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
         state._id_to_prov = {v: k for k, v in state.prov_to_id.items()}
     id_to_prov = state._id_to_prov
 
-    candidates: list = []
-    for candidate in state.g_adjustment_build_candidates:
-        prov = int(candidate['province'])
-        unit_type = str(candidate['unit_type'])
-        coast = str(candidate.get('coast', ''))
-        key = (prov, unit_type, coast)
-        score = float(state.g_adjustment_candidate_scores.get(
-            key, state.g_candidate_scores[own_power, prov]))
-        # AMY (0x4200) precedes FLT (0x4201) on an otherwise equal C key.
-        type_tie = 1 if unit_type == 'AMY' else 0
-        candidates.append((score, prov, type_tie, unit_type, coast))
+    from .scoring import score_order_candidates_own_power, score_provinces
 
-    candidates.sort(reverse=True)
-    selected: list[tuple] = []
+    state.g_selected_build_candidates = []
+    selected: list[tuple[int, str, str]] = []
     selected_provinces: set[int] = set()
-    for candidate in candidates:
-        prov = int(candidate[1])
-        if prov in selected_provinces:
-            continue
-        selected.append(candidate)
-        selected_provinces.add(prov)
-        if len(selected) == delta:
-            break
+    for _ in range(delta):
+        # FUN_0044bd40 calls these two scorers inside the build-count loop,
+        # after accounting for the orders already inserted at inner+0x2474.
+        score_provinces(
+            state,
+            state.g_spr_move_weight,
+            state.g_spr_build_weight,
+            own_power,
+        )
+        score_order_candidates_own_power(
+            state,
+            _WIN_BUILD_WEIGHTS,
+            own_power,
+            state.g_win_build_attack_weight,
+        )
 
-    for _, prov, _, unit_type, coast_suffix in selected:
+        ranked: list[tuple[float, int, int, str, str]] = []
+        for candidate in state.g_adjustment_build_candidates:
+            prov = int(candidate['province'])
+            if prov in selected_provinces:
+                continue
+            unit_type = str(candidate['unit_type'])
+            coast = str(candidate.get('coast', ''))
+            key = (prov, unit_type, coast)
+            score = float(state.g_adjustment_candidate_scores.get(
+                key, state.g_candidate_scores[own_power, prov]
+            ))
+            # The source map walks provinces and unit/coast tokens ascending.
+            # BuildOrderSpec is descending and equal keys go right, while the
+            # build path consumes begin(): equal scores retain first insertion.
+            token_tie = 0 if unit_type == 'AMY' else 1
+            ranked.append((-score, prov, token_tie, unit_type, coast))
+
+        if not ranked:
+            break
+        ranked.sort()
+        _, prov, _, unit_type, coast = ranked[0]
+        selected.append((prov, unit_type, coast))
+        selected_provinces.add(prov)
+        state.g_selected_build_candidates.append({
+            'province': prov,
+            'unit_type': unit_type,
+            'coast': coast,
+        })
+
+    for prov, unit_type, coast_suffix in selected:
         prov_name = id_to_prov.get(prov, str(prov))
         if unit_type == 'FLT' and coast_suffix:
             prov_name = prov_name + coast_suffix
@@ -240,8 +298,8 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     Algorithm:
       1. Collect all provinces in the candidate set (candidate_set_contains).
       2. Sort by g_candidate_scores ascending (lowest strategic value first — remove those first).
-         Confirmed by decompile of FUN_00442040: BuildOrderSpec uses score+0x7d
-         and the first element popped (lowest) is the one removed.
+         Confirmed by disassembly of FUN_00442040: BuildOrderSpec uses
+         score+200 and the `--end()` element (lowest) is removed.
       3. Take up to `delta` provinces.
       4. Unit type is read directly from unit_info[prov]['type'].
       5. Append '( POWER AMY/FLT PROV ) REM' to state.g_build_order_list.
@@ -260,7 +318,11 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
         score = float(state.g_candidate_scores[own_power, prov])
         candidates.append((score, prov))
 
-    candidates.sort()          # ascending: lowest score removed first
+    # FUN_00442040 walks the own-unit key set in ascending order, inserts into
+    # BuildOrderSpec's descending multiset, then repeatedly consumes --end().
+    # That yields the lowest score first and reverses insertion order for equal
+    # scores, so the higher province key wins a tie.
+    candidates.sort(key=lambda candidate: (candidate[0], -candidate[1]))
     selected = candidates[:delta]
 
     for _, prov in selected:

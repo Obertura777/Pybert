@@ -198,6 +198,22 @@ def _run_send_gof_candidate_pass(
 
     snapshot_province_state(state)
     _reset_send_gof_order_state(state)
+    # send_GOF.c:31-38 destroys and reinitialises DAT_00baed98 before any
+    # ProcessTurn calls.  BuildSupportProposals then repopulates it during the
+    # ten rounds, allowing later powers/rounds to consume fresh support
+    # requests without leaking requests from an earlier phase.
+    deal_list = getattr(state, 'g_deal_list', None)
+    if deal_list is None:
+        deal_list = []
+        state.g_deal_list = deal_list
+    else:
+        deal_list.clear()
+    state.g_proposal_history_map = deal_list
+    proposal_keys = getattr(state, 'g_proposal_history', None)
+    if proposal_keys is None:
+        state.g_proposal_history = set()
+    else:
+        proposal_keys.clear()
 
     # send_GOF.c:56-69 scores SUM like SPR and AUT like FAL. WIN uses the
     # spring weights too, but its own-power candidate scoring must happen only
@@ -285,8 +301,22 @@ def _run_send_gof_candidate_pass(
                 state.g_ring_prov_c = int(
                     opportunity.get('supporter_prov', -1)
                 )
+                # The seven-word C record also carries one coast token after
+                # each source province: A→B, B→C, and C→A respectively.
+                state.g_ring_coast_a = int(
+                    opportunity.get('mover_coast', 0)
+                )
+                state.g_ring_coast_b = int(
+                    opportunity.get('target_coast', 0)
+                )
+                state.g_ring_coast_c = int(
+                    opportunity.get('supporter_coast', 0)
+                )
                 state.g_ring_convoy_enabled = 1
-                re_trials = max(int(state.sc_count[power]), 1)
+                # send_GOF.c:145 uses the same DAT_0062e460 unit-count row as
+                # the outer trial calculation: (unit_count * 10) / 10.  Supply
+                # centres are unrelated and diverge after captures/disbands.
+                re_trials = max(int(unit_count[power]), 1)
                 if press_cap == 0 and power != own_power_idx:
                     re_trials = 1
                 process_turn(state, power, num_trials=re_trials)
@@ -576,27 +606,31 @@ class _OrdersMixin:
             self.state.g_adjustment_candidate_scores.clear()
             self.state.g_adjustment_candidate_provinces.clear()
 
-            # Save real SC ownership before score_provinces replaces the
-            # scratch table with unit presence.
-            saved_sc_ownership = self.state.g_sc_ownership.copy()
+            # ParseNOW has already established the adjustment delta and legal
+            # site/unit keys before send_GOF enters ScoreProvinces in C. In
+            # particular, ComputeWinterBuilds runs *inside* ScoreProvinces and
+            # must see the legal build-token set at that point.
+            own_delta = self.state.g_build_delta[own_power_idx]
+            if own_delta['flag'] == 1:
+                populate_build_candidates(self.state, own_power_idx)
+            elif own_delta['delta'] > 0:
+                populate_remove_candidates(self.state, own_power_idx)
 
             score_provinces(
                 self.state, self.state.g_spr_move_weight,
                 self.state.g_spr_build_weight, own_power_idx,
             )
-            self.state.g_sc_ownership[:] = saved_sc_ownership
 
-            own_delta = self.state.g_build_delta[own_power_idx]
             if own_delta['flag'] == 1:
-                populate_build_candidates(self.state, own_power_idx)
                 score_order_candidates_own_power(
-                    self.state, _WIN_BUILD_WEIGHTS, own_power_idx
+                    self.state, _WIN_BUILD_WEIGHTS, own_power_idx,
+                    self.state.g_win_build_attack_weight,
                 )
                 compute_win_builds(self.state, own_delta['delta'])
             elif own_delta['delta'] > 0:
-                populate_remove_candidates(self.state, own_power_idx)
                 score_order_candidates_own_power(
-                    self.state, _WIN_REMOVE_WEIGHTS, own_power_idx
+                    self.state, _WIN_REMOVE_WEIGHTS, own_power_idx,
+                    self.state.g_win_remove_attack_weight,
                 )
                 compute_win_removes(self.state, own_delta['delta'])
             self._submit_adjustment_orders()

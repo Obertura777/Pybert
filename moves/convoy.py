@@ -5,9 +5,8 @@ Split from moves.py during the 2026-04 refactor.
 Convoy-chain pipeline called from ``generate_orders`` and the MC trial
 loop:
 
-  * ``enumerate_convoy_reach``   — port of ``FUN_0043ee00``; populates
-    ``g_convoy_reach_count`` plus distance-decay weight tables
-    ``g_winter_score_a/B`` for each of a power's units.
+  * ``enumerate_convoy_reach``   — port of ``FUN_0043ee00``; builds the
+    persistent all-board movement/convoy reach index ``DAT_00bc1e1c``.
   * ``register_convoy_fleet``    — register a fleet onto an existing
     convoy chain (``g_convoy_route``).
   * ``build_convoy_orders``      — commit the winning convoy orders
@@ -17,7 +16,9 @@ loop:
 Module-level deps: ``..state.InnerGameState``, ``.support.assign_support_order``.
 """
 
+import heapq
 import logging
+from collections import deque
 from collections.abc import Iterable
 
 from ..state import InnerGameState
@@ -27,8 +28,8 @@ logger = logging.getLogger(__name__)
 from ._constants import (
     _F_ORDER_TYPE,
     _F_DEST_PROV,
+    _F_DEST_COAST,
     _F_INCOMING_MOVE,
-    _F_ORDER_ASGN,
     _F_CONVOY_DEPTH,
     _F_CONVOY_LEG0,
     _F_CONVOY_LEG1,
@@ -38,6 +39,7 @@ from ._constants import (
     _ORDER_MTO,
     _ORDER_CVY,
     _ORDER_CTO,
+    _unit_location_token,
     _MAX_CONVOY_CHAIN_DEPTH,
 )
 
@@ -58,176 +60,321 @@ def _harmonic_dist_weight(n: int, base: float) -> float:
     Harmonic-mean distance-decay weight at BFS depth n.
     Formula from research.md §EnumerateConvoyReach score detail:
       1 / (1/base^n  +  1/(1.5^n × 30))
-    At n=0: ≈ 0.968 (near-full weight).  Decays then rises as 1.5^n dominates.
+    The stored distance score rises with depth; its inverse contribution in
+    InitScoringState and ComputeWinterBuilds therefore decays with distance.
     """
     base_pow = base ** n if n > 0 else 1.0
     exp15    = 1.5  ** n if n > 0 else 1.0
     return 1.0 / (1.0 / base_pow + 1.0 / (exp15 * 30.0))
 
 
-def enumerate_convoy_reach(state: InnerGameState, power_idx: int):
-    """
-    Port of FUN_0043ee00 = EnumerateConvoyReach.
+def _topology_base_provinces(state: InnerGameState) -> list[int]:
+    """Return C-style province ids, excluding Python coast-variant ids."""
+    variants = {
+        variant
+        for coast_ids in getattr(state, 'coast_variants', {}).values()
+        for variant in coast_ids
+    }
+    valid = set(getattr(state, 'valid_provinces', ()) or state.adj_matrix)
+    valid.difference_update(variants)
+    valid.difference_update(getattr(state, 'shut_provinces', ()))
+    return sorted(valid)
 
-    Multi-phase BFS enumerating all provinces reachable by each of power_idx's
-    units, with full convoy-chain expansion for army units.
 
-    Phase 1  Seed reachCandidates from the unit's province (wave 0).
-    Phase 2  Main BFS through g_build_candidate_list provinces; write distance-
-             decay weights to g_winter_score_a / g_winter_score_b (base 7 / 8).
-    Phase 3  (AMY only) Convoy sub-passes A–D:
-             A  Seed fleetChainList from fleet neighbours of reached provinces;
-                collect their unoccupied neighbours into freeDestinations.
-             B  BFS-expand the fleet chain through further unoccupied provinces.
-             C  From fleet chain, record occupied build-candidate neighbours
-                as army-reachable convoy landing squares.
-             D  10-hop convoy chain completion pass (MAX_CONVOY_CHAIN_DEPTH).
+def _fleet_tokens_for_province(
+    state: InnerGameState,
+    province: int,
+) -> list[str]:
+    """Return the legal FLT/coast tokens for one base province."""
+    coast_tokens = sorted(
+        str(coast).upper().lstrip('/')
+        for pid, coast in state.fleet_coast_adj
+        if pid == province
+    )
+    if coast_tokens:
+        return coast_tokens
+    if (province in state.water_provinces
+            or (province not in state.land_provinces
+                and bool(state.fleet_adj_matrix.get(province)))):
+        return ['']
+    return []
 
-    Writes:
-      g_convoy_reach_count[power_idx, prov]  +1 for every convoy-reachable province
-      g_winter_score_a[prov]               max harmonic weight (base 7.0)
-      g_winter_score_b[prov]               max harmonic weight (base 8.0)
 
-    Requires state.g_build_candidate_list (dict keyed by province ID) to be
-    populated before calling.  Falls back to all occupied/SC provinces if unset.
-    """
-    build_candidates = state.g_build_candidate_list  # dict — `in` tests keys
-    if not build_candidates:
-        # Fallback: provinces that have any unit or are supply centres
-        build_candidates = {
-            prov for prov in range(256)
-            if state.has_unit(prov) or state.g_sc_ownership[:, prov].any()
-        }
+def _fleet_state_adjacencies(
+    state: InnerGameState,
+    province: int,
+    coast: str,
+) -> list[tuple[int, str]]:
+    """Return destination (province, coast) fleet-token states."""
+    if coast:
+        raw = state.fleet_coast_adj.get((province, '/' + coast), ())
+    else:
+        raw = state.fleet_adj_matrix.get(province, ())
 
-    for src_prov, unit_data in list(state.unit_info.items()):
-        if unit_data['power'] != power_idx:
+    result: list[tuple[int, str]] = []
+    for destination in raw:
+        destination = int(destination)
+        destination_coasts = _fleet_tokens_for_province(state, destination)
+        if not destination_coasts:
             continue
+        if destination_coasts == ['']:
+            result.append((destination, ''))
+            continue
+        for destination_coast in destination_coasts:
+            reverse_adjacencies = state.fleet_coast_adj.get(
+                (destination, '/' + destination_coast), ()
+            )
+            if province in reverse_adjacencies:
+                result.append((destination, destination_coast))
+    return result
 
-        unit_type = unit_data['type']
-        coast_tok = unit_data.get('coast', '')
 
-        # ── Phase 1: seed reachCandidates with unit position at wave 0 ──────
-        reach_candidates = [(src_prov, coast_tok, 0)]  # (prov, coast_tok, wave)
-        in_reach = {src_prov}
+def _convoy_dist_weight(distance: int) -> float:
+    """C's convoy/post-landing weight: 300 * 1.5**distance."""
+    return 300.0 * (1.5 ** int(distance))
 
-        # ── Phase 2: main BFS through build-candidate adjacencies ────────────
-        army_reach: set = set()
-        bfs_wave = 0
-        changed = True
 
-        while changed and bfs_wave <= 256:
-            changed = False
-            # AdjacencyList call #1: neighbours at current wave
-            for cur_prov, cur_coast, wave in [e for e in reach_candidates if e[2] == bfs_wave]:
-                dist_weight_a = _harmonic_dist_weight(wave, 7.0)
-                dist_weight_b = _harmonic_dist_weight(wave, 8.0)
+def enumerate_convoy_reach(
+    state: InnerGameState,
+    power_idx: int | None = None,
+) -> None:
+    """Build DAT_00bc1e1c's persistent all-board reach index.
 
-                for adj in _filtered_adj(state, cur_prov, unit_type):
-                    if adj not in build_candidates:
+    The recovered routine has no power-index parameter. It walks every legal
+    province/unit-token source, inserts ordinary movement reach records with
+    the 7/8-and-1.5 harmonic distance weights, and augments army reach through
+    possible sea convoy chains and post-landing army movement. power_idx
+    remains an ignored compatibility parameter for older direct callers.
+
+    The outer C tree is keyed by destination province plus destination
+    unit/coast token. Python groups those outer keys by base province while
+    retaining both tokens on each BuildOrderSpec.
+    """
+    from ..heuristics._primitives import BuildOrderSpec
+
+    base_provinces = _topology_base_provinces(state)
+    base_set = set(base_provinces)
+    water = set(state.water_provinces) & base_set
+    landlocked = set(state.land_provinces) & base_set
+
+    # target-key -> source-key -> record. This mirrors each outer tree node's
+    # inner ordered set; first insertion is the shortest source path.
+    outer_records: dict[
+        tuple[int, str, str],
+        dict[tuple[int, str, str], BuildOrderSpec],
+    ] = {}
+
+    def ensure_outer(destination: int, unit_type: str, coast: str = '') -> None:
+        outer_records.setdefault((destination, unit_type, coast), {})
+
+    for province in base_provinces:
+        if province not in water:
+            ensure_outer(province, 'AMY')
+        for coast in _fleet_tokens_for_province(state, province):
+            ensure_outer(province, 'FLT', coast)
+
+    def insert(
+        destination: int,
+        destination_type: str,
+        destination_coast: str,
+        source: int,
+        source_type: str,
+        source_coast: str,
+        score: float,
+    ) -> bool:
+        target_key = (destination, destination_type, destination_coast)
+        inner = outer_records.setdefault(target_key, {})
+        source_key = (source, source_type, source_coast)
+        if source_key in inner:
+            return False
+        inner[source_key] = BuildOrderSpec(
+            source_province=source,
+            source_unit_type=source_type,
+            source_coast=source_coast,
+            destination_unit_type=destination_type,
+            destination_coast=destination_coast,
+            score=float(score),
+        )
+        return True
+
+    army_adjacencies = {
+        province: [
+            int(adj) for adj in state.adj_matrix.get(province, ())
+            if adj in base_set and adj not in water
+        ]
+        for province in base_provinces
+        if province not in water
+    }
+
+    for source in base_provinces:
+        if source not in water:
+            source_key = (source, 'AMY', '')
+            direct_distance = {source: 0}
+            queue = deque([source])
+            insert(source, 'AMY', '', *source_key, 1.0)
+            while queue:
+                current = queue.popleft()
+                next_distance = direct_distance[current] + 1
+                for destination in army_adjacencies.get(current, ()):
+                    if destination in direct_distance:
                         continue
-                    # Score with harmonic distance-decay weights
-                    if dist_weight_a > state.g_winter_score_a[adj]:
-                        state.g_winter_score_a[adj] = dist_weight_a
-                    if dist_weight_b > state.g_winter_score_b[adj]:
-                        state.g_winter_score_b[adj] = dist_weight_b
-                    army_reach.add(adj)
-                    if adj not in in_reach:
-                        in_reach.add(adj)
-                        reach_candidates.append((adj, cur_coast, wave + 1))
-                        changed = True
+                    direct_distance[destination] = next_distance
+                    queue.append(destination)
+                    insert(
+                        destination, 'AMY', '', *source_key,
+                        _harmonic_dist_weight(next_distance, 7.0),
+                    )
 
-            bfs_wave += 1
+            # Seed the possible fleet chain from every ordinarily reachable
+            # coast. Sea waves retain the combined land/sea distance.
+            max_direct_distance = max(direct_distance.values(), default=0)
+            sea_distance: dict[int, int] = {}
+            sea_heap: list[tuple[int, int]] = []
+            for coast_province, land_distance in direct_distance.items():
+                for fleet_coast in _fleet_tokens_for_province(
+                    state, coast_province
+                ):
+                    for adjacent, _ in _fleet_state_adjacencies(
+                        state, coast_province, fleet_coast
+                    ):
+                        if adjacent not in water:
+                            continue
+                        distance = land_distance + 1
+                        if distance < sea_distance.get(adjacent, 1 << 30):
+                            sea_distance[adjacent] = distance
+                            heapq.heappush(sea_heap, (distance, adjacent))
 
-        # ── Phase 3: army-only convoy expansion ─────────────────────────────
-        if unit_type != 'A':
-            for prov in army_reach:
-                state.g_convoy_reach_count[power_idx, prov] += 1
-            continue
-
-        fleet_chain: list = []       # (prov, coast_tok, wave) fleet chain nodes
-        in_fleet_chain: set = set()
-        free_destinations: set = set()
-
-        # Sub-pass A: for each reached province, find adjacent fleet units;
-        #   seed fleetChainList with those fleets and collect their unoccupied
-        #   neighbours into freeDestinations.
-        # Fixed 2026-04-20 (audit #2): filter adjacencies by unit type.
-        for cur_prov, cur_coast, wave in reach_candidates:
-            # AdjacencyList call #2: army-type filter (army looking for fleets)
-            for adj in _filtered_adj(state, cur_prov, 'A'):
-                if state.get_unit_type(adj) != 'F':
+            sea_expansion_limit = max_direct_distance + 3
+            while sea_heap:
+                distance, sea_province = heapq.heappop(sea_heap)
+                if distance != sea_distance.get(sea_province):
                     continue
-                if adj not in in_fleet_chain:
-                    in_fleet_chain.add(adj)
-                    fleet_chain.append((adj, cur_coast, wave))
-                # Fleet's neighbours: fleet-type filter
-                for fleet_adj in _filtered_adj(state, adj, 'F'):
-                    if not state.has_unit(fleet_adj):    # unoccupied
-                        free_destinations.add(fleet_adj)
+                if distance >= sea_expansion_limit:
+                    continue
+                for adjacent, _ in _fleet_state_adjacencies(
+                    state, sea_province, ''
+                ):
+                    if adjacent not in water:
+                        continue
+                    next_distance = distance + 1
+                    if next_distance < sea_distance.get(adjacent, 1 << 30):
+                        sea_distance[adjacent] = next_distance
+                        heapq.heappush(sea_heap, (next_distance, adjacent))
 
-        # Sub-pass B: BFS-expand fleet chain through further unoccupied provinces.
-        # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
-        fc_idx = 0
-        while fc_idx < len(fleet_chain):
-            fc_prov, fc_coast, fc_wave = fleet_chain[fc_idx]
-            fc_idx += 1
-            for adj in _filtered_adj(state, fc_prov, 'F'):
-                if not state.has_unit(adj):              # unoccupied
-                    free_destinations.add(adj)
-                    if adj not in in_fleet_chain:
-                        in_fleet_chain.add(adj)
-                        fleet_chain.append((adj, fc_coast, fc_wave + 1))
+            # Land from eligible fleet-chain waves, then perform the source's
+            # final ten-wave army expansion on the far side of the convoy.
+            remote_distance: dict[int, int] = {}
+            remote_heap: list[tuple[int, int]] = []
+            landing_sea_limit = max_direct_distance + 1
+            for sea_province, distance in sea_distance.items():
+                if distance > landing_sea_limit:
+                    continue
+                for destination, _ in _fleet_state_adjacencies(
+                    state, sea_province, ''
+                ):
+                    if destination in water or destination in landlocked:
+                        continue
+                    landing_distance = distance + 1
+                    if destination in direct_distance:
+                        continue
+                    if landing_distance < remote_distance.get(
+                        destination, 1 << 30
+                    ):
+                        remote_distance[destination] = landing_distance
+                        heapq.heappush(
+                            remote_heap, (landing_distance, destination)
+                        )
 
-        # Sub-pass C: from fleet chain, detect convoy landing on occupied
-        #   build-candidate squares (army crosses to a contested province).
-        # Fixed 2026-04-20 (audit #2): fleet-type adjacency filter.
-        for fc_prov, fc_coast, fc_wave in fleet_chain:
-            for adj in _filtered_adj(state, fc_prov, 'F'):
-                if state.has_unit(adj) and adj in build_candidates:
-                    army_reach.add(adj)
-                    if adj not in in_reach:
-                        in_reach.add(adj)
-                        reach_candidates.append((adj, fc_coast, fc_wave))
+            while remote_heap:
+                distance, destination = heapq.heappop(remote_heap)
+                if distance != remote_distance.get(destination):
+                    continue
+                insert(
+                    destination, 'AMY', '', *source_key,
+                    _convoy_dist_weight(distance),
+                )
+                if distance >= _MAX_CONVOY_CHAIN_DEPTH:
+                    continue
+                for adjacent in army_adjacencies.get(destination, ()):
+                    if adjacent in direct_distance:
+                        continue
+                    next_distance = distance + 1
+                    if next_distance < remote_distance.get(adjacent, 1 << 30):
+                        remote_distance[adjacent] = next_distance
+                        heapq.heappush(
+                            remote_heap, (next_distance, adjacent)
+                        )
 
-        # Sub-pass D: nested multi-depth convoy-chain completion pass.
-        # C iterates armyReachList at each depth 0..10; any land-adjacent province
-        # not yet visited is added at depth+1 regardless of whether it is a build
-        # candidate.  This enables transit through intermediate non-scoring provinces
-        # so genuine multi-hop chains are discovered.  The earlier `adj in
-        # build_candidates` guard was the bug: it cut off expansion at depth 1
-        # (only immediately adjacent build candidates were ever added), making the
-        # loop a de-facto single pass.
-        local_1a8 = 0
-        while local_1a8 < _MAX_CONVOY_CHAIN_DEPTH:
-            for cur_prov, cur_coast, wave in [e for e in reach_candidates if e[2] == local_1a8]:
-                for adj in _filtered_adj(state, cur_prov, 'A'):
-                    if adj not in in_reach:
-                        army_reach.add(adj)
-                        in_reach.add(adj)
-                        reach_candidates.append((adj, 'A', wave + 1))
-            local_1a8 += 1
+        for source_coast in _fleet_tokens_for_province(state, source):
+            source_key = (source, 'FLT', source_coast)
+            source_state = (source, source_coast)
+            distances = {source_state: 0}
+            queue = deque([source_state])
+            insert(source, 'FLT', source_coast, *source_key, 1.0)
+            while queue:
+                current_province, current_coast = queue.popleft()
+                next_distance = (
+                    distances[(current_province, current_coast)] + 1
+                )
+                for destination_state in _fleet_state_adjacencies(
+                    state, current_province, current_coast
+                ):
+                    if destination_state in distances:
+                        continue
+                    distances[destination_state] = next_distance
+                    queue.append(destination_state)
+                    destination, destination_coast = destination_state
+                    insert(
+                        destination, 'FLT', destination_coast, *source_key,
+                        _harmonic_dist_weight(next_distance, 7.0),
+                    )
 
-        # Commit convoy reach counts for all discovered destinations
-        for prov in free_destinations | army_reach:
-            state.g_convoy_reach_count[power_idx, prov] += 1
-
+    token_order = {
+        ('AMY', ''): 0,
+        ('FLT', ''): 1,
+        ('FLT', 'NC'): 2,
+        ('FLT', 'NE'): 3,
+        ('FLT', 'EC'): 4,
+        ('FLT', 'SE'): 5,
+        ('FLT', 'SC'): 6,
+        ('FLT', 'SW'): 7,
+        ('FLT', 'WC'): 8,
+        ('FLT', 'NW'): 9,
+    }
+    state.g_build_candidate_list.clear()
+    for target_key in sorted(
+        outer_records,
+        key=lambda key: (
+            key[0], token_order.get((key[1], key[2]), 99)
+        ),
+    ):
+        destination = target_key[0]
+        inner = outer_records[target_key]
+        target_list = state.g_build_candidate_list.setdefault(destination, [])
+        target_list.extend(
+            inner[source_key]
+            for source_key in sorted(
+                inner,
+                key=lambda key: (
+                    key[0], token_order.get((key[1], key[2]), 99)
+                ),
+            )
+        )
 
 def register_convoy_fleet(state: InnerGameState, power_idx: int, fleet_prov: int) -> None:
     """
     Port of RegisterConvoyFleet (Source/moves/RegisterConvoyFleet.c).
 
-    Guard: C uses offset +4 of the province record; Python uses
-    g_convoy_fleet_registered (reset each trial alongside g_army_adj_count /
-    g_province_score_trial).
+    Guard: province-record byte +4 is zero only for water provinces.  Albert
+    therefore scans adjacency only when the registered fleet is at sea.
 
     For each FLT-adjacent province adj:
       if g_army_adj_count[adj] > 0:
         C: (-1 < access) AND (access > 0 OR g_ProvTargetFlag != 0)
         mark g_province_score_trial[adj] = 1
     """
-    if fleet_prov in state.g_convoy_fleet_registered:
+    if fleet_prov not in state.water_provinces:
         return
-    state.g_convoy_fleet_registered.add(fleet_prov)
     for adj in state.fleet_adj_matrix.get(fleet_prov, []):
         if state.g_army_adj_count[adj] > 0:
             # C (RegisterConvoyFleet.c:32-33): DAT_005ee8ec is the HI word of
@@ -450,11 +597,13 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     fleet_count, route = _get_convoy_route(state, src_prov, dst_prov)
     if fleet_count <= 0:
         return
+    if coast == 0:
+        coast = _unit_location_token('A')
 
     # Army setup (CTO)
     state.g_order_table[src_prov, _F_ORDER_TYPE] = _ORDER_CTO
     state.g_order_table[src_prov, _F_DEST_PROV] = dst_prov
-    state.g_order_table[src_prov, _F_ORDER_ASGN] = 1  # Order committed
+    state.g_order_table[src_prov, _F_DEST_COAST] = coast
     state.g_order_table[src_prov, _F_CONVOY_DEPTH] = fleet_count
     
     if len(route) > 0:
@@ -464,6 +613,12 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     if len(route) > 2:
         state.g_order_table[src_prov, _F_CONVOY_LEG2] = route[2]
         
+    # ConvoyList_Insert(&DAT_00bb65a0, &dst) inserts the key and returns its
+    # mapped-value slot.  DAT_00bb65a4 is the same std::map's head pointer,
+    # not a second container.  Python retains a list for ordered key walks, so
+    # keep it synchronized with the mapping just as BuildOrder_MTO does.
+    if dst_prov not in state.g_convoy_dst_list:
+        state.g_convoy_dst_list.append(dst_prov)
     state.g_convoy_dst_to_src[dst_prov] = src_prov
 
     # Mark the DESTINATION province as having an incoming move.
@@ -502,7 +657,7 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
     # turn and made an army abandon a neutral centre it had just captured.
     score = float(state.final_score_set[power_idx, dst_prov])
     state.g_convoy_chain_score[dst_prov] = score
-    state.g_order_score_hi[dst_prov] = score
+    state.g_order_score_hi[dst_prov] = 0.0
 
 
     # Fleet setup (CVY)
@@ -514,14 +669,14 @@ def build_convoy_orders(state: InnerGameState, power_idx: int, src_prov: int, ds
         # does not keep a second fleet-only maximum.
         max_score = float(state.g_max_prov_score_per_power[power_idx, fleet_i])
         state.g_convoy_chain_score[fleet_i] = max_score
-        state.g_order_score_hi[fleet_i] = max_score
+        state.g_order_score_hi[fleet_i] = 0.0
 
         state.g_order_table[fleet_i, _F_ORDER_TYPE] = _ORDER_CVY
         # C: (&DAT_00baeda4)[fleet * 0x1e] = param_2 — column 1 holds the
         # convoyed army's province; the CVY serializer reads _F_SECONDARY.
         state.g_order_table[fleet_i, _F_SECONDARY] = src_prov
         state.g_order_table[fleet_i, _F_DEST_PROV] = dst_prov
-        state.g_order_table[fleet_i, _F_ORDER_ASGN] = 1
+        state.g_order_table[fleet_i, _F_DEST_COAST] = coast
         # C: (&g_ProvinceBaseScore)[fleet * 0x1e] = 1 — each convoying fleet
         # gets the same incoming-move flag as the army.
         state.g_order_table[fleet_i, _F_INCOMING_MOVE] = 1

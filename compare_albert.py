@@ -298,7 +298,8 @@ def _capture_orders_for_power(state_data: dict, phase_name: str,
                 candidate_state.g_order_table, entry, full_row=True)
             seq = _build_order_seq_from_table(candidate_state, prov)
             if (seq is None or validate_and_dispatch_order(
-                    candidate_state, own_idx, seq) != 0):
+                    candidate_state, own_idx, seq,
+                    format_existing=True) != 0):
                 valid = False
                 break
         if valid:
@@ -358,6 +359,7 @@ def _extend_candidate_seed_coverage(
         candidate_sets: list[list[str]], albert_orders: list[str],
         state_data: dict, phase_name: str, power: str, primary_seed: int,
         seed_count: int, capture_fn=None,
+        proposal_round_cap: int | None = None,
         ) -> tuple[bool, list[int]]:
     """Optionally union candidate pools from a deterministic seed range.
 
@@ -378,7 +380,8 @@ def _extend_candidate_seed_coverage(
             continue
         extra_capture = capture_fn(
             state_data, phase_name, power, seed=candidate_seed,
-            capture_candidates=True, run_submission=False)
+            capture_candidates=True, run_submission=False,
+            proposal_round_cap=proposal_round_cap)
         seeds_tried.append(candidate_seed)
         if extra_capture is None:
             continue
@@ -578,7 +581,8 @@ def main() -> None:
                         candidate_covered, candidate_seeds_tried = (
                             _extend_candidate_seed_coverage(
                                 candidate_sets, albert_orders, state, phase_name,
-                                power, args.seed, args.candidate_seed_count)
+                                power, args.seed, args.candidate_seed_count,
+                                proposal_round_cap=args.proposal_round_cap)
                         )
                     else:
                         target = _candidate_set_key(albert_orders)

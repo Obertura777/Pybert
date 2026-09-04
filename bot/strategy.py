@@ -527,6 +527,7 @@ def _deviate_move(state: InnerGameState) -> None:
             src_prov = int(rec.get("src_province", -1))
             dst_prov = int(rec.get("dst_province", -1))
             unit_type = "F" if int(rec.get("unit_type", 0)) == 1 else "A"
+            src_coast = str(rec.get("src_coast", "") or "")
 
             # ── Phase 1: retreat-zone peace signal (LAB_0043a000 do-loop) ───────
             # AdjacencyList_FilterByUnitType on src_prov → adjacent attack sources.
@@ -535,9 +536,19 @@ def _deviate_move(state: InnerGameState) -> None:
             # C reads SPR/FAL snapshots: 004d0e10=g_spr_desig_b, 004d1610=g_spr_desig_a,
             # 004d1e10=g_spr_desig_c.
             for adj in state.adj_matrix.get(src_prov, []):
+                if src_coast:
+                    reachable = state.can_reach_by_type(
+                        src_prov, adj, unit_type, src_coast,
+                    )
+                else:
+                    # Retain the three-argument call for synthetic/legacy
+                    # records that predate the source-coast field.
+                    reachable = state.can_reach_by_type(
+                        src_prov, adj, unit_type,
+                    )
                 if (
                     adj < 256
-                    and state.can_reach_by_type(src_prov, adj, unit_type)
+                    and reachable
                     and _spr_designates(adj, p)
                 ):
                     state.g_peace_signal[p, other] = 1

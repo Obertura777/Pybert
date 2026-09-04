@@ -11,6 +11,8 @@ Stab/deviate detection lives in bot.strategy (_stabbed, _deviate_move).
 Module-level deps: ``numpy``, ``..state.InnerGameState``.
 """
 
+from collections import deque
+
 import numpy as np
 
 from ..state import InnerGameState
@@ -20,8 +22,9 @@ def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
     """
     Port of ComputeDrawVote (FUN_004440e0).
 
-    Nash-stability check. Returns True (vote draw) only if all friendly-power
-    units are fully committed with no profitable unilateral deviations.
+    Nash-stability check. Returns True only when the powers outside the
+    proposed draw set have no unresolved frontier choices and the draw-set
+    powers cannot reach an outside-controlled supply centre.
 
     Called via the FUN_0044c9d0 wrapper which builds `friendly_powers`:
         own_power ∪ { p : curr_sc_cnt[p] > 0 AND trust(own,p) > 1 }
@@ -51,77 +54,111 @@ def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
         }
 
     province_meta: dict = {}
-    reach_map: dict = {}   # local_e4: province → bool (reachable without conflict)
+
+    # local_e4 is keyed by the complete adjacency key, not just the province:
+    #     (province, AMY) or (province, FLT/coast).
+    # Keeping the unit/coast component matters here.  A fleet cannot flood
+    # through an inland province, an army cannot cross a sea, and a fleet
+    # arriving at one coast of SPA/STP/BUL must continue from that coast.
+    reachable_states: set[tuple[int, str, str]] = set()
+
+    def _normalise_unit(info: dict) -> tuple[str, str]:
+        unit_type = str(info.get('type', 'A')).upper()
+        unit_type = 'F' if unit_type in ('F', 'FLT') else 'A'
+        coast = str(info.get('coast', '') or '').upper()
+        if coast and not coast.startswith('/'):
+            coast = '/' + coast
+        return unit_type, coast
+
+    def _typed_adjacencies(
+        src: int, unit_type: str, coast: str = '',
+    ) -> list[tuple[int, str, str]]:
+        return state.get_reachable_edges(src, unit_type, coast)
+
+    def _is_non_water(province: int) -> bool:
+        # Board byte +4 is zero for water and one for every land/coast
+        # province.  The source adds an AMY reach key whenever that byte is 1.
+        return province not in getattr(state, 'water_provinces', frozenset())
 
     for prov in state.adj_matrix:
         province_meta.setdefault(prov, _new_meta())
         for adj in state.adj_matrix.get(prov, []):
-            reach_map.setdefault(adj, False)
+            province_meta.setdefault(adj, _new_meta())
 
     # --- Step 2: Unit-to-power-set correlation ---
     # C: Map_Find(param_1, unit+0x18) where unit+0x18 = unit.power (power field).
     # If unit.power NOT in friendly_powers → mark province as no_order=1 (non-friendly).
-    # If unit.power IN friendly_powers → mark province as reachable (local_e4=1).
+    # If unit.power IN friendly_powers → seed its exact unit/coast reach key.
     for prov, unit_data in state.unit_info.items():
         province_meta.setdefault(prov, _new_meta())
         unit_power = unit_data.get('power', -1)
         if unit_power not in friendly_powers:
             province_meta[prov]['no_order'] = 1   # non-friendly unit
         else:
-            reach_map[prov] = True                # friendly unit: province is reachable
+            unit_type, coast = _normalise_unit(unit_data)
+            reachable_states.add((prov, unit_type, coast))
+            if _is_non_water(prov):
+                reachable_states.add((prov, 'A', ''))
 
-    # --- Step 3: Adjacency flood-fill from submitted-order provinces ---
-    # Expand reach to adjacent provinces that have no submitted order.
-    changed = True
-    while changed:
-        changed = False
-        for prov, reachable in list(reach_map.items()):
-            if not reachable:
-                continue
-            if province_meta.get(prov, {}).get('no_order', 0):
-                continue  # unsubmitted province is not a seed
-            for adj in state.adj_matrix.get(prov, []):
-                adj_meta = province_meta.get(adj, {})
-                if adj_meta.get('no_order', 0) == 0:
-                    continue  # adj already has submitted order
-                if not reach_map.get(adj, False):
-                    reach_map[adj] = True
-                    changed = True
+    # --- Step 3: Adjacency flood-fill from friendly unit provinces ---
+    # ComputeDrawVote.c:220-282 expands a live reach key when the adjacent
+    # province's large-record flag at +0x14 is zero. That flag is set above
+    # for a non-friendly unit, so empty/friendly provinces are passable and
+    # non-friendly occupied provinces block the flood. The old port had this
+    # test backwards and expanded only into hostile units.
+    queue = deque(sorted(reachable_states))
+    while queue:
+        prov, unit_type, coast = queue.popleft()
+        for next_state in _typed_adjacencies(prov, unit_type, coast):
+            adj = next_state[0]
+            if province_meta[adj]['no_order'] != 0:
+                continue  # a non-friendly unit blocks this province
+            additions = [next_state]
+            if _is_non_water(adj):
+                additions.append((adj, 'A', ''))
+            for addition in additions:
+                if addition not in reachable_states:
+                    reachable_states.add(addition)
+                    queue.append(addition)
 
-    # --- Step 4: First draw-vote candidate check ---
-    # C step 4: if unit.power NOT in friendly_powers and no_order==1 → don't draw.
-    # "power_lookup NOT in param_1" = unit.power not in friendly_powers.
+    # --- Step 4: reachable foreign-controller supply-centre check ---
+    # C:285-316 walks the reach-key map, reads province byte +3 and the
+    # category-0x41 controller token at +0x20, and rejects the draw only when
+    # a reachable supply centre is controlled by a power outside param_1.
+    # It does not reject merely because some non-friendly unit exists.
     vote = True
-    for prov in list(state.unit_info.keys()):
-        meta = province_meta.get(prov, {})
-        unit_power = state.unit_info.get(prov, {}).get('power', -1)
-        if unit_power not in friendly_powers and meta.get('no_order', 0) == 1:
+    for prov in {entry[0] for entry in reachable_states}:
+        if (prov in state.sc_provinces
+                and int(state.g_sc_owner[prov]) not in friendly_powers):
             vote = False
+            break
 
     if not vote:
         return False
 
     # --- Supporter assignment pre-pass ---
-    # For each non-friendly-power province (no_order=1), count free-move candidates
-    # among its neighbours and assign itself as supporter to those neighbours.
-    prev_no_order_prov = -1
-    for prov in sorted(province_meta.keys()):
-        meta = province_meta.get(prov, {})
-        if meta.get('no_order', 0) != 1:
-            continue
-        if prov != prev_no_order_prov:
-            for adj in state.adj_matrix.get(prov, []):
-                province_meta.setdefault(adj, _new_meta())
-                province_meta[adj]['free_candidates'] += 1
-            prev_no_order_prov = prov
-        for adj in state.adj_matrix.get(prov, []):
-            adj_meta = province_meta.get(adj, {})
-            if adj_meta.get('no_order', 0) == 1:
-                adj_meta['supporter'] = prov
+    # C walks every *reachable typed key*, gathers adjacent non-member units
+    # into a per-source set, then increments each such unit once for that
+    # source province.  The old port walked non-member units and incremented
+    # their empty/friendly neighbours, reversing both ends of the relation.
+    frontier_by_source: dict[int, set[int]] = {}
+    for prov, unit_type, coast in sorted(reachable_states):
+        frontier = frontier_by_source.setdefault(prov, set())
+        for adj, _dst_type, _dst_coast in _typed_adjacencies(
+            prov, unit_type, coast,
+        ):
+            if province_meta[adj]['no_order'] == 1:
+                frontier.add(adj)
+                province_meta[adj]['supporter'] = prov
+    for frontier in frontier_by_source.values():
+        for adj in frontier:
+            province_meta[adj]['free_candidates'] += 1
 
-    # Pre-resolution: for friendly-power units with free_candidates <= 1, mark resolved.
+    # Pre-resolution applies to units outside the proposed draw set.  Those
+    # with zero/one reachable frontier square are already forced; units with
+    # multiple choices lose the single-supporter shortcut.
     for prov, unit_data in state.unit_info.items():
-        if unit_data.get('power', -1) not in friendly_powers:
+        if unit_data.get('power', -1) in friendly_powers:
             continue
         meta = province_meta.get(prov, _new_meta())
         if meta['free_candidates'] > 1:
@@ -136,13 +173,19 @@ def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
             break
 
         # Sub-pass A: mark committed units (entries with flag_a=1, committed=0)
-        for prov, meta in province_meta.items():
+        for prov, unit_data in state.unit_info.items():
+            if unit_data.get('power', -1) in friendly_powers:
+                continue
+            meta = province_meta[prov]
             if meta.get('flag_a', 0) != 1 or meta.get('committed', 0) == 1:
                 continue
             supporter = meta.get('supporter', -1)
             free_count = 0
             free_target = -1
-            for adj in state.adj_matrix.get(prov, []):
+            unit_type, coast = _normalise_unit(unit_data)
+            for adj, _dst_type, _dst_coast in _typed_adjacencies(
+                prov, unit_type, coast,
+            ):
                 adj_meta = province_meta.get(adj, {})
                 if adj_meta.get('no_order', 0) != 1:
                     continue
@@ -178,13 +221,19 @@ def compute_draw_vote(state: InnerGameState, friendly_powers: set) -> bool:
 
         # Sub-pass B: resolve remaining via IsLegalMove (can_reach)
         progress = False
-        for prov, meta in province_meta.items():
+        for prov, unit_data in state.unit_info.items():
+            if unit_data.get('power', -1) in friendly_powers:
+                continue
+            meta = province_meta[prov]
             if meta.get('resolved', 0) != 0:
                 continue
             supporter = meta.get('supporter', -1)
             legal_count = 0
             committed_targets: list = []
-            for adj in state.adj_matrix.get(prov, []):
+            unit_type, coast = _normalise_unit(unit_data)
+            for adj, _dst_type, _dst_coast in _typed_adjacencies(
+                prov, unit_type, coast,
+            ):
                 adj_meta = province_meta.get(adj, {})
                 if adj_meta.get('no_order', 0) != 1:
                     continue
@@ -449,9 +498,9 @@ def compute_press(state: InnerGameState, own_power: int = 0) -> None:  # noqa: A
     """
     Port of ComputePress (FUN_004401f0).
 
-    Builds per-power adjacency-pressure matrix.  For each unit of any power,
-    calls adjacency lookup, then for each adjacent *occupied* province
-    (non-army coast token, or power-token == 0x14) sets
+    Builds per-power adjacency-pressure matrix. For each unit of any power,
+    calls adjacency lookup, then for each adjacent uncontrolled supply centre
+    (invalid/neutral controller power token) sets
     g_press_matrix[power][province] = 1 and increments g_press_count[power].
 
     Result: g_press_matrix (bool 2D, stride 0x100) + g_press_count (count vec).
@@ -464,29 +513,22 @@ def compute_press(state: InnerGameState, own_power: int = 0) -> None:  # noqa: A
     for prov, info in state.unit_info.items():
         power = info['power']
         unit_type = info.get('type', 'A')
+        unit_coast = str(info.get('coast', '') or '')
 
-        # C uses AdjacencyList_FilterByUnitType — armies skip water,
-        # fleets skip land-only borders.  Fixed 2026-04-20 (audit finding
-        # M-HEUR-3); upgraded 2026-04-26 to use fleet_adj_matrix which
-        # also excludes land-only borders between coastal provinces
-        # (e.g. ANK→SMY).
-        if unit_type in ('A', 'AMY'):
-            raw_adj = state.get_unit_adjacencies(prov)
-            adj_list = [a for a in raw_adj if a not in state.water_provinces]
-        elif unit_type in ('F', 'FLT'):
-            adj_list = list(state.fleet_adj_matrix.get(prov, []))
-        else:
-            adj_list = list(state.get_unit_adjacencies(prov))
+        # C uses AdjacencyList_FilterByUnitType with the complete unit token.
+        # In particular, a fleet on STP/NC, SPA/NC, or BUL/EC must not see
+        # destinations reachable only from the province's other coast.
+        adj_list = [
+            adj for adj in state.get_unit_adjacencies(prov)
+            if state.can_reach_by_type(prov, adj, unit_type, unit_coast)
+        ]
 
         for adj in adj_list:
-            adj_info = state.unit_info.get(adj)
-            if adj_info is None:
+            if adj not in state.sc_provinces:
                 continue
-            # C: uVar1 = province_struct[adj].unit_word (high byte = type, low byte = power)
-            # condition: type != 'A'  OR  power == 0x14 (unknown-power sentinel)
-            adj_type = adj_info.get('type', '')
-            adj_pow  = adj_info.get('power', -1)
-            if adj_type != 'A' or adj_pow == 0x14:
+            # Province +0x20 is the SC controller's category-0x41 power token.
+            adj_pow = int(state.g_sc_owner[adj])
+            if not 0 <= adj_pow < int(state.g_num_powers):
                 if state.g_press_matrix[power, adj] == 0:
                     state.g_press_matrix[power, adj] = 1
                     state.g_press_count[power] += 1

@@ -62,18 +62,28 @@ def test_convoy_swap_random_gate_is_strictly_greater_than_sixty():
     assert state.g_order_table[DEST, 20] == 1
 
 
-def test_convoy_swap_accepts_zero_source_demand_for_own_destination_unit():
+def test_convoy_swap_accepts_zero_demand_for_owned_home_destination():
     state = _pending_state()
-    state.unit_info[DEST] = {'power': POWER, 'type': 'A', 'coast': ''}
+    state.home_centers = {POWER: frozenset({DEST})}
+    state.g_sc_owner[DEST] = POWER
 
     assert _apply_convoy_swap(
         state, POWER, SOURCE, DEST, rand_value=61 * 0x17
     )
 
 
-def test_convoy_swap_rejects_other_source_demand_without_own_unit_exception():
+def test_convoy_swap_rejects_other_source_demand_without_home_exception():
     state = _pending_state()
     state.g_support_demand[SOURCE] = 2
+
+    assert not _apply_convoy_swap(
+        state, POWER, SOURCE, DEST, rand_value=61 * 0x17
+    )
+
+
+def test_convoy_swap_does_not_treat_live_army_as_sc_controller():
+    state = _pending_state()
+    state.unit_info[DEST] = {'power': POWER, 'type': 'A', 'coast': ''}
 
     assert not _apply_convoy_swap(
         state, POWER, SOURCE, DEST, rand_value=61 * 0x17
@@ -88,3 +98,35 @@ def test_convoy_swap_rejects_missing_support_assignment():
     assert not _apply_convoy_swap(
         state, POWER, SOURCE, DEST, rand_value=61 * 0x17
     )
+
+
+def test_late_convoy_swap_requires_one_incoming_move_at_source():
+    state = _pending_state()
+    state.g_support_demand[SOURCE] = 1
+
+    assert not _apply_convoy_swap(
+        state,
+        POWER,
+        SOURCE,
+        DEST,
+        rand_value=61 * 0x17,
+        require_source_ready=True,
+    )
+    assert state.g_order_table[DEST, 20] == 1
+
+
+def test_late_convoy_swap_rejects_source_support_chain_conflict():
+    state = _pending_state()
+    state.g_support_demand[SOURCE] = 1
+    state.g_order_table[SOURCE, 13] = 1
+    state.g_order_table[SOURCE, 14] = 1
+
+    assert not _apply_convoy_swap(
+        state,
+        POWER,
+        SOURCE,
+        DEST,
+        rand_value=61 * 0x17,
+        require_source_ready=True,
+    )
+    assert state.g_order_table[DEST, 20] == 1

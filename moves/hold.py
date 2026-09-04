@@ -60,18 +60,17 @@ def _get_ally_trust_for_adj(state: InnerGameState,
     ``EnumerateHoldOrders.c:133-144``.  Returns the trust value (> 0 means
     trusted ally, 0 means non-ally).
 
-    The C code checks three designation arrays (A, B, C) for the adjacent
-    province.  Each array maps province → designated ally power.  If the
-    designated power has non-zero trust with *unit_power*, we use that trust
-    value.  Later designations overwrite earlier ones (C > B > A).
+    The C code checks designation arrays C, B, then A for the adjacent
+    province. Each array maps province to a designated ally power. Later
+    reads overwrite earlier ones, so the effective precedence is A > B > C.
     """
     trust = 0
-    # Slot A  — g_ally_designation_a[adj_prov]
-    desig_a = int(state.g_ally_designation_a[adj_prov])
-    if 0 <= desig_a < NUM_POWERS:
-        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_a]
+    # Slot C  — g_ally_designation_c[adj_prov]
+    desig_c = int(state.g_ally_designation_c[adj_prov])
+    if 0 <= desig_c < NUM_POWERS:
+        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_c]
                 if state.g_ally_trust_score.ndim == 1
-                else state.g_ally_trust_score[unit_power, desig_a])
+                else state.g_ally_trust_score[unit_power, desig_c])
         trust = t
 
     # Slot B  — g_ally_designation_b[adj_prov]
@@ -82,15 +81,32 @@ def _get_ally_trust_for_adj(state: InnerGameState,
                 else state.g_ally_trust_score[unit_power, desig_b])
         trust = t
 
-    # Slot C  — g_ally_designation_c[adj_prov]
-    desig_c = int(state.g_ally_designation_c[adj_prov])
-    if 0 <= desig_c < NUM_POWERS:
-        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_c]
+    # Slot A  — g_ally_designation_a[adj_prov]
+    desig_a = int(state.g_ally_designation_a[adj_prov])
+    if 0 <= desig_a < NUM_POWERS:
+        t = int(state.g_ally_trust_score[unit_power * NUM_POWERS + desig_a]
                 if state.g_ally_trust_score.ndim == 1
-                else state.g_ally_trust_score[unit_power, desig_c])
+                else state.g_ally_trust_score[unit_power, desig_a])
         trust = t
 
     return trust
+
+
+def _typed_unit_adjacencies(
+    state: InnerGameState,
+    prov_id: int,
+    unit_data: dict,
+) -> list[int]:
+    """Mirror ``AdjacencyList_FilterByUnitType`` for a live unit."""
+    unit_type = unit_data.get('type', 'A')
+    unit_coast = unit_data.get('coast', '')
+    return [
+        adj_prov
+        for adj_prov in state.get_unit_adjacencies(prov_id)
+        if state.can_reach_by_type(
+            prov_id, adj_prov, unit_type, unit_coast,
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -214,15 +230,7 @@ def _build_reach_matrices(state: InnerGameState):
 
         # 2b. Get type-filtered adjacencies.
         # C (line 99): AdjacencyList_FilterByUnitType(gamestate, unit_type)
-        raw_adjs = state.get_unit_adjacencies(prov_id)
-        if unit_type in ('F', 'FLT'):
-            adj_list = [a for a in raw_adjs
-                        if a not in getattr(state, 'land_provinces', set())]
-        elif unit_type in ('A', 'AMY'):
-            adj_list = [a for a in raw_adjs
-                        if a not in getattr(state, 'water_provinces', set())]
-        else:
-            adj_list = list(raw_adjs)
+        adj_list = _typed_unit_adjacencies(state, prov_id, unit_data)
 
         # 2c. Initialise MaxNonAllyReach for this unit's province to its own
         #     UnitProvinceReach rank.
@@ -256,12 +264,10 @@ def compute_safe_reach(state: InnerGameState):
     0xffffffff in place.
 
     Phase 1 — initialise g_safe_reach_score and contested matrix.
-    Phase 2 — for each unit, mark unit.province + adjacencies contested for all
-               other powers  (AdjacencyList call #1).
-    Phase 3 — province token pass: AMY units re-mark their own province for
-               other powers (redundant but faithful to binary); FLT units mark
-               their province contested for ALL powers including their own
-               (fleets block army safe-reach universally).
+    Phase 2 — for each unit, mark unit.province + typed adjacencies contested
+               for all other powers (AdjacencyList call #1).
+    Phase 3 — for each supply centre, mark it contested for every power other
+               than its current controller. Neutral centres contest all powers.
     Phase 4 — second unit pass: compute max sorted-set rank across unit.province
                and adjacencies; store to g_safe_reach_score only when all squares
                are uncontested  (AdjacencyList call #2).
@@ -281,24 +287,19 @@ def compute_safe_reach(state: InnerGameState):
         for power in range(num_powers):
             if power != unit_power:
                 contested[prov_id, power] = 1
-        for adj_prov in state.get_unit_adjacencies(prov_id):
+        for adj_prov in _typed_unit_adjacencies(state, prov_id, unit_data):
             for power in range(num_powers):
                 if power != unit_power:
                     contested[adj_prov, power] = 1
 
-    # Phase 3 — province token pass
-    # AMY: re-mark province for other powers (same as Phase 2, harmless).
-    # FLT: power_idx = 0x14 (no valid power) → all 7 powers get contested=1,
-    #      including the fleet owner — fleets block safe-reach for everyone.
-    for prov_id, unit_data in _unit_snapshot:
-        if unit_data['type'] == 'A':
-            unit_power = unit_data['power']
-            for power in range(num_powers):
-                if power != unit_power:
-                    contested[prov_id, power] = 1
-        else:
-            # FLT (or unknown): power_idx = 0x14 → for power != 0x14 covers 0-6
-            for power in range(num_powers):
+    # Phase 3 — province-record supply-centre pass. C tests byte +3, then
+    # decodes the controller token at +0x20. A non-power token maps to 0x14,
+    # which differs from every playable power and therefore marks a neutral
+    # centre contested for all of them.
+    for prov_id in state.sc_provinces:
+        controller = int(state.g_sc_owner[prov_id])
+        for power in range(num_powers):
+            if power != controller:
                 contested[prov_id, power] = 1
 
     # Phase 4 — compute safe-reach scores from the per-power province score
@@ -310,11 +311,7 @@ def compute_safe_reach(state: InnerGameState):
     for prov_id, unit_data in _unit_snapshot:
         unit_power = unit_data['power']
         unit_type = unit_data.get('type', 'A')
-        raw_adj = state.get_unit_adjacencies(prov_id)
-        if unit_type in ('F', 'FLT'):
-            adj = [p for p in raw_adj if p not in state.land_provinces]
-        else:
-            adj = [p for p in raw_adj if p not in state.water_provinces]
+        adj = _typed_unit_adjacencies(state, prov_id, unit_data)
 
         score = state.fss(unit_power, prov_id, unit_type)
         is_safe = (contested[prov_id, unit_power] != 1)

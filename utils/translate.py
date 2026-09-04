@@ -20,6 +20,18 @@ from diplomacy import Game
 
 from .tokens import DIPNET2DAIDE_LOC, DAIDE2DIPNET_LOC
 
+
+_DIPNET_COAST_TO_DAIDE = {
+    'NC': 'NCS',
+    'NE': 'NEC',
+    'EC': 'ECS',
+    'SE': 'SEC',
+    'SC': 'SCS',
+    'SW': 'SWC',
+    'WC': 'WCS',
+    'NW': 'NWC',
+}
+
 def dipnet_location(loc: str) -> str:
     # coasts
     if " " in loc:
@@ -51,8 +63,10 @@ def daidefy_location(loc: str, mto_prov_no_coast: bool = False) -> str:
         prov, coast = loc.split("/")
         if mto_prov_no_coast:
             return prov
-        coast += "S"
-        return " ".join(["(", prov, coast, ")"])
+        daide_coast = _DIPNET_COAST_TO_DAIDE.get(coast.upper())
+        if daide_coast is None:
+            raise ValueError(f"Unknown DipNet coast suffix: {coast!r}")
+        return " ".join(["(", prov, daide_coast, ")"])
     else:
         if loc in DIPNET2DAIDE_LOC:
             return DIPNET2DAIDE_LOC[loc]
@@ -279,5 +293,4 @@ def daidefy_order(
             return daide_primary_unit + " HLD"
 
     raise ValueError(f"Unhandled order: {order}")
-
 

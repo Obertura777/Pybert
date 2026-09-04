@@ -19,7 +19,7 @@ _evaluation = __import__(
     fromlist=[
         'snapshot_order_entry', 'restore_order_entry', 'candidate_orders_key',
         'evaluate_order_score', 'evaluate_order_proposal',
-        'insert_candidate_record', '_projected_new_supply_center_count',
+        'insert_candidate_record', '_early_game_order_adjacency_bonus',
     ],
 )
 _trial = __import__(
@@ -40,8 +40,8 @@ candidate_orders_key = _evaluation.candidate_orders_key
 evaluate_order_score = _evaluation.evaluate_order_score
 evaluate_order_proposal = _evaluation.evaluate_order_proposal
 insert_candidate_record = _evaluation.insert_candidate_record
-_projected_new_supply_center_count = (
-    _evaluation._projected_new_supply_center_count
+_early_game_order_adjacency_bonus = (
+    _evaluation._early_game_order_adjacency_bonus
 )
 _refresh_order_table = _trial._refresh_order_table
 _rank_candidates_for_power = _analysis._rank_candidates_for_power
@@ -67,6 +67,8 @@ _F_CONVOY_LEG1 = _flags._F_CONVOY_LEG1
 _F_CONVOY_LEG2 = _flags._F_CONVOY_LEG2
 _ORDER_HLD = _flags._ORDER_HLD
 _ORDER_MTO = _flags._ORDER_MTO
+_ORDER_SUP_HLD = _flags._ORDER_SUP_HLD
+_ORDER_SUP_MTO = _flags._ORDER_SUP_MTO
 _ORDER_CTO = _flags._ORDER_CTO
 
 
@@ -383,7 +385,9 @@ def test_pass_a_main_complex_path_matches_decompiled_formula():
     evaluate_order_score(0, state)
 
     # pow(10 / 10, 0.3)*0.1 + (1-1)*0.25 + 2*0.15
-    assert math.isclose(state.g_order_table[province, _F_MOVE_PROB], 0.4)
+    assert math.isclose(
+        state.g_order_table[province, _F_MOVE_PROB], 0.4, rel_tol=1e-7
+    )
 
 
 def test_pass_a_main_simple_path_uses_supply_center_offset():
@@ -398,7 +402,9 @@ def test_pass_a_main_simple_path_uses_supply_center_offset():
     evaluate_order_score(0, state)
 
     # (incoming-1)*0.3 + SC offset .15 + field14(0)*.25
-    assert math.isclose(state.g_order_table[province, _F_MOVE_PROB], 0.15)
+    assert math.isclose(
+        state.g_order_table[province, _F_MOVE_PROB], 0.15, rel_tol=1e-7
+    )
 
 
 def test_pass_a_main_non_sc_complex_path_includes_field_14_term():
@@ -421,7 +427,9 @@ def test_pass_a_main_non_sc_complex_path_includes_field_14_term():
     evaluate_order_score(0, state)
 
     # pow(10/10,.3)*.15 + .1 + (1-1)*.25 + field14(2)*.15
-    assert math.isclose(state.g_order_table[province, _F_MOVE_PROB], 0.55)
+    assert math.isclose(
+        state.g_order_table[province, _F_MOVE_PROB], 0.55, rel_tol=1e-7
+    )
 
 
 def test_pass_b_relaxes_move_probability_to_destination_probability():
@@ -491,8 +499,9 @@ def test_fleet_score_pass_uses_sea_incoming_rows_and_home_center_discount():
     evaluate_order_score(0, state)
 
     # 0.8 is capped to 0.5: 100*.5*.2 = 10, with 0.75 home discount.
+    # PackScoreU64 truncates the home threshold before storing it.
     assert state.g_fleet_support_score[neutral_adj] == 10
-    assert state.g_fleet_support_score[home_adj] == 7.5
+    assert state.g_fleet_support_score[home_adj] == 7
 
 
 def test_cut_support_pass_keeps_own_sum_above_one_positive():
@@ -536,7 +545,11 @@ def test_pass_c_writes_field_21_without_overwriting_move_probability():
     evaluate_order_score(0, state)
 
     assert state.g_order_table[province, _F_MOVE_PROB] == 0.75
-    assert state.g_order_table[province, _F_UNIT_REACH_SCORE] == 0.1
+    assert math.isclose(
+        state.g_order_table[province, _F_UNIT_REACH_SCORE],
+        0.1,
+        rel_tol=1e-7,
+    )
 
 
 def test_safe_pow_saturates_positive_overflow_like_c_float_math():
@@ -556,6 +569,208 @@ def test_accepted_proposal_counter_increments_inside_duplicate_gate():
     assert candidate['final_dim_score'] == 0
     assert candidate['min_rank'] == 10000
     assert candidate['running_avg'] == 10000.0
+
+
+def test_accepted_xdo_move_map_controls_750_rank_penalty():
+    def evaluate(destination, expected):
+        state = InnerGameState()
+        state.albert_power_idx = 0
+        state.unit_info[10] = {'power': 0, 'type': 'A', 'coast': ''}
+        state.g_order_table[10, _F_ORDER_TYPE] = _ORDER_MTO
+        state.g_order_table[10, _F_DEST_PROV] = destination
+        state.g_xdo_order_move_by_power[0] = {10: expected}
+        evaluate_order_proposal(state, 0)
+        return state.g_candidate_record_list[0]['rank_penalty']
+
+    assert evaluate(20, 20) == 0
+    assert evaluate(20, 21) == 750
+
+
+def test_sup_mto_heat_uses_each_powers_source_and_destination_reach():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info[source] = {'power': 0, 'type': 'A', 'coast': ''}
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_SUP_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+
+    state.g_support_candidate_mark[1, destination] = 1
+    state.g_convoy_reach[2, destination] = 1
+    state.g_support_reach[3, destination] = 1
+    state.g_support_reach[4, source] = 1
+    state.g_own_reach_score[5, source] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    value = source + 500 + destination
+    assert state.g_candidate_record_list[0]['heat_scores'] == [
+        0, value, value, value, value, value, 0,
+    ]
+
+
+def test_sup_hld_heat_uses_destination_field_and_each_power():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info[source] = {'power': 0, 'type': 'A', 'coast': ''}
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_SUP_HLD
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.g_convoy_reach[2, destination] = 1
+    state.g_support_reach[3, source] = 1
+    state.g_own_reach_score[4, source] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    value = source + 0x2EE + destination
+    assert state.g_candidate_record_list[0]['heat_scores'] == [
+        0, 0, value, value, value, 0, 0,
+    ]
+
+
+def test_hold_heat_uses_each_powers_reach_channels():
+    state = InnerGameState()
+    source = 10
+    state.unit_info[source] = {'power': 0, 'type': 'A', 'coast': ''}
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_HLD
+    state.g_own_reach_score[4, source] = 1
+    state.g_support_reach[5, source] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    value = source + 4000
+    assert state.g_candidate_record_list[0]['heat_scores'] == [
+        0, 0, 0, 0, value, value, 0,
+    ]
+
+
+def test_mto_heat_distinguishes_direct_and_indirect_reach_bonuses():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info[source] = {'power': 0, 'type': 'A', 'coast': ''}
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.final_score_set[0, destination] = 123
+    state.g_own_reach_score[2, source] = 1
+    state.g_convoy_reach[3, destination] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    base = 123 + source + destination
+    assert state.g_candidate_record_list[0]['heat_scores'] == [
+        0, 0, base + 250, base + 1000, 0, 0, 0,
+    ]
+
+
+def test_mto_fallback_heat_compares_full_designation_pair():
+    state = InnerGameState()
+    source, destination, adjacent = 10, 20, 21
+    state.unit_info = {
+        source: {'power': 0, 'type': 'A', 'coast': ''},
+        destination: {'power': 1, 'type': 'A', 'coast': ''},
+    }
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.final_score_set[0, destination] = 123
+    state.g_ally_designation_a[destination] = 2
+    state.g_ally_designation_a_hi[destination] = 1
+    state.get_unit_adjacencies = lambda province: (
+        [adjacent] if province == destination else []
+    )
+    state.can_reach_by_type = lambda *args: True
+    state.g_own_reach_score[2, adjacent] = 2
+    state.g_total_reach_score[2, adjacent] = 4
+
+    evaluate_order_proposal(state, 0)
+
+    # {hi=1, lo=2} is not the int64 power value 2. Comparing only the low
+    # word suppresses Albert's fallback +1000 branch for power 2.
+    base = 123 + source + destination
+    assert state.g_candidate_record_list[0]['heat_scores'][2] == base + 1000
+
+
+def test_mto_conviction_uses_designation_b_and_threat_sum():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info[source] = {'power': 0, 'type': 'A', 'coast': ''}
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.g_other_power_lead_flag = 1
+    state.g_near_end_game_factor = 5.5
+    state.g_ally_designation_b[source] = 0
+    state.g_ally_designation_b_hi[source] = 0
+    state.g_threat_level[0, source] = 4
+    state.g_own_reach_score[0, source] = 2
+    state.g_ally_reach_score[0, source] = 2
+    # This would generate heat if the conviction shortcut did not skip it.
+    state.g_own_reach_score[2, source] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    candidate = state.g_candidate_record_list[0]
+    assert candidate['conviction_bonus'] == 50
+    assert candidate['heat_scores'] == [0] * 7
+
+
+def test_mto_conviction_boundaries_differ_before_and_after_year_six():
+    def candidate_for(near_end, threat):
+        state = InnerGameState()
+        source, destination = 10, 20
+        state.unit_info[source] = {
+            'power': 0, 'type': 'A', 'coast': '',
+        }
+        state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+        state.g_order_table[source, _F_DEST_PROV] = destination
+        state.g_other_power_lead_flag = 1
+        state.g_near_end_game_factor = near_end
+        state.g_ally_designation_b[source] = 0
+        state.g_ally_designation_b_hi[source] = 0
+        state.g_threat_level[0, source] = threat
+        state.g_own_reach_score[0, source] = 2
+        state.g_ally_reach_score[0, source] = 2
+        evaluate_order_proposal(state, 0)
+        return state.g_candidate_record_list[0]
+
+    # The designated 5<year<=6 arm requires threat > own reach.
+    assert candidate_for(5.5, 2)['conviction_bonus'] == 0
+    # The general year>6 arm accepts the lower boundary at equality.
+    assert candidate_for(7.0, 2)['conviction_bonus'] == 50
+    # Both arms reject threat beyond own + allied reach.
+    assert candidate_for(7.0, 5)['conviction_bonus'] == 0
+
+
+def test_press_adjustment_requires_foreign_controlled_supply_center():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info = {
+        source: {'power': 0, 'type': 'A', 'coast': ''},
+        destination: {'power': 1, 'type': 'A', 'coast': ''},
+    }
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.sc_provinces = {destination}
+    state.g_sc_owner[destination] = 1
+    # g_deceit_level is a different global; DAT_00baed68 is g_press_flag.
+    state.g_deceit_level = 1
+
+    evaluate_order_proposal(state, 0)
+
+    assert state.g_candidate_record_list[0]['trust_adjustment'] == 0
+
+
+def test_press_adjustment_uses_sc_controller_without_live_unit():
+    state = InnerGameState()
+    source, destination = 10, 20
+    state.unit_info = {
+        source: {'power': 0, 'type': 'A', 'coast': ''},
+    }
+    state.sc_provinces = {destination}
+    state.g_sc_owner[destination] = 1
+    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+    state.g_order_table[source, _F_DEST_PROV] = destination
+    state.g_press_flag = 1
+    state.g_ally_trust_score[0, 1] = 1
+
+    evaluate_order_proposal(state, 0)
+
+    assert state.g_candidate_record_list[0]['trust_adjustment'] == 50
 
 
 def _entry(prov, order_type, dest=0):
@@ -604,38 +819,7 @@ def test_refresh_consumes_process_global_msvc_rng():
         rng.setstate(saved_state)
 
 
-def test_projected_new_centres_counts_coordinated_backfill_once_each():
-    state = InnerGameState()
-    gas, spa, por = 10, 11, 12
-    state.sc_provinces = {spa, por}
-    state.unit_info = {
-        gas: {'power': 0, 'type': 'A', 'coast': ''},
-        spa: {'power': 0, 'type': 'A', 'coast': ''},
-    }
-    state.g_order_table[gas, _F_ORDER_TYPE] = _ORDER_MTO
-    state.g_order_table[gas, _F_DEST_PROV] = spa
-    state.g_order_table[spa, _F_ORDER_TYPE] = _ORDER_MTO
-    state.g_order_table[spa, _F_DEST_PROV] = por
-
-    assert _projected_new_supply_center_count(0, state) == 2
-
-
-def test_projected_new_centres_excludes_owned_and_enemy_occupied_targets():
-    state = InnerGameState()
-    source, owned, enemy_center = 10, 11, 12
-    state.sc_provinces = {owned, enemy_center}
-    state.unit_info = {
-        source: {'power': 0, 'type': 'A', 'coast': ''},
-        enemy_center: {'power': 1, 'type': 'A', 'coast': ''},
-    }
-    state.g_board_sc_ownership[0, owned] = 1
-    state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
-    state.g_order_table[source, _F_DEST_PROV] = enemy_center
-
-    assert _projected_new_supply_center_count(0, state) == 0
-
-
-def test_order_score_rewards_uncontested_new_supply_center_occupation():
+def test_order_score_has_no_python_only_projected_supply_center_bonus():
     def scored_state(already_owned):
         state = InnerGameState()
         province = 10
@@ -651,7 +835,31 @@ def test_order_score_rewards_uncontested_new_supply_center_occupation():
             state.g_board_sc_ownership[0, province] = 1
         return evaluate_order_score(0, state)
 
-    assert scored_state(False) - scored_state(True) == 2030.0
+    # EvaluateOrderScore.c returns after its field-22 contribution and never
+    # reads projected ownership.  A former gameplay-tuning pass added 2030
+    # points here despite having no recovered-source counterpart.
+    assert scored_state(False) == scored_state(True)
+
+
+def test_order_score_final_pack_truncates_fraction_toward_zero():
+    state = InnerGameState()
+    province = 10
+    state.num_valid_provinces = 11
+    state.g_cut_support_risk[province] = 0.005
+
+    # Seed 500 + 0.005*100 = 500.5; PackScoreU64 returns 500.
+    assert evaluate_order_score(0, state) == 500
+
+
+def test_order_score_rounds_accumulator_at_float32_store_boundaries():
+    state = InnerGameState()
+    state.num_valid_provinces = 2
+    state.g_cut_support_risk[0] = 167772.16
+    state.g_cut_support_risk[1] = 0.01
+
+    # Albert stores local_120 as float after each province. The second +1 is
+    # below float32 spacing at this magnitude and is lost before final pack.
+    assert evaluate_order_score(0, state) == 16_777_716
 
 
 def test_refresh_uses_c_complement_threshold_and_final_rand_draw():
@@ -726,6 +934,38 @@ def test_candidate_identity_ignores_snapshot_bookkeeping_fields():
     assert candidate_orders_key(0, [tuple(first)]) == candidate_orders_key(
         0, [tuple(second)]
     )
+
+
+def test_early_game_adjacency_projects_units_to_move_destinations():
+    state = InnerGameState()
+    first_source, second_source = 10, 11
+    first_destination, second_destination = 20, 21
+    trusted_foreign = 30
+    state.unit_info = {
+        first_source: {'power': 0, 'type': 'A', 'coast': ''},
+        second_source: {'power': 0, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix = {
+        first_source: [],
+        second_source: [],
+        first_destination: [trusted_foreign],
+        second_destination: [trusted_foreign],
+    }
+    state.sc_provinces = {trusted_foreign}
+    state.g_sc_owner[trusted_foreign] = 1
+    for source, destination in (
+        (first_source, first_destination),
+        (second_source, second_destination),
+    ):
+        state.g_order_table[source, _F_ORDER_TYPE] = _ORDER_MTO
+        state.g_order_table[source, _F_DEST_PROV] = destination
+        state.g_order_table[source, 3] = 0x4200
+    state.g_ally_trust_score[0, 1] = 2
+
+    assert _early_game_order_adjacency_bonus(state, 0) == 160
+
+    state.sc_provinces.clear()
+    assert _early_game_order_adjacency_bonus(state, 0) == 0
 
 
 def test_insert_candidate_record_preserves_serialized_key_tree_order():

@@ -23,6 +23,11 @@ _run_send_gof_candidate_pass = _client_orders._run_send_gof_candidate_pass
 InnerGameState = _state.InnerGameState
 
 
+def test_internal_south_coast_maps_to_daide_south_coast_token():
+    assert _orders._COAST_STR_TO_DAIDE['SC'] == 0x4608
+    assert _orders._DAIDE_COAST_TO_STR[0x4608] == 'SC'
+
+
 def _retreat_state() -> InnerGameState:
     state = InnerGameState()
     state.albert_power_idx = 0
@@ -198,3 +203,61 @@ def test_send_gof_builds_safe_reach_and_holds_after_final_scoring():
         "snapshot", "reset", "score-provinces", "score-candidates",
         "safe-reach", "holds-0", "holds-1", "holds-2", "proposals",
     ]
+
+
+def test_send_gof_ring_rerun_uses_unit_count_not_supply_centres():
+    state = SimpleNamespace(
+        g_spr_move_weight=11,
+        g_spr_build_weight=12,
+        g_spr_round_weights=[13],
+        g_fal_move_weight=21,
+        g_fal_build_weight=22,
+        g_fal_round_weights=[23],
+        g_trial_scale=10,
+        g_press_proposals_cap=30,
+        g_unit_count=[5],
+        sc_count=[2],
+        g_current_round=0,
+        g_candidate_record_list=[],
+        g_support_opportunities_set=[],
+        g_minimal_press_mode=1,
+        g_broadcast_list=[],
+        g_broadcast_list_watermark=0,
+    )
+    calls = []
+
+    def capture_process(current, _power, num_trials):
+        calls.append(num_trials)
+        if current.g_ring_convoy_enabled == 0:
+            current.g_support_opportunities_set = [{
+                "power": 0,
+                "mover_prov": 1,
+                "target_prov": 2,
+                "supporter_prov": 3,
+                "mover_coast": 0x4600,
+                "target_coast": 0x4604,
+                "supporter_coast": 0x4608,
+            }]
+        else:
+            current.g_support_opportunities_set = []
+
+    with (
+        patch.object(_client_orders, "snapshot_province_state"),
+        patch.object(_client_orders, "_reset_send_gof_order_state"),
+        patch.object(_client_orders, "score_provinces"),
+        patch.object(_client_orders, "score_order_candidates_all_powers"),
+        patch.object(_client_orders, "compute_safe_reach"),
+        patch.object(_client_orders, "enumerate_hold_orders"),
+        patch.object(_client_orders, "_prepare_proposal_orders_for_turn"),
+        patch.object(_client_orders, "check_time_limit", return_value=False),
+        patch.object(_client_orders, "process_turn", side_effect=capture_process),
+    ):
+        _run_send_gof_candidate_pass(state, "SPR", 0, 1)
+
+    assert calls[0::2] == [6] * 10
+    assert calls[1::2] == [5] * 10
+    assert (
+        state.g_ring_coast_a,
+        state.g_ring_coast_b,
+        state.g_ring_coast_c,
+    ) == (0x4600, 0x4604, 0x4608)

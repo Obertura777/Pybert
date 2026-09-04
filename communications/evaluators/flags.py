@@ -13,18 +13,18 @@ from ...state import InnerGameState
 from ._common import _NEUTRAL_POWER
 
 
-def _flag_unit_power(unit) -> int | None:
-    """Return ComputeOrderDipFlags' power value for a board occupant.
+def _flag_sc_power(state: InnerGameState, province: int) -> int | None:
+    """Return the controller encoded in a province's SC power token.
 
-    C reads the unit token's high byte and preserves its power only for AMY;
-    every other present unit type is represented as neutral power 0x14.
+    Province-record byte ``+3`` is the supply-centre marker and ``+0x20`` is
+    its current controller token.  Power tokens use DAIDE category ``0x41``
+    (the ``'A'`` high byte tested by C); that test is unrelated to the AMY
+    unit token, whose category is ``0x42``.
     """
-    if unit is None:
+    if province not in state.sc_provinces:
         return None
-    unit_type = str(unit.get('type', '')).upper()
-    if unit_type in ('A', 'AMY', 'ARMY'):
-        return int(unit.get('power', _NEUTRAL_POWER))
-    return _NEUTRAL_POWER
+    owner = int(state.g_sc_owner[province])
+    return owner if 0 <= owner < int(state.g_num_powers) else _NEUTRAL_POWER
 
 
 def _exact_enemy(state: InnerGameState, power: int, num_powers: int) -> bool:
@@ -82,20 +82,20 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
         elif dip_owner == own:
             flag2 = False
 
-        # ── Phase 1b: board unit at province (lines 69–85) ───────────────────
-        # Unit belonging to own_power → not contested (flag1=0)
-        # Unit belonging to ordering_power → ordering power already there (flag2=0)
-        unit = state.unit_info.get(province)
-        occ = _flag_unit_power(unit)
+        # ── Phase 1b: SC controller at province (lines 69–85) ────────────────
+        # Own-controlled SC → not contested (flag1=0).
+        # Ordering-power-controlled SC → bilateral coordination is unnecessary
+        # (flag2=0).
+        occ = _flag_sc_power(state, province)
         if occ is not None and occ != _NEUTRAL_POWER:
             if occ == own:
                 flag1 = False
             elif occ == ordering_power:
                 flag2 = False
 
-        # ── Phase 2: trust/stab check at province (lines 86–115) ─────────────
-        # Only runs when a unit is present (*(char*)(board+prov*0x24+3) != '\0').
-        if unit is not None:
+        # ── Phase 2: trust/stab check at controlled SC (lines 86–115) ─────────
+        # The byte +3 gate is the province's SC marker, not unit occupancy.
+        if occ is not None:
             # Clear flag2 when the occupant is not a trustworthy ally of own_power:
             #   neutral, enemy-stab flagged, own unit, or zero trust.
             if occ == _NEUTRAL_POWER:
@@ -120,12 +120,11 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
                 ):
                     flag3 = True
 
-        # ── Phase 3: adjacent-province units (inner loop, lines 116–177) ─────
+        # ── Phase 3: adjacent SC controllers (inner loop, lines 116–177) ─────
         for adj_prov in state.get_unit_adjacencies(province):
-            adj_unit = state.unit_info.get(adj_prov)
-            if adj_unit is None:
+            occ = _flag_sc_power(state, adj_prov)
+            if occ is None:
                 continue
-            occ = _flag_unit_power(adj_unit)
 
             # Enemy-stab flag always clears flag2 (lines 142–147).
             if _exact_enemy(state, occ, num_powers):
@@ -133,7 +132,7 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
 
             # Press-on block (lines 148–164).
             if press_on:
-                # Ordering power's own unit at adj → skip remaining checks for
+                # Ordering power controls adjacent SC → skip remaining checks for
                 # this adj province (goto LAB_004116fa in C).
                 if occ == ordering_power:
                     continue

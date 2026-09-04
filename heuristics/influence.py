@@ -267,16 +267,16 @@ def _is_append_order_province(state: InnerGameState, province: int) -> bool:
     """Return ApplyInfluenceScores.c:676-713's normal append eligibility.
 
     The source first requires the unit-set lookup to return ``end``. It then
-    appends a non-supply province directly; an empty supply centre takes the
-    board-token branch and is rejected by its ``0x14`` empty-unit sentinel.
-    Python has one synchronized unit view, so the observable gate is exactly
-    "unoccupied non-supply province".
+    appends a non-supply province directly. An empty SC is appended only when
+    its +0x20 controller is a real power; neutral/uncontrolled SCs are skipped.
     """
     province = int(province)
-    return (
-        province not in state.unit_info
-        and province not in getattr(state, 'sc_provinces', ())
-    )
+    if province in state.unit_info:
+        return False
+    if province not in getattr(state, 'sc_provinces', ()):
+        return True
+    controller = int(state.g_sc_owner[province])
+    return 0 <= controller < int(getattr(state, 'g_num_powers', 7))
 
 
 def _populate_global_province_score(state: InnerGameState) -> None:
@@ -453,6 +453,13 @@ def apply_influence_scores(state: InnerGameState, own_power: int):
                     elif owner == own_power:
                         flag2 = False
 
+                    if prov in state.sc_provinces:
+                        controller = int(state.g_sc_owner[prov])
+                        if controller == own_power:
+                            flag1 = False
+                        elif controller == power_b:
+                            flag2 = False
+
                     # AppendOrder = std::map<int,OrderEntry>::insert keyed by sort_key
                     state.g_order_list.append({
                         'flag1': flag1,
@@ -531,7 +538,7 @@ def set_opening_targets(state: InnerGameState) -> None:
     Active only when g_deceit_level == 1 and g_season == 'SPR'.
     For each power, finds the province that maximises
         2.0 * _safe_pow(g_heat_movement_b[power, prov], 2.5) / g_global_province_score[prov]
-    among provinces occupied by a non-army unit.
+    among uncontrolled supply centres.
 
     Verified from listing at 00447359-0044737c:
       FILD [EDX*8 + DAT_005af0e8]  → base = g_heat_movement_b[power*256+prov] (int64)
@@ -551,29 +558,16 @@ def set_opening_targets(state: InnerGameState) -> None:
         best_int = 0
         best_prov = -1
 
-        # C gate (GenerateOrders.c:626-628):
-        #     if ((board[3 + prov*0x24] != '\0')                     <- SC flag
-        #         && (((unit_field >> 8) != 'A')                     <- not an army
-        #             || ((unit_field & 0xff) == 0x14)))             <- OR no unit
-        #
-        # Fixed 2026-08-18: the port required a unit to be present
-        # (`if prov not in state.unit_info: continue`) and never checked the
-        # supply-centre flag.  C's `(unit_field & 0xff) == 0x14` branch is
-        # precisely the "province is EMPTY" case, and byte +3 is the
-        # supply-centre flag (see §1.1).  So the eligible set is
-        # "supply centres not occupied by an army", which is exactly the
-        # empty neutral centres — SPA, POR, BEL, TUN — that the port could
-        # never select.  Adjustment 4 in score_provinces gives the opening
-        # target 150 instead of the 75 default, doubling its BFS seed.
+        # C gate (GenerateOrders.c:633-635) reads the province's SC marker and
+        # controller power token. Power tokens are category 0x41 (high byte
+        # 'A'); this is not an AMY token check. The eligible set is therefore
+        # uncontrolled/neutral SCs.
         # Sorted: C walks the province array in index order, and the `>`
         # comparison below keeps the FIRST maximum, so iteration order is
         # part of the result.
         sc_provs = sorted(getattr(state, 'sc_provinces', None) or ())
         for prov in sc_provs:
-            unit = state.unit_info.get(prov)
-            if unit is not None and unit.get('type') in ('A', 'AMY'):
-                # An army sitting here disqualifies the province; a fleet or
-                # an empty province does not.
+            if 0 <= int(state.g_sc_owner[prov]) < NUM_POWERS:
                 continue
             g_prov = float(state.g_global_province_score[prov])
             if g_prov == 0.0:

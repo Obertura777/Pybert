@@ -16,8 +16,13 @@ Module-level deps: ``..state.InnerGameState``.
 
 from ..state import InnerGameState
 
-def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int,
-                   unit_type: str = '') -> bool:
+def _is_legal_mto(
+    state: InnerGameState,
+    src_prov_id: int,
+    dst_prov_id: int,
+    unit_type: str = '',
+    src_coast: str = '',
+) -> bool:
     """
     Port of FUN_00460b30 — adjacency gate for MTO orders.
 
@@ -26,11 +31,11 @@ def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int,
       2. Calls AdjacencyList_LowerBound with the unit's coast/type token
          (ushort at param_1+4) to locate the first adjacency node whose
          unit-type mask matches the moving unit (army vs fleet).
-      3. If a valid node exists (node != end-sentinel), calls
-         IsLegalMove_Alt / SubList_LowerBound_Coast (FUN_00460ac0) on the
-         node's sub-list with the (dst_province_id, dst_coast_token) key.
-      4. Returns 1 (legal) if the sub-list contains the destination, 0
-         (illegal) otherwise.
+      3. If a valid node exists (node != end-sentinel), searches its sub-list
+         with the key ``(dst_province_id, coast=0)``.
+      4. Returns 1 if the resulting node's province matches. The recovered
+         routine deliberately does not compare the requested destination coast.
+         Otherwise returns 0 (illegal).
 
     Python translation: checks province adjacency via adj_matrix AND enforces
     unit-type terrain rules:
@@ -44,7 +49,9 @@ def _is_legal_mto(state: InnerGameState, src_prov_id: int, dst_prov_id: int,
       AssertFail                (FUN_0047a948) — error handler
     """
     if unit_type:
-        return state.can_reach_by_type(src_prov_id, dst_prov_id, unit_type)
+        return state.can_reach_by_type(
+            src_prov_id, dst_prov_id, unit_type, src_coast
+        )
     return state.can_reach(src_prov_id, dst_prov_id)
 
 
@@ -86,13 +93,17 @@ def is_convoy_reachable(
     internals are not observable from outside.
     """
     # Step 1: IsLegalMove — direct adjacency
-    if state.can_reach(src_prov, dest_prov):
+    source_unit = state.unit_info.get(src_prov, {})
+    source_coast = str(source_unit.get('coast', ''))
+    if state.can_reach_by_type(
+        src_prov, dest_prov, unit_type, source_coast
+    ):
         return True
 
     # Step 2: Only armies convoy; destination must be a land/coastal province.
     # C: (AMY == (short)param_1[3]) — army unit type check.
     # C: (*(char *)(this + dest_prov*0x24 + 4) != '\0') — dest flag non-zero = land.
-    if unit_type != 'A':
+    if unit_type not in ('A', 'AMY'):
         return False
     if dest_prov in state.water_provinces:
         return False
@@ -129,5 +140,3 @@ def is_convoy_reachable(
                 return True
 
     return False
-
-

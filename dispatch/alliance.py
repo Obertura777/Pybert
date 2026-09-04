@@ -105,7 +105,8 @@ def check_order_alliance(
     # C lines 72–90: read puVar13/iVar14, check trust for slot C.
     local_40 = 0
     desig_c = int(state.g_ally_designation_c[dest_prov])
-    if desig_c >= 0:                                    # slot C active (hi >= 0)
+    desig_c_hi = int(state.g_ally_designation_c_hi[dest_prov])
+    if desig_c_hi >= 0:                                 # slot C active
         ally_c = desig_c
         if ordering_power == own_power_idx:
             if dest_power != ally_c:                    # destination context ≠ designation
@@ -119,7 +120,8 @@ def check_order_alliance(
     # then read puVar1/local_28 for slot B and check trust.
     local_48 = 0
     desig_b = int(state.g_ally_designation_b[dest_prov])
-    if desig_b >= 0:                                    # slot B active
+    desig_b_hi = int(state.g_ally_designation_b_hi[dest_prov])
+    if desig_b_hi >= 0:                                 # slot B active
         ally_b = desig_b
         if ordering_power == own_power_idx:
             if dest_power != ally_b:
@@ -131,7 +133,8 @@ def check_order_alliance(
     # C lines 111–128: read local_34/local_30 for slot A and check trust.
     local_44 = 0
     desig_a = int(state.g_ally_designation_a[dest_prov])
-    if desig_a >= 0:                                    # slot A active
+    desig_a_hi = int(state.g_ally_designation_a_hi[dest_prov])
+    if desig_a_hi >= 0:                                 # slot A active
         ally_a = desig_a
         if ordering_power == own_power_idx:
             if dest_power != ally_a:

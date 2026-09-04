@@ -22,8 +22,121 @@ _scheduling_mod = __import__(f'{_pkg_name}.communications.scheduling', fromlist=
 _senders_mod = __import__(f'{_pkg_name}.communications.senders', fromlist=['cancel_prior_press'])
 _parsers_mod = __import__(f'{_pkg_name}.communications.parsers', fromlist=['_parse_xdo_candidates'])
 _gof_mod = __import__(f'{_pkg_name}.bot.gof', fromlist=['_evaluate_order_proposals_and_send_gof'])
+_support_mod = __import__(
+    f'{_pkg_name}.moves.support', fromlist=['build_support_proposals'])
 
 InnerGameState = _state_mod.InnerGameState
+
+
+def test_support_proposal_history_is_indexed_by_prospective_supporter():
+    state = InnerGameState()
+    requester = 2
+    supporter_power = 3
+    mover = 11
+    supporter = 10
+    destination = 12
+    state.unit_info = {
+        mover: {'power': requester, 'type': 'A', 'coast': ''},
+        supporter: {'power': supporter_power, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix[supporter] = [destination]
+    state.g_order_table[mover, 0] = 2
+    state.g_order_table[mover, 2] = destination
+    state.g_coverage_flag[0, destination] = 1
+    state.g_coverage_flag[1, destination] = 1
+    # A nonzero high word means this int64 designation is not power 3 even
+    # though its low word is 3; it must not exclude the supporter.
+    state.g_ally_designation_b[destination] = supporter_power
+    state.g_ally_designation_b_hi[destination] = 1
+    state.g_proposal_history_map = []
+
+    _support_mod.build_support_proposals(state, requester)
+
+    record = state.g_proposal_history_map[0]
+    assert record['power'] == supporter_power
+    assert record['province'] == supporter
+    assert record['target_power'] == requester
+    assert record['src_prov'] == mover
+    assert record['dst_prov'] == destination
+    assert state.g_xdo_press_sent[supporter_power, requester] == 1
+    assert state.g_xdo_press_sent[requester, supporter_power] == 0
+
+
+def test_one_threat_handshake_uses_completed_convoy_field_not_order_type():
+    def run(order_type, convoy_state):
+        state = InnerGameState()
+        requester, supporter_power = 2, 3
+        mover, supporter, destination = 11, 10, 12
+        state.unit_info = {
+            mover: {'power': requester, 'type': 'A', 'coast': ''},
+            supporter: {'power': supporter_power, 'type': 'A', 'coast': ''},
+        }
+        state.g_order_table[mover, 0] = order_type
+        state.g_order_table[mover, 2] = destination
+        state.g_order_table[mover, 20] = convoy_state
+        target = destination if order_type in (2, 6) else mover
+        state.adj_matrix[supporter] = [target]
+        state.g_coverage_flag[0, target] = 1
+        _support_mod.build_support_proposals(state, requester)
+        return state
+
+    completed_move = run(order_type=2, convoy_state=5)
+    assert len(completed_move.g_proposal_history_map) == 1
+    assert completed_move.g_xdo_press_proposals[0]['type'] == 'SUB_HANDSHAKE'
+
+    incomplete_convoy_order = run(order_type=5, convoy_state=0)
+    assert incomplete_convoy_order.g_proposal_history_map == []
+    assert incomplete_convoy_order.g_xdo_press_proposals == []
+
+
+def test_support_history_map_deduplicates_across_handshake_and_xdo_branches():
+    state = InnerGameState()
+    requester, supporter_power = 2, 3
+    mover, supporter, destination = 11, 10, 12
+    state.unit_info = {
+        mover: {'power': requester, 'type': 'A', 'coast': ''},
+        supporter: {'power': supporter_power, 'type': 'A', 'coast': ''},
+    }
+    state.g_order_table[mover, 0] = 2
+    state.g_order_table[mover, 2] = destination
+    state.g_order_table[mover, 20] = 5
+    state.adj_matrix[supporter] = [destination]
+    state.g_coverage_flag[0, destination] = 1
+
+    _support_mod.build_support_proposals(state, requester)
+    state.g_coverage_flag[1, destination] = 1
+    _support_mod.build_support_proposals(state, requester)
+
+    assert len(state.g_proposal_history_map) == 1
+    assert state.g_proposal_history_map[0]['score'] == 9
+    assert [p['type'] for p in state.g_xdo_press_proposals] == [
+        'SUB_HANDSHAKE',
+    ]
+
+
+def test_support_proposal_requires_supporters_typed_reach():
+    state = InnerGameState()
+    requester = 2
+    supporter_power = 3
+    mover = 11
+    supporter = 10
+    destination = 12
+    state.unit_info = {
+        mover: {'power': requester, 'type': 'F', 'coast': ''},
+        supporter: {'power': supporter_power, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix[supporter] = [destination]
+    state.water_provinces = {destination}
+    state.g_order_table[mover, 0] = 2
+    state.g_order_table[mover, 2] = destination
+    state.g_coverage_flag[0, destination] = 1
+    state.g_coverage_flag[1, destination] = 1
+    state.g_proposal_history_map = []
+
+    _support_mod.build_support_proposals(state, requester)
+
+    assert state.g_proposal_history_map == []
+    assert state.g_xdo_press_sent[supporter_power, requester] == 0
 
 
 def test_token_sequence_helper_is_ordered_equality_not_set_overlap():
@@ -67,6 +180,30 @@ def test_xdo_parser_attaches_decoded_order_for_legitimacy_gate():
         'power': 1,
         'order_seq': {'type': 'HLD', 'unit': 'A LON'},
     }]
+
+
+def test_xdo_parser_normalizes_daide_destination_coasts():
+    candidates = _parsers_mod._parse_xdo_candidates(
+        'XDO ( ( RUS FLT BOT ) MTO ( STP SCS ) ) '
+        'XDO ( ( FRA FLT MAO ) SUP ( FRA FLT GAS ) '
+        'MTO ( SPA NCS ) )'
+    )
+
+    assert candidates[0]['order_seq'] == {
+        'type': 'MTO', 'unit': 'F BOT', 'target': 'STP', 'coast': 'SC',
+    }
+    assert candidates[1]['order_seq'] == {
+        'type': 'SUP', 'unit': 'F MAO', 'target_unit': 'F GAS',
+        'target_dest': 'SPA', 'target_coast': 'NC',
+    }
+
+
+def test_xdo_parser_resolves_nested_coast_in_unit_location():
+    candidates = _parsers_mod._parse_xdo_candidates(
+        'XDO ( ( RUS FLT ( STP SCS ) ) HLD )'
+    )
+
+    assert candidates[0]['order_seq'] == {'type': 'HLD', 'unit': 'F STP'}
 
 
 def test_evaluate_press_clears_prior_accepts_and_uses_and_sublists():

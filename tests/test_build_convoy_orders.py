@@ -38,6 +38,7 @@ _build_order_seq_from_table = _bot_orders._build_order_seq_from_table
 
 _F_ORDER_TYPE    = _constants._F_ORDER_TYPE
 _F_DEST_PROV     = _constants._F_DEST_PROV
+_F_DEST_COAST    = _constants._F_DEST_COAST
 _F_INCOMING_MOVE = _constants._F_INCOMING_MOVE
 _F_ORDER_ASGN    = _constants._F_ORDER_ASGN
 _F_CONVOY_DEPTH  = _constants._F_CONVOY_DEPTH
@@ -105,6 +106,24 @@ def test_route_enumerator_rejects_fleets_on_coastal_land():
     state.fleet_adj_matrix = {coastal_fleet: [LON, STP]}
 
     assert _enumerate_convoy_chains_for_src(state, LON) == {}
+
+
+def test_register_convoy_fleet_runs_only_for_water_provinces():
+    state = InnerGameState()
+    water_fleet, coastal_fleet, target = NTH, LON, STP
+    state.water_provinces = frozenset({water_fleet})
+    state.fleet_adj_matrix = {
+        water_fleet: [target],
+        coastal_fleet: [target],
+    }
+    state.g_army_adj_count[target] = 1
+    state.g_prov_target_flag[POWER_ENG, target] = 1
+
+    register_convoy_fleet(state, POWER_ENG, coastal_fleet)
+    assert int(state.g_province_score_trial[target]) == 0
+
+    register_convoy_fleet(state, POWER_ENG, water_fleet)
+    assert int(state.g_province_score_trial[target]) == 1
 
 
 def test_route_enumerator_accepts_occupied_coastal_landing():
@@ -289,9 +308,9 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[LON, _F_DEST_PROV] == STP
 
-    def test_army_committed(self, state):
+    def test_army_does_not_acquire_support_assignment_state(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_order_table[LON, _F_ORDER_ASGN] == 1
+        assert state.g_order_table[LON, _F_ORDER_ASGN] == 0
 
     def test_army_convoy_leg_count(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
@@ -323,9 +342,9 @@ class TestSingleFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_order_table[NTH, _F_DEST_PROV] == STP
 
-    def test_fleet_committed(self, state):
+    def test_fleet_does_not_acquire_support_assignment_state(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
-        assert state.g_order_table[NTH, _F_ORDER_ASGN] == 1
+        assert state.g_order_table[NTH, _F_ORDER_ASGN] == 0
 
     def test_army_score_propagated(self, state):
         # C: g_ConvoyChainScore[army_province * 0x1e] where the Ghidra local
@@ -334,17 +353,21 @@ class TestSingleFleetConvoy:
         # BFS round-0 set — the fixture seeds 999999.0 there to catch that.
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_convoy_chain_score[STP] == 42.0
-        assert state.g_order_score_hi[STP] == 42.0
+        assert state.g_order_score_hi[STP] == 0.0
 
     def test_fleet_score_from_max_province(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         expected = 10.0 + NTH  # g_max_prov_score_per_power[ENG, NTH]
         assert state.g_convoy_chain_score[NTH] == expected
-        assert state.g_order_score_hi[NTH] == expected
+        assert state.g_order_score_hi[NTH] == 0.0
 
     def test_convoy_dst_to_src(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
         assert state.g_convoy_dst_to_src[STP] == LON
+
+    def test_convoy_destination_is_present_in_shared_move_map_key_walk(self, state):
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+        assert state.g_convoy_dst_list == [STP]
 
     def test_fleet_dispatch_sequence_names_convoyed_army(self, state):
         state.prov_to_id = {'LON': LON, 'NTH': NTH, 'STP': STP}
@@ -357,6 +380,12 @@ class TestSingleFleetConvoy:
             'target_unit': 'A LON',
             'target_dest': 'STP',
         }
+
+    def test_convoy_rows_preserve_army_destination_token(self, state):
+        build_convoy_orders(state, POWER_ENG, LON, STP)
+
+        assert state.g_order_table[LON, _F_DEST_COAST] == 0x4200
+        assert state.g_order_table[NTH, _F_DEST_COAST] == 0x4200
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -390,7 +419,7 @@ class TestTwoFleetConvoy:
             assert state.g_order_table[fleet_prov, _F_ORDER_TYPE] == _ORDER_CVY
             assert state.g_order_table[fleet_prov, _F_SECONDARY] == LON
             assert state.g_order_table[fleet_prov, _F_DEST_PROV] == STP
-            assert state.g_order_table[fleet_prov, _F_ORDER_ASGN] == 1
+            assert state.g_order_table[fleet_prov, _F_ORDER_ASGN] == 0
 
     def test_fleet_scores_distinct(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)
@@ -428,7 +457,7 @@ class TestThreeFleetConvoy:
         build_convoy_orders(state, POWER_ENG, LON, STP)
         for fp in [NTH, NWG, BAR]:
             assert state.g_order_table[fp, _F_ORDER_TYPE] == _ORDER_CVY
-            assert state.g_order_table[fp, _F_ORDER_ASGN] == 1
+            assert state.g_order_table[fp, _F_ORDER_ASGN] == 0
 
     def test_all_fleet_scores(self, state):
         build_convoy_orders(state, POWER_ENG, LON, STP)

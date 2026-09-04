@@ -29,7 +29,8 @@ from ..monte_carlo import (
     _ORDER_MTO, _ORDER_CTO, _ORDER_SUP_MTO,
 )
 from ..heuristics import (
-    post_process_orders, compute_press, compute_draw_vote, _safe_pow,
+    post_process_orders, compute_press, compute_draw_vote,
+    normalize_influence_matrix, _safe_pow,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,117 @@ def _analyze_position(state: InnerGameState) -> None:
             state.g_unit_count[power] += 1
 
 
+def _move_analysis_unit_adjacencies(
+    state: InnerGameState, province: int, unit: dict
+) -> list[int]:
+    """Return MOVE_ANALYSIS' type/coast-filtered unit adjacency list."""
+    unit_type = str(unit.get('type', 'A')).upper()
+    if unit_type in ('A', 'AMY'):
+        return [
+            adjacent for adjacent in state.adj_matrix.get(province, ())
+            if adjacent not in state.water_provinces
+        ]
+    if unit_type in ('F', 'FLT'):
+        coast = str(unit.get('coast', '')).upper().lstrip('/')
+        if coast:
+            coastal = state.fleet_coast_adj.get(
+                (province, '/' + coast), ()
+            )
+            if coastal:
+                return list(coastal)
+        return list(state.fleet_adj_matrix.get(province, ()))
+    return list(state.adj_matrix.get(province, ()))
+
+
+def _build_move_pressure_matrices(
+    state: InnerGameState, num_powers: int = 7
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build MOVE_ANALYSIS' bcd0, af00, and b5e8 matrices."""
+    bcd0 = np.zeros((num_powers, num_powers), dtype=np.int32)
+    af00 = np.zeros((num_powers, num_powers), dtype=np.int32)
+    b5e8 = np.zeros((num_powers, num_powers), dtype=np.int32)
+
+    prov_power = np.full(256, -1, dtype=np.int32)
+    power_units: list[list[tuple[int, dict]]] = [
+        [] for _ in range(num_powers)
+    ]
+    for province, unit in state.unit_info.items():
+        power = int(unit.get('power', -1))
+        if 0 <= power < num_powers:
+            prov_power[province] = power
+            power_units[power].append((province, unit))
+
+    sc_by_controller: list[list[int]] = [[] for _ in range(num_powers)]
+    for province in state.sc_provinces:
+        controller = int(state.g_sc_owner[province])
+        if 0 <= controller < num_powers:
+            sc_by_controller[controller].append(province)
+
+    reach = np.zeros(256, dtype=np.int32)
+    for defending in range(num_powers):
+        for attacking in range(num_powers):
+            if defending == attacking:
+                continue
+            reach[:] = 0
+
+            for centre in sc_by_controller[defending]:
+                for adjacent in state.adj_matrix.get(centre, ()):
+                    # C:158-173 tests the adjacent province's SC byte, but its
+                    # +0x20 read remains indexed by the source centre. Since
+                    # source controller == defending and this loop is
+                    # off-diagonal, both branches mark the adjacency.
+                    reach[adjacent] = 1
+
+            for unit_province, unit in power_units[attacking]:
+                adjacencies = _move_analysis_unit_adjacencies(
+                    state, unit_province, unit
+                )
+                for adjacent in adjacencies:
+                    if reach[adjacent] == 1:
+                        reach[adjacent] = 2
+                if any(reach[adjacent] > 1 for adjacent in adjacencies):
+                    b5e8[defending, attacking] += 1
+
+                order_type = int(
+                    state.g_order_table[unit_province, _F_ORDER_TYPE]
+                )
+                destination = int(
+                    state.g_order_table[unit_province, _F_DEST_PROV]
+                )
+                if order_type in (_ORDER_MTO, _ORDER_CTO):
+                    if not 0 <= destination < 256:
+                        continue
+                    gate_open = (
+                        int(state.g_ally_designation_b[destination])
+                        != attacking
+                    )
+                    if reach[destination] == 2:
+                        if gate_open:
+                            bcd0[defending, attacking] += 1
+                            if prov_power[destination] == defending:
+                                af00[defending, attacking] += 1
+                        reach[destination] = 3
+                    elif reach[destination] == 3:
+                        if gate_open:
+                            bcd0[defending, attacking] -= 1
+                        reach[destination] = 2
+                elif order_type == _ORDER_SUP_MTO:
+                    secondary = int(
+                        state.g_order_table[unit_province, _F_SECONDARY]
+                    )
+                    supports_defender = (
+                        0 <= secondary < 256
+                        and int(state.g_ally_designation_b[secondary])
+                        == defending
+                    )
+                    if (0 <= destination < 256
+                            and not supports_defender
+                            and reach[destination] >= 2):
+                        bcd0[defending, attacking] += 1
+
+    return bcd0, af00, b5e8
+
+
 def _move_analysis(state: InnerGameState) -> None:
     """MOVE_ANALYSIS (FUN_~0x435400).
 
@@ -114,8 +226,9 @@ def _move_analysis(state: InnerGameState) -> None:
     hostile power detected, sets g_opening_sticky_mode and g_opening_enemy.
 
     Decompile-verified structure (decompiled.txt):
-      1. Per-(a,b) reach table: reach[a][adj]=1 for adj-of-a-units not occupied by b;
-         upgrade to 2 where b-unit is adjacent; b5e8[a][b] = b-units adj to reach≥2 zones;
+      1. Per-(a,b) reach table: reach[a][adj]=1 around a-controlled SCs;
+         upgrade to 2 where a b-unit can reach;
+         b5e8[a][b] = b-units adjacent to reach≥2 zones;
          bcd0[a][b] = b's MTO/CTO moving into a-reachable (reach 2→3), SUP_MTO similarly.
       2. Pre-ratio trust reset: non-own-power pairs with trust < 3 → force to 1.
       3. Ratio trust updates for all (a,b) pairs.
@@ -127,92 +240,23 @@ def _move_analysis(state: InnerGameState) -> None:
 
     trust = state.g_ally_trust_score  # (7,7) float64; updated in-place
 
-    # Save own_power's trust row before any modifications (for pre-compaction restore)
+    # Save own_power's split trust row before any modifications (for the
+    # pre-compaction restore at C:624-650).
     orig_own_trust = trust[own_power, :].copy()
+    orig_own_trust_hi = state.g_ally_trust_score_hi[own_power, :].copy()
 
-    bcd0 = np.zeros((num_powers, num_powers), dtype=np.int32)  # b's aggressive moves toward a
-    af00 = np.zeros((num_powers, num_powers), dtype=np.int32)  # allied (a) units near contested dest
-    b5e8 = np.zeros((num_powers, num_powers), dtype=np.int32)  # b-units pressuring a
+    bcd0, af00, b5e8 = _build_move_pressure_matrices(
+        state, num_powers
+    )
 
-    # Build province→power map and per-power province lists
-    prov_power = np.full(256, -1, dtype=np.int32)
-    power_provs: list[list[int]] = [[] for _ in range(num_powers)]
-    for prov, unit in state.unit_info.items():
-        p = unit.get('power', -1)
-        if 0 <= p < num_powers:
-            prov_power[prov] = p
-            power_provs[p].append(prov)
-
-    # --- Phases 1 & 2: per-(a,b) reach table ---------------------------------
-    # For each attacking power a and defending power b:
-    #   reach[adj]=1  ← adj province of an a-unit, not occupied by b
-    #   reach[adj]=2  ← upgrade if also adjacent to a b-unit
-    #   b5e8[a][b]    ← count b-units that have at least one reach≥2 adjacent province
-    #   bcd0[a][b]    ← b's MTO/CTO moves into reach-2 zones (upgrade to 3); SUP_MTO similarly
-    reach = np.zeros(256, dtype=np.int32)  # per-(a,b) scratch table
-
-    for a in range(num_powers):
-        for b in range(num_powers):
-            if a == b:
-                continue
-
-            reach[:] = 0
-
-            # Pass 1: mark adj-of-a-units that are NOT b-occupied as reach=1
-            for prov in power_provs[a]:
-                for adj in state.adj_matrix.get(prov, []):
-                    if prov_power[adj] != b and reach[adj] == 0:
-                        reach[adj] = 1
-
-            # Pass 2: for each b-unit, upgrade reach-1 adjacent provinces to reach-2
-            for b_prov in power_provs[b]:
-                for adj in state.adj_matrix.get(b_prov, []):
-                    if reach[adj] == 1:
-                        reach[adj] = 2
-
-            # Pass 3: count b5e8 and apply order effects for bcd0/af00
-            for b_prov in power_provs[b]:
-                # b5e8: b-unit counts if ANY adjacent province has reach≥2
-                for adj in state.adj_matrix.get(b_prov, []):
-                    if reach[adj] >= 2:
-                        b5e8[a, b] += 1
-                        break
-
-                # Order effects (C types 2=MTO, 6=CTO, 4=SUP_MTO)
-                order_type = int(state.g_order_table[b_prov, _F_ORDER_TYPE])
-                dest       = int(state.g_order_table[b_prov, _F_DEST_PROV])
-
-                if order_type in (_ORDER_MTO, _ORDER_CTO):      # C types 2 and 6
-                    if 0 <= dest < 256:
-                        # B-gate (C lines 287-296): bcd0 bump is gated on
-                        # `g_ally_designation_b[dest] != b` — i.e. the move is
-                        # NOT a consolidation into a province already
-                        # B-designated for the attacker at start-of-season.
-                        # Before 2026-04-14 this gate was missing → consolidation
-                        # moves were over-counted as aggressive.
-                        desig_b = (int(state.g_ally_designation_b[dest])
-                                   if hasattr(state, 'g_ally_designation_b') else -1)
-                        b_gate_open = (desig_b != b)  # B.lo != attacker
-                        if reach[dest] == 2:
-                            # b moves into a-reachable contested province → aggressive
-                            if b_gate_open:
-                                bcd0[a, b] += 1
-                                for adj2 in state.adj_matrix.get(dest, []):
-                                    if prov_power[adj2] == a:
-                                        af00[a, b] += 1
-                            reach[dest] = 3
-                        elif reach[dest] == 3:
-                            # b was moving to already-upgraded province → un-count
-                            if b_gate_open:
-                                bcd0[a, b] -= 1
-                            reach[dest] = 2
-                elif order_type == _ORDER_SUP_MTO:              # C type 4
-                    # Only count if b is NOT supporting an a-unit
-                    secondary = int(state.g_order_table[b_prov, _F_SECONDARY])
-                    if (0 <= dest < 256
-                            and not (0 <= secondary < 256 and prov_power[secondary] == a)
-                            and reach[dest] >= 2):
-                        bcd0[a, b] += 1
+    # MOVE_ANALYSIS.c:402-403 exits after pressure construction/logging unless
+    # this is the first Fall with the transient press flag clear. The caller
+    # normally enforces the same gate, but keeping it inside the routine avoids
+    # mutating trust when the helper is invoked directly from another path.
+    if not (state.g_deceit_level == 1
+            and state.g_press_flag == 0
+            and state.g_season == 'FAL'):
+        return
 
     # --- Pre-ratio trust reset -----------------------------------------------
     # C gate (MOVE_ANALYSIS.c:402-403): only runs when g_DeceitLevel==1,
@@ -220,32 +264,20 @@ def _move_analysis(state: InnerGameState) -> None:
     # Other powers' inter-trust: if not strongly allied (trust<5) → set to 1.
     # C: int64(Hi,Lo) < 5  ⟺  Hi<0  OR  (Hi==0 AND (uint)Lo<5).
     # Hi reset is mandatory when resetting Lo — C always writes Hi=0 alongside Lo=1.
-    # NO_PRESS guard: in NO_PRESS mode, no diplomatic agreements exist, so
-    # setting trust=1 for all pairs would block cross-border moves via the
-    # trust gate for the rest of the game (analysis.py:224 can raise it to 5
-    # for mutual non-aggression, but pairs with no contact stay at 1).
-    # Skip the pre-ratio reset in NO_PRESS so trust stays at 0 (free movement).
-    _no_press_mode = getattr(state, 'g_minimal_press_mode', 0) == 1
-    if (state.g_deceit_level == 1
-            and state.g_press_flag == 0
-            and state.g_season == 'FAL'
-            and not _no_press_mode):
-        for a in range(num_powers):
-            if a == own_power:
+    for a in range(num_powers):
+        if a == own_power:
+            continue
+        for b in range(num_powers):
+            if a == b:
                 continue
-            for b in range(num_powers):
-                if a == b:
-                    continue
-                _hi = int(state.g_ally_trust_score_hi[a, b])
-                if _hi < 0 or (_hi == 0 and trust[a, b] < 5):
-                    trust[a, b] = 1
-                    state.g_ally_trust_score_hi[a, b] = 0
+            _hi = int(state.g_ally_trust_score_hi[a, b])
+            if _hi < 0 or (_hi == 0 and trust[a, b] < 5):
+                trust[a, b] = 1
+                state.g_ally_trust_score_hi[a, b] = 0
 
     # --- Phase 3 — ratio-based trust updates (all (a,b) pairs) ---------------
     # ratio_ab = bcd0[a][b] / b5e8[a][b]: fraction of b's pressure that is aggressive toward a
     # High ratio_ab → b is hostile to a → trust[a][b] decreases
-    # NO_PRESS: skip trust modifications — trust values would block cross-border
-    # moves via the Phase 2 trust gate even with no diplomatic agreements.
     for a in range(num_powers):
         for b in range(num_powers):
             if a == b:
@@ -255,9 +287,6 @@ def _move_analysis(state: InnerGameState) -> None:
 
             if ratio_ab < 0:
                 continue  # no pressure from b toward a; skip
-
-            if _no_press_mode:
-                continue  # skip trust modifications in NO_PRESS
 
             if ratio_ab == 0.0:
                 # b not aggressive → increment trust; if mutually non-aggressive: allies
@@ -290,33 +319,60 @@ def _move_analysis(state: InnerGameState) -> None:
     # C: cStack_bd7a (outer) set at snapshot time when any orig trust<3 (lines 89-90);
     #    cStack_bd79 (inner) set post-update when any current trust<2 (line 645).
     #    Restore only when cStack_bd7a is set AND no current trust<2 (goto LAB_00435fe6).
-    had_low_orig_trust = any(orig_own_trust[p] < 3 for p in range(num_powers))
+    def _split_lt(row_lo, row_hi, power, threshold):
+        hi = int(row_hi[power])
+        lo = int(row_lo[power]) & 0xFFFFFFFF
+        return hi < 0 or (hi == 0 and lo < threshold)
+
+    had_low_orig_trust = any(
+        _split_lt(orig_own_trust, orig_own_trust_hi, p, 3)
+        for p in range(num_powers)
+    )
     has_low_trust_now = any(
-        trust[own_power, p] < 2 for p in range(num_powers) if p != own_power
+        _split_lt(
+            trust[own_power], state.g_ally_trust_score_hi[own_power], p, 2
+        )
+        for p in range(num_powers) if p != own_power
     )
     if had_low_orig_trust and not has_low_trust_now:
         for p in range(num_powers):
-            if p != own_power and orig_own_trust[p] < 2:
+            if (p != own_power
+                    and _split_lt(orig_own_trust, orig_own_trust_hi, p, 2)):
                 trust[own_power, p] = orig_own_trust[p]
+                state.g_ally_trust_score_hi[own_power, p] = (
+                    -1 if (int(orig_own_trust[p]) & 0x80000000) else 0
+                )
                 break
 
     # --- Phase 4 — opening ally selection ------------------------------------
     # Invalidate ally slots where trust dropped below 2 (distrusted)
     for attr in ('g_best_ally_slot0', 'g_best_ally_slot1', 'g_best_ally_slot2'):
         slot = getattr(state, attr, -1)
-        if 0 <= slot < num_powers and trust[own_power, slot] < 2:
+        if (0 <= slot < num_powers
+                and _split_lt(
+                    trust[own_power],
+                    state.g_ally_trust_score_hi[own_power],
+                    slot,
+                    2,
+                )):
             setattr(state, attr, -1)
 
-    # DIVERGENCE (MOVE_ANALYSIS.c:670-688): C does a partial one-level shift — when
-    # slot0 and slot1 are both -1 and only slot2 is valid, C yields [-1, slot2, -1],
-    # leaving slot0==-1 and silently skipping the best-ally check below.
-    # Intentional fix: full left-pack so any surviving ally always surfaces into slot0.
-    slots = [getattr(state, f'g_best_ally_slot{i}', -1) for i in range(3)]
-    valid = [s for s in slots if s >= 0]
-    while len(valid) < 3:
-        valid.append(-1)
-    state.g_best_ally_slot0, state.g_best_ally_slot1, state.g_best_ally_slot2 = (
-        valid[0], valid[1], valid[2])
+    # MOVE_ANALYSIS.c:670-688 performs only this one-level shift. In the
+    # slot0=-1, slot1=-1, slot2=valid case Albert ends at [-1, slot2, -1].
+    slot0 = int(getattr(state, 'g_best_ally_slot0', -1))
+    slot1 = int(getattr(state, 'g_best_ally_slot1', -1))
+    slot2 = int(getattr(state, 'g_best_ally_slot2', -1))
+    if slot0 == -1 and slot1 >= 0:
+        slot0, slot1 = slot1, -1
+        if slot2 >= 0:
+            slot1, slot2 = slot2, -1
+    elif slot1 == -1 and slot2 >= 0:
+        slot1, slot2 = slot2, -1
+    if slot0 == -1 and slot1 == -1 and slot2 >= 0:
+        slot0, slot2 = slot2, -1
+    state.g_best_ally_slot0 = slot0
+    state.g_best_ally_slot1 = slot1
+    state.g_best_ally_slot2 = slot2
 
     # Best ally (after compaction) fully pressured by one power → g_ally_under_attack
     best_ally = getattr(state, 'g_best_ally_slot0', -1)
@@ -331,7 +387,11 @@ def _move_analysis(state: InnerGameState) -> None:
                 break
 
     # Detect single hostile (trust==1) power → sticky enemy mode
-    hostile = [p for p in range(num_powers) if trust[own_power, p] == 1]
+    hostile = [
+        p for p in range(num_powers)
+        if trust[own_power, p] == 1
+        and int(state.g_ally_trust_score_hi[own_power, p]) == 0
+    ]
     if len(hostile) == 1:
         p = hostile[0]
         state.g_opening_sticky_mode = 1
@@ -344,7 +404,8 @@ def _move_analysis(state: InnerGameState) -> None:
     # Triple-front mode: demote trust-3 entries to trust-1 for own_power
     if getattr(state, 'g_triple_front_flag', 0) == 1:
         for p in range(num_powers):
-            if trust[own_power, p] == 3:
+            if (trust[own_power, p] == 3
+                    and int(state.g_ally_trust_score_hi[own_power, p]) == 0):
                 trust[own_power, p] = 1
 
 
@@ -370,39 +431,10 @@ def _cleanup_turn(state: InnerGameState) -> None:
     Decompile: decompiled.txt lines 460-593.
     Phases match GenerateOrders Phase 4-5 but operate on Raw/trust-adjusted copy.
     """
-    n = 7  # numPowers
-
-    # Phase 1 — trust-adjust: g_influence_matrix[row,col] = Raw[row,col] / (trust+1)
-    # C: DAT_00b82db8 = g_influence_matrix_raw / CONCAT44(trust_hi+carry, trust_lo+1)
-    for row in range(n):
-        for col in range(n):
-            raw   = float(state.g_influence_matrix_raw[row, col])
-            trust = float(state.g_ally_trust_score[row, col])
-            state.g_influence_matrix[row, col] = raw / (trust + 1.0)
-
-    # Phase 2 — per-power row sum via PackScoreU64 (trunc toward zero, not banker's round;
-    # FRNDINT+correction always restores truncation)
-    # C: DAT_004f6b98[power*2] = PackScoreU64() after FPU row-sum accumulation
-    power_sum = np.array(
-        [int(float(np.sum(state.g_influence_matrix[p]))) for p in range(n)],
-        dtype=np.int64,
-    )
-
-    # Phase 3 — per-cell noise: cell += _safe_pow(cell / (col_sum+1), 0.3) * 500
-    # C: fVar8 = _safe_pow(); *pdVar6 = fVar8 * 500.0 + *pdVar6
-    # base exponent 0.3 = DAT_004af9f8 (33 33 33 33 33 33 d3 3f)
-    for row in range(n):
-        for col in range(n):
-            col_total = float(power_sum[col])
-            base = float(state.g_influence_matrix[row, col]) / (col_total + 1.0)
-            state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
-
-    # Phase 4 — row-normalise to 100
-    # C: cell = (cell * 100.0) / row_sum  (skipped when row_sum == 0)
-    for row in range(n):
-        row_sum = float(np.sum(state.g_influence_matrix[row]))
-        if row_sum != 0.0:
-            state.g_influence_matrix[row] = (state.g_influence_matrix[row] * 100.0) / row_sum
+    # Keep the send_GOF call site on the canonical implementation. The former
+    # duplicate ignored the signed high trust word and used a column total in
+    # the noise denominator; both diverged from NormalizeInfluenceMatrix.c.
+    normalize_influence_matrix(state)
 
 
 def _prepare_draw_vote_set(state: InnerGameState) -> None:

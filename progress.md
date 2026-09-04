@@ -1,6 +1,6 @@
 # Python-port move-fidelity progress
 
-Last updated: 2026-08-28
+Last updated: 2026-09-01
 
 ## Goal and oracle
 
@@ -17,7 +17,7 @@ some unrelated candidate.
 
 ## Current verified checkpoint
 
-- `python -m pytest -q` passes: **256 tests**.
+- `python -m pytest -q` passes: **394 tests**.
 - `python -m compileall -q` passes for the repository's Python source and
   tests.
 - `git diff --check` passes.
@@ -25,20 +25,26 @@ some unrelated candidate.
   signal. It no longer reports every successful local `diplomacy.Game` run as
   `PYBERT FAILED` because local games lack `no_wait()`.
 - Latest bounded generation oracle, `game_10.json`, `S1901M`, primary seed 1
-  plus seeds 0–7 for misses:
+  plus seeds 0–9 for misses:
   Albert's complete set occurs in the legal candidate pool for **7/7 powers**
-  (818 distinct complete legal candidates total), with **0 Python failures**.
+  (502 distinct complete legal candidates total), with **0 Python failures**.
+  Every reference set is present at primary seed 1; no seed union is needed.
   Submitted selection remains diagnostic at **0/7 exact sets** and **10/22
   unit orders**.
-- Current hard combination test `game_10.json`, `S1902M`, Russia: seeds
-  `{0,1,2}` produce 3,143 distinct legal candidates and cover all **6/6**
-  reference orders individually, but the best complete candidate is **4/6**.
-  The older seed-0 6/6 result is not reproducible after the source-backed
-  token-key and convoy-route corrections and is no longer a verified claim.
-- A historical pre-token-key sweep reached **21/21** complete opening sets
-  across games 10, 100, and 1000. That broader sample has not yet been rerun
-  after the latest source corrections; the current game-10 opening and Russia
-  midgame evidence is reported above rather than inferred from that old sweep.
+- Current hard combination test `game_10.json`, `S1902M`, Russia: the exact
+  **6/6** reference set appears at seed 6 among 3,196 distinct legal candidates
+  unioned from seeds 1, 0, and 2–6, with **0 Python failures**. The earlier
+  5/6 ceiling was a compensated scoring defect and is retired.
+- First-Fall no-press checkpoint, `game_10.json`, `F1901M`: primary seed 1
+  reaches **5/7** complete Albert sets across 600 candidates; the bounded
+  seeds 0–9 sweep reaches **7/7** across 639 candidates. France appears by
+  seed 5 and Germany by seed 2. Diagnostic selection is **1/7 exact sets** and
+  **6/22 unit orders**, with no Python failures.
+- Current bounded opening sample across games 10, 100, and 1000, using primary
+  seed 1: **21/21** Albert complete sets occur among 1,560 distinct legal
+  candidates, with **0 Python failures**. Every game is 7/7 covered without a
+  fallback seed sweep. Diagnostic submitted selection is **0/21 exact sets**
+  and **25/66 unit orders**.
 - The first three reference games' complete retreat/adjustment sweep reaches
   **155/156** sets across 156 phase/power pairs. The sole miss is the known
   inconsistent game 10 `S1904R` pair (`A ROM R VEN` in the reference while
@@ -930,9 +936,16 @@ some unrelated candidate.
      this check protects generation from regressions but cannot validate the
      corrected next-turn trust history.
 
-45. ComputeOrderDipFlags occupant decoding and split-word comparisons
+45. ComputeOrderDipFlags initial token decoding and split-word comparisons
 
-   - `ComputeOrderDipFlags.c:69–115` preserves an occupant's power only when
+   - Historical correction: this checkpoint initially interpreted province
+     `+0x20` as an AMY/FLT occupant token. The later cross-routine audit in
+     checkpoint 97 proves that it is the category-`0x41` province power token,
+     carrying supply-centre control in this path. The occupant-specific claims
+     below are superseded; the split-word comparison findings remain valid.
+
+   - The initial reading of `ComputeOrderDipFlags.c:69–115` preserved an
+     occupant's power only when
      the unit token is `AMY`; every other present unit type, including a
      fleet, is represented as neutral power `0x14`. Python used the owning
      power for every unit, incorrectly clearing `flag1` and changing both
@@ -947,11 +960,9 @@ some unrelated candidate.
      zero. Python compared signed scalar lows, making `0xffffffff` appear
      below two. A shared split-word predicate now reproduces the C int64
      comparison for both state channels.
-   - Five focused regressions cover fleet-as-neutral behavior at the target,
-     both same-province and adjacent exact-enemy gates, unsigned adjacent
-     trust, and unsigned diplomacy state. The existing DMZ/press consumer
-     tests also pass. Full suite: **195 tests**; `py_compile` and
-     `git diff --check` pass.
+   - The controller-focused regressions replace the old fleet-as-neutral case;
+     the exact-enemy, unsigned trust, and unsigned diplomacy-state checks
+     remain. At this historical checkpoint the full suite had **195 tests**.
    - The bounded generation oracle is not rerun for this checkpoint because
      HOSTILITY invokes this routine only after current-turn order generation;
      the offline oracle neither serializes nor replays these press flags.
@@ -1302,6 +1313,1133 @@ some unrelated candidate.
      Python failures**. Germany's set remains reachable at seed 6; diagnostic
      submitted selection is now 0/7 exact and 10/22 per-unit.
 
+57. Evaluator and convoy/support source-fidelity corrections
+
+   - Removed a Python-only 2,030-point projected supply-centre occupation
+     bonus from `EvaluateOrderScore`. The recovered function returns directly
+     after the field-22 cut-risk contribution; it has no projected-ownership
+     pass or equivalent constant.
+   - Restored `ConvoyList_Insert`'s single-map invariant for CTO orders.
+     `DAT_00bb65a4` is the head of `DAT_00bb65a0`, not an independent
+     destination container, so `BuildConvoyOrders` now updates both Python
+     views used to represent the C map. This makes convoy destinations visible
+     to the later support sweep.
+   - Corrected convoy score-pair writes: the numeric value is stored in order
+     row field 6 and field 7 remains zero, matching the signed 64-bit C pair
+     and every other order builder. Python previously duplicated the value
+     into both fields.
+   - Ported ProcessTurn's two post-move support passes. Equality between
+     incoming strength and support demand is eligible, and pass two admits the
+     positive secondary-attack marker. In the Russia `S1902M` seed `{0,1,2}`
+     pool, the complete `RUM` support plus `SEV/BLA` convoy trio now occurs in
+     eight candidates instead of one.
+   - Candidate follow-up seeds now inherit `--proposal-round-cap`; diagnostic
+     sweeps no longer mix the requested cap on the primary seed with the
+     production cap on later seeds and therefore a different RNG chronology.
+   - Corrected the Phase 2 army hold-candidate score. After the adjacency
+     iterator ends, the C routine resets its pointer to the current unit
+     record before indexing `DAT_00ba3b70`; Python instead added the first
+     adjacent province's marker to the source score. Army source candidates
+     now use their own province marker, while fleet scoring remains unchanged.
+   - Full suite: **260 tests**; `compileall` and `git diff --check` pass. The
+     bounded `game_10.json` opening sweep still reaches **7/7** complete
+     Albert sets across 778 candidates; a cap-zero run also remains 7/7.
+     Russia `S1902M` remains a combination gap, but a seed `0..59` sweep
+     improves the closest complete candidate from 4/6 to **5/6**.
+
+58. Signed-int64 candidate-score arithmetic
+
+   - Restored the two five-round `GenerateOrders` heat diffusions to signed
+     int64 arithmetic. The C routine accumulates integer adjacency values and
+     calls `__alldiv(..., 5)` after every round; Python divided by `5.0` and
+     carried invented fractions into movement heat and influence scoring.
+   - Restored the army and fleet candidate BFS passes in `ScoreProvinces` to
+     the same signed, truncation-toward-zero division. This matters in WIN as
+     well as movement phases because occupied-centre penalties can make a
+     seed negative; Python `//` would floor that case instead of matching C.
+   - `ScoreOrderCandidates_AllPowers` now keeps its weighted raw score,
+     `max/100` threshold, and `raw*1000/max` normalization in integer space,
+     promotes a zero minimum to one, and packs the sub-threshold power result
+     back to int64. Python previously retained fractional normalized values
+     even though every recovered tree value is a lo/hi signed-int64 pair.
+   - The Python arrays representing the candidate BFS and token-keyed final
+     score trees now use `numpy.int64`, preventing later code from silently
+     reintroducing non-source fractional values. Four focused regressions
+     cover signed negative division, exact normalization truncation, the
+     zero-minimum branch, and build-heat ownership seeding.
+   - Full suite: **264 tests**. The production-cap opening oracle remains
+     **7/7** across 767 complete candidates with seeds `0..9`; Germany moves
+     from seed 6 to seed 9 under the corrected RNG chronology. Russia
+     `S1902M` seeds `{0,1,2}` produce 2,461 candidates with 6/6 individual
+     coverage and a 4/6 best; a complete seed `0..59` sweep still reaches
+     **5/6** at seed 28 and misses only `GAL-BUD`.
+
+59. ProcessTurn persistent province retry counters
+
+   - Added the missing `g_ProvinceBase[province]` state. `ScoreProvinces.c`
+     clears this int32 array once per scoring pass, while
+     `ProcessTurn.c:2687` increments the current unit's source when selection
+     defers it back into the fleet-candidate tree. It therefore persists
+     across Monte Carlo trials and calls; it is not per-trial scratch state.
+   - Restored both consumers. The source/hold candidate is removed for a
+     convoy-rescore-map member only while its counter is below 500, and the
+     two class-2 target-pruning branches stop removing below-threshold nodes
+     once the source counter reaches 5000. Class-1 pruning remains independent
+     of that counter, matching the separate C branch.
+   - Three regressions cover the 499/500 boundary, the class-2 5000 boundary
+     and class-1 asymmetry, and the `ScoreProvinces` reset. The stale state
+     comment claiming game-end handlers were unported was also corrected;
+     OFF/DRW/SLO writers already exist in the inbound dispatcher.
+   - Full suite: **267 tests**. The production opening oracle is unchanged at
+     **7/7** across 767 candidates with seeds `0..9`; Russia seeds `{0,1,2}`
+     remain 2,461 candidates, 6/6 individual coverage, and 4/6 best. Seed 28
+     still produces the wider **5/6** candidate missing only `GAL-BUD`.
+
+60. DAIDE coast normalization and token fidelity
+
+   - NOW unit and retreat locations now translate DAIDE coast names such as
+     `NCS` and `SCS` to the internal diplomacy suffixes `NC` and `SC`.
+     Python previously retained `SCS` with a leading slash in active units,
+     which bypassed coast-specific fleet adjacency, and retained raw DAIDE
+     names in retreat records, which the retreat serializer could not map
+     back to a numeric token.
+   - The same shared normalization now covers XDO MTO and SUP-MTO
+     destinations, including embedded `PROV/COAST` forms. Coasted unit groups
+     such as `( RUS FLT ( STP SCS ) )` also resolve to their base province
+     instead of treating the nested token list as a province name.
+   - Corrected the numeric coast tables against the DAIDE token catalog:
+     `0x4606` is `SEC`, while south coast `SCS` is `0x4608`. Both generated
+     movement destinations and retreat records now store `SC` as `0x4608`;
+     southeast and southwest retain their distinct `SE`/`SW` mappings.
+     The general DipNet-to-DAIDE translator now also uses an explicit inverse
+     table, so diagonal coasts produce `NEC`/`SEC`/`SWC`/`NWC` rather than
+     invalid names formed by blindly appending `S`.
+   - Seven focused regressions cover NOW reachability, coasted retreat
+     preservation, XDO coast parsing, nested coasted XDO units, and numeric
+     and textual coast round-tripping. Full suite: **274 tests**. The
+     rerun opening oracle remains **7/7** with 8/22 diagnostic submitted
+     orders; Russia `S1902M` seeds `{0,1,2}` remain a complete-set miss.
+
+61. Static movement/convoy reach index and winter pressure
+
+   - Replaced the per-power occupied-unit approximation of
+     `EnumerateConvoyReach` with the source routine's persistent all-board
+     topology index at `DAT_00bc1e1c`. The C function has no power-index
+     parameter: it walks every legal source province plus AMY/FLT/coast token,
+     records ordinary movement BFS distances, and adds possible convoy
+     landings and post-landing army reach. On the Standard map the corrected index contains
+     75 base-province groups and 7,226 source-reach records; the old port left
+     the index completely empty.
+   - Preserved multi-coast identity in both source and destination records.
+     Direct neighbours now use distance wave one (rather than the old
+     off-by-one wave zero), fleet paths keep STP/SPA/BUL coast reach distinct,
+     and convoy/post-landing records use the recovered `300 * 1.5**distance`
+     score.
+   - `InitScoringState` now consumes those records as C does: only an occupied
+     army destination opens the inner walk, only a currently present source
+     unit with the exact unit/coast token contributes, and the contribution is
+     `10000 / distance_score`. Python previously treated every direct adjacent
+     unit as an unweighted 10,000-point contributor and could not represent
+     longer movement or convoy pressure.
+   - Wired the previously dead `ComputeWinterBuilds` port into WIN
+     `ScoreProvinces` and corrected its inner-tree condition. The first channel
+     now checks the actual legal build-token set instead of comparing source
+     and destination province numbers, and the friendly/established/enemy
+     channel uses the source-backed 2-D flags and exact source coast token.
+   - Four focused regressions cover the complete static index, direct and
+     convoy weights, multi-coast routes, live-token urgency, and both winter
+     score channels. Full suite: **278 tests**. The opening oracle remains
+     **7/7** with 8/22 diagnostic submitted orders; Russia `S1902M` seeds
+     `{0,1,2}` remain 4/6 best with 6/6 individual coverage. Game 10's complete
+     adjustment sweep remains **23/23** candidate-covered with zero failures.
+
+62. Token-keyed signed WIN candidate scoring
+
+   - Re-audited `ScoreOrderCandidates_OwnPower.c`. Its first pass walks the
+     full `(province, unit/coast token)` key, multiplies ten signed-int64 BFS
+     slots, and then adds a separate `g_AttackCount * attack_weight` term.
+     Python collapsed every build token to the army province channel, omitted
+     the attack term, iterated only the nine recovered vector constants, and
+     normalized through binary floats.
+   - Build scoring now reads the army or fleet BFS channel carried by each
+     candidate token. Remove scoring synthesizes the same key from the live
+     unit, so a fleet removal no longer receives an army-path score. Both
+     paths walk ten slots, preserve the known weight prefix, apply the
+     separately configured attack multiplier, and use truncation-toward-zero
+     signed division for normalization. Multi-coast fleet candidates read
+     their individual coast-key BFS rather than the folded base-province
+     maximum.
+   - The recovered per-province maximum is shared across AMY and FLT keys,
+     while the third-pass difference remains army-only. Full token identity is
+     preserved in `g_adjustment_candidate_scores` through final build choice.
+     The all-powers scorer now excludes coast-variant ids from its AMY domain
+     and excludes the invented plain-FLT key at multi-coast bases; normalized
+     coast-key maxima are folded back to the base id used by downstream move
+     and support code.
+   - The supplied source proves the two attack-weight fields at Albert
+     `+0x4df8` and `+0x4e50`, but does not include their constructor stores;
+     they remain explicit zero-valued state parameters instead of guessed
+     constants. Six regressions cover the attack term, army/fleet key
+     separation, shared-max dithering, large-int normalization, and live fleet
+     removal and multi-coast scoring. Full suite: **284 tests**. Game 10's adjustment sweep
+     remains **23/23** candidate-covered and improves diagnostic exact
+     selection from 15/23 to **16/23**, with zero failures.
+
+63. Complete DispatchSingleOrder state projection
+
+   - Re-audited `DispatchSingleOrder.c` and every recovered `BuildOrder_*`
+     callee. The Python function claimed to project complete order state but
+     HLD wrote only its type, MTO omitted its coast, score, history, convoy
+     map, and builder calls, CTO omitted its map/score/route depth, and CVY
+     omitted the conveyed-army source and AMY token. Those omissions left
+     press-agreed orders structurally different from Monte Carlo-built orders.
+   - HLD, MTO, CTO, and CVY now populate the recovered destination/coast,
+     signed score pair, incoming marker, move-history, convoy-route, route-leg,
+     source-unit, and registration fields. Embedded coast destinations such as
+     `STP/NC` are parsed before province lookup, and CTO lists of four or more
+     fleets take the recovered no-commit branch instead of being truncated.
+   - SUP dispatch now calls the existing source-backed
+     `build_order_sup_hld`/`build_order_sup_mto` routines, preserving their
+     trust-tier, convoy-active, chain-robustness, conflict, and proximity side
+     effects instead of duplicating only the first three table writes.
+   - Restored the C duplicate-unit-order no-op guard. The Python selection and
+     oracle layers intentionally start from already-built candidate rows, so
+     they now request a formatting-only path that serializes those rows without
+     rerunning builder mutations; fresh inbound dispatch retains the C guard.
+   - Five focused regressions cover complete HLD, coasted MTO, CTO, CVY, SUP,
+     oversized convoy, and duplicate-order behavior. Full suite: **289 tests**;
+     compileall and `git diff --check` pass. The production opening oracle
+     remains **7/7** candidate-covered with 8/22 diagnostic submitted orders.
+
+64. Unified source-backed support builders
+
+   - `ProcessTurn` retained private copies of both SUP builders even after the
+     recovered implementations were added to `moves/support.py`. The copies
+     had already diverged: their shared SUP-MTO tail treated adjacency to the
+     supported mover as the safety condition, while
+     `BuildOrder_SUP_MTO.c:120-125` checks adjacency to the attack target (or a
+     hostile unit already standing at that target).
+   - Every ProcessTurn support call now uses the same source-backed
+     `build_order_sup_hld` and `build_order_sup_mto` functions as inbound
+     dispatch. This also restores the top-level implementation's target-power
+     proximity update and prevents future dispatch/trial drift.
+   - A regression distinguishes mover adjacency from target adjacency and
+     verifies that the former alone produces the recovered chain-conflict
+     marker. Full suite: **290 tests**. The production opening oracle remains
+     **7/7** candidate-covered with 8/22 diagnostic submitted orders.
+
+65. Exact unit/coast legality gates
+
+   - Removed the obsolete private SUP_HLD/SUP_MTO implementations from
+     `ProcessTurn` after switching all callers to the shared recovered
+     builders. This deletes the known-wrong mover-adjacency branch rather than
+     leaving it available for accidental reuse.
+   - Re-audited `IsLegalMove.c` and the direct-move first branch of
+     `FUN_004619f0`. Both select the adjacency sub-list with the moving unit's
+     exact type/coast token. `IsLegalMove` then searches with
+     `(destination province, coast=0)` and accepts a province match without
+     comparing the requested destination coast. Python's
+     convoy predicate instead called province-only `can_reach`, admitting
+     fleets across army-only borders, while ordinary MTO validation omitted
+     the source coast.
+   - The shared reach predicate now carries the live source coast for MTO,
+     direct convoy-legality, supported-unit reach, and supporter reach. The
+     destination remains province-only in every recovered legality helper;
+     coast syntax is preserved for serialization but is not an extra rejection
+     gate. This rejects fleet support across land-only province borders without
+     making Python stricter than Albert for STP/SPA/BUL destinations.
+   - Validator destination parsing now accepts the same string, tuple/list,
+     and compound-dict forms as dispatch, and rejects missing supported units,
+     unit-type mismatches, and unresolved convoy endpoints instead of silently
+     committing them.
+   - Seven focused regressions cover fleet terrain, source coast,
+     destination-coast insensitivity, direct army movement, supporter terrain,
+     structured destination parsing, and unresolved-unit rejection. Full suite: **297 tests**;
+     compileall and `git diff --check`
+   pass. The production opening oracle remains **7/7** candidate-covered
+   with 8/22 diagnostic submitted orders.
+
+66. Province-only destination legality and alliance guard words
+
+   - Corrected the preceding coast audit after re-reading the recovered
+     `IsLegalMove.c`: its outer lookup is keyed by the moving unit's exact
+     type/source-coast token, but its inner search constructs
+     `(destination province, coast=0)` and checks only the resulting province.
+     Python therefore retains exact source-coast and terrain filtering while
+     preserving destination coasts solely for serialization, matching Albert
+     instead of rejecting a coast choice that this helper never examines.
+   - Fixed all three `check_order_alliance` designation slots to use their
+     signed high word as the activity guard. The port's comments and recovered
+     control flow said `hi >= 0`, but the implementation tested the low power
+     value; a stale low word paired with `hi == -1` could incorrectly trigger
+     an ally-trust rejection.
+   - Two additional regressions exercise inactive stale low words and active
+     trust enforcement across slots A, B, and C. Full suite: **299 tests**;
+     focused dispatch tests, compileall, and `git diff --check` pass.
+
+67. ProcessTurn negotiated-map wiring
+
+   - Recovered the identities of three containers that the trial port had
+     modelled as unwritten `g_order_history`, `g_ally_order_history`, and
+     `g_alt_order_list` aliases. `DAT_00bb6f28` and `DAT_00bb7028` are the
+     existing DMZ promise/counter maps; `DAT_00bb69f8` is the accepted-XDO
+     source→destination map already populated by the XDO handler.
+   - `ProcessTurn` now builds Albert's reachable negotiated-province set from
+     all non-enemy promise maps for own-power trials, or the trusted power's
+     counter map for foreign trials. Its per-power snapshot and ring/exploit
+     membership checks now use the canonical accepted-XDO map, without
+     clearing or rewriting that persistent press state during the exploit
+     pass.
+   - `EvaluateOrderProposal` now reads that same canonical map for the recovered
+     750-point alternate-order penalty. Three regressions cover both DMZ
+     branches, XDO snapshot identity, and matching-versus-mismatching penalty
+     behavior. Full suite: **302 tests**; compileall and `git diff --check`
+     pass. The no-press opening oracle remains **7/7** candidate-covered with
+     8/22 diagnostic submitted orders.
+
+68. Shared own-occupied destination tail
+
+   - Removed the remaining simplified branch in `ProcessTurn`'s accepted
+     proposal path. It previously assigned a constant convoy-fleet score and
+     suppressed every candidate entering an own-occupied province, omitting
+     Albert's recovered `2579-2694` control flow.
+   - Both proposal-derived and ordinary candidates now share one source-backed
+     resolver. A pressured stationary occupant receives SUP-HLD, an unordered
+     occupant requeues the mover with the destination candidate's decremented
+     score and increments `g_ProvinceBase`, a vacating occupant admits the
+     move, and terminal/unscored cases reject it.
+   - Three regressions cover support generation, score-based deferral, and the
+     rejection path. Full suite: **305 tests**; compileall and
+     `git diff --check` pass. The opening oracle remains **7/7**
+     candidate-covered with 8/22 diagnostic submitted orders.
+
+69. Unified negotiated-order dispatch and exact VIA preservation
+
+   - Removed `ProcessTurn`'s second, partial `DispatchSingleOrder`
+     implementation. It omitted recovered HLD/MTO/support side effects and
+     reconstructed press-agreed CTO chains from a deterministic board-order
+     convoy prepass instead of using the VIA provinces carried by the parsed
+     order itself.
+   - Negotiated alliance/general orders now use the shared source-backed
+     dispatcher. A `record_submission=False` mode preserves its order-table
+     mutations while preventing Monte Carlo trials from appending the same
+     negotiated order to the final submission queue on every iteration.
+   - Removed the generation-time convoy prepass from production flow. Ordinary
+     trial candidates still rebuild convoy routes from the live ordered fleet
+     candidate tree, while negotiated CTOs retain their explicit parsed chain,
+     matching the two distinct recovered C paths.
+   - A regression verifies exact VIA depth/legs and an untouched submission
+     queue. Full suite: **306 tests**; compileall and `git diff --check` pass.
+     The opening oracle remains **7/7** candidate-covered with 8/22 diagnostic
+     submitted orders.
+
+70. Per-power proposal heat gates and support-marker identity
+
+   - Recovered `EvaluateOrderProposal.c:687-748` advances its reach-array
+     offsets by one 0x800 power block on every heat-score iteration. The port
+     instead indexed every SUP-MTO, SUP-HLD, HLD, and CVY gate with the
+     evaluated power, flattening each result across all seven heat slots.
+   - SUP-MTO now tests Albert's five exact channels per loop power: own reach
+     at the supporter source; the signed `DAT_005cf0e8/ec` support-candidate
+     marker, convoy reach, and support reach at the attack destination; and
+     support reach at the source. SUP-HLD now reads its supported province from
+     the order destination field written by `BuildOrder_SUP_HLD`, rather than
+     an unused secondary slot.
+   - Removed the unwritten `g_convoy_support` duplicate. The recovered low/high
+     words are one signed support-candidate value, already modelled and written
+     as `g_support_candidate_mark`.
+   - Three regressions distinguish the powers and source/destination channels
+     for SUP-MTO, SUP-HLD, and HLD. Full suite: **309 tests**; compileall and
+     `git diff --check` pass. The opening oracle remains **7/7**
+     candidate-covered with 8/22 diagnostic submitted orders.
+
+71. Exact MTO/CTO heat contribution and conviction gate
+
+   - Replaced `EvaluateOrderProposal`'s simplified move-heat proxy with the
+     recovered `C:531-659` decision tree. Albert checks each loop power's own
+     reach at both endpoints first, then destination support marker plus
+     source/destination convoy and support reach, rather than comparing a
+     proximity row against the evaluated power's source reach.
+   - Direct own reach now adds the moving power's token-specific destination
+     score plus source, destination, and 250. Indirect support/convoy reach adds
+     the same score and provinces plus 1000. A zero-reach move contributes only
+     through the recovered third-party designation-A adjacency/net-reach test.
+   - The near-victory +50 conviction shortcut now uses designation B at the
+     source and compares threat against own-plus-ally reach. The old branch
+     substituted SC occupancy and proximity, changing both its eligibility and
+     result.
+   - Two regressions distinguish direct/indirect score formulas and verify the
+     designation/threat shortcut. Full suite: **311 tests**; compileall and
+     `git diff --check` pass. The opening oracle remains **7/7**
+     candidate-covered with 8/22 diagnostic submitted orders.
+
+72. Canonical near-victory flag and secondary exploit walk
+
+   - Removed the unwritten `g_stab_mode` duplicate. Both recovered
+     `ProcessTurn` gates read `DAT_00baed69`, the near-victory state already
+     populated by `CAL_BOARD` and modelled as `g_other_power_lead_flag`; the
+     duplicate was initialized to zero locally and could never enable the
+     secondary-target branch.
+   - Recovered the subsequent target walk instead of scanning trust alone. It
+     now checks the evaluated power's negotiated/press-sent row, takes Albert's
+     random one- or two-power steps, skips a zero-trust candidate, wraps exactly
+     as the C loop does, and aborts if it returns to the primary exploit power.
+   - Two regressions cover the canonical flag/threshold and prove that a
+     trusted but unnegotiated power is skipped for the next press-sent target.
+     Full suite after this slice: **313 tests**.
+
+73. Deceit adjustment supply-center and signed trust gates
+
+   - Corrected `EvaluateOrderProposal`'s conviction/deceit adjustment to match
+     the recovered province-record byte. Albert applies it only to an MTO whose
+     destination is a supply center occupied by another power's army; the port
+     treated that byte as generic occupancy and scored attacks on non-SCs.
+   - Restored both signed lo/hi trust comparisons. Forward trust 0 or 1 belongs
+     to the 50-point tier; larger forward trust selects 150 only when reverse
+     trust is greater than 1, otherwise 110. The prior float-only `< 1` test
+     misclassified forward trust 1.
+   - Two regressions cover the non-SC exclusion and the trust-1 boundary. Full
+     suite: **315 tests**; compileall and `git diff --check` pass.
+
+74. Unified reach pairs and unit-anchored propagation
+
+   - Removed `g_direct_reach_flag` and `g_extended_reach_flag`, which exposed
+     the high words of `DAT_005c48e8/ec` and `DAT_005ba0e8/ec` as independent
+     state. Each address pair is one signed reach value, now represented only
+     by `g_convoy_reach` or `g_support_reach`.
+   - Restored exact unit-type/source-coast filtering for the initial reach
+     insertion. Armies no longer mark sea provinces merely because they appear
+     in the province-only adjacency map.
+   - Replaced the generic three-round graph flood with Albert's recovered
+     unit-list loop. Each round expands only from a reached province currently
+     containing that power's unit; an empty reached province is not promoted to
+     a frontier. The second-leg SC support marker and its unfiltered final
+     neighbor expansion remain in their source lifecycle slot.
+   - Two regressions cover terrain filtering/empty-frontier suppression and SC
+     support-neighbor expansion. Full suite: **317 tests**; compileall and
+     `git diff --check` pass. The opening oracle remains **7/7**
+     candidate-covered with 8/22 diagnostic submitted orders.
+
+75. Paired score-state identities and exact target classification
+
+   - Corrected the two target-classification pairs: `g_prov_target_flag` /
+     `g_target_flag2` model `DAT_005ee8e8/ec`, while `g_target_flag` /
+     `g_attack_count2` model `DAT_005e40e8/ec`. The stale state documentation
+     had incorrectly attached `g_attack_count2` to the total-reach address.
+   - Restored the recovered province-classification walk. Albert evaluates
+     every real non-SC and only the evaluated power's controlled SCs; the port
+     incorrectly required an occupying unit. The decision tree now reads own
+     reach (`DAT_0058f8e8/ec`), unit presence, total reach, and enemy reach in
+     their source-proven roles instead of substituting enemy reach for own
+     reach.
+   - Fixed ProcessTurn's second support pass to read positive total reach at
+     `DAT_0052b4e8/ec`. It previously read `g_attack_count2`, the unrelated
+     high word of `g_target_flag`. Total reach is now stored as one signed
+     int64.
+   - Unified `g_needs_rescore` and `g_top_reach_flag`: both names refer to the
+     single `DAT_005b98e8/ec` sentinel initialized to -1, selectively cleared
+     to 0, and promoted to 1. The split port reset one array but ran a duplicate
+     scoring pass over a second zero-filled array, opening the support/threshold
+     gate for every province. The duplicate pass was removed.
+   - Removed `g_enemy_pressure_secondary`, an unwritten independent binding of
+     the high word already represented by the combined signed int64
+     `g_enemy_reach_score`.
+   - Five regressions cover empty-province classification, class-2 own reach,
+     contested reach, total-reach support gating, and sentinel object identity.
+     Full suite: **322 tests**; compileall and `git diff --check` pass. The
+     bounded opening oracle is now **6/7** candidate-covered with the same
+     **8/22** diagnostic submitted orders; Germany's bounded pool reaches 2/3
+     reference unit orders and misses `A MUN - RUH`. This replaces the earlier
+     7/7 claim, which depended on the source-inaccurate always-zero alias.
+
+76. Source-ordered support rings and retry counts
+
+   - Removed a same-power occupancy/swap gate that Python had inserted inside
+     `BuildOrder_MTO`. The recovered builder commits its fields unconditionally;
+     ordinary-candidate self-occupancy handling lives later in ProcessTurn.
+     The early gate made the first edge of `A→B, B→C, C→A` see B as unordered
+     and turn the entire precommitted ring into holds.
+   - Corrected Albert's accepted-XDO test around that ring. The three recovered
+     `find(...) == end()` checks are nested: the builder runs only when none of
+     the three sources is constrained. Python required all three sources to be
+     present, simultaneously disabling ordinary rings and permitting conflicts
+     with negotiated orders.
+   - Corrected the support-opportunity rerun count in `send_GOF`. C reuses the
+     power's unit count (`unit_count * 10 / 10`); the port used supply-center
+     count, which diverges after captures and disbands.
+   - Three regressions capture the exact three-MTO snapshot, prove that any
+     accepted-XDO source blocks Albert's ring, and distinguish five units from
+     two supply centers in the rerun count. Full suite: **325 tests**;
+     compileall and `git diff --check` pass. The bounded opening oracle remains
+     **6/7** candidate-covered and **8/22** diagnostic submitted orders, with
+     602 complete legal candidates and no Python failures.
+
+77. Per-power and per-unit support-opportunity records
+
+   - Corrected the score stored in each `BuildSupportOpportunities` record.
+     Recovered C indexes `g_MaxProvinceScore` with `(power, target)`; Python
+     used a 1-D compatibility maximum across all powers, changing the retry
+     tree's ordering whenever another power valued the province more highly.
+   - Restored the three actual unit-token walks. The unit at P filters P→Q,
+     the own unit occupying Q filters Q→R, and the own unit occupying R filters
+     R→P. Python reused P's type for all three edges and accepted Q/R from
+     scratch presence flags without requiring real unit nodes. That rejected
+     valid mixed army/fleet cycles and could invent cycles whose later units
+     could not traverse their assigned edges.
+   - Two regressions distinguish the per-power record score from the global
+     maximum and exercise a valid mixed A/F/F ring. Full suite: **327 tests**;
+     compileall and `git diff --check` pass. The bounded opening oracle remains
+     **6/7** candidate-covered and **8/22** diagnostic submitted orders, with
+     597 complete legal candidates and no Python failures.
+
+78. Coast-complete support-opportunity ring records
+
+   - Restored the three coast tokens carried by each recovered seven-word
+     `BuildSupportOpportunities` record: P→Q, Q→R, and R→P. Python retained
+     only the three provinces, so the later retry path reused default or stale
+     ring-coast state when a fleet leg entered a multi-coast province.
+   - The GOF retry loader now installs those three recorded coast values into
+     `g_ring_coast_a`, `g_ring_coast_b`, and `g_ring_coast_c` before rebuilding
+     the ring. One focused regression exercises distinct coast tokens on two
+     legs, while the existing rerun regression verifies all three state
+     channels are restored.
+   - Full suite: **328 tests**; compileall and `git diff --check` pass. The
+     bounded opening oracle remains **6/7** candidate-covered and **8/22**
+     diagnostic submitted orders, with 597 complete legal candidates and no
+     Python failures.
+
+79. Germany opening gap classified as missing press context
+
+   - Traced Germany's absent `A MUN - RUH` through the complete recovered
+     filter chain. MUN's AMY score and shared per-province maximum are both
+     614, so the source-backed sentinel stays -1 and supplies a threshold of
+     599. RUH is an empty, uncontested class-1 target with score 364, so
+     `ProcessTurn.c:2235–2391` removes it exactly as recovered.
+   - The paired game is explicitly full-press and its S1901M log contains a
+     human-language agreement to demilitarize BUR. The offline oracle cannot
+     reconstruct sender-tagged DAIDE DMZ/XDO/designation state from those
+     free-text messages, and intentionally begins with those containers
+     empty. That missing strategic input can redirect MUN away from BUR/SIL;
+     weakening the score filter would be a source-inaccurate workaround.
+   - The bounded no-press replay therefore remains **6/7** candidate-covered,
+     with this pair retained as a context-limited oracle miss rather than an
+     open sentinel implementation defect.
+
+80. Token-specific winter occupied-centre penalty
+
+   - Corrected the final `ScoreProvinces` BFS reseed for WIN phases. Recovered
+     C subtracts 2500 only when the current `(province, unit token)` key
+     matches the unit occupying that power's centre. Python applied the
+     penalty before splitting AMY and FLT channels, so either occupant
+     incorrectly reduced both possible build-token scores.
+   - The fleet path now also preserves coast-key identity: a fleet on one
+     coast of a multi-coast centre penalizes only that coast key, while the
+     compatibility base remains the maximum of the two legal fleet keys.
+   - Two regressions cover army-versus-fleet separation and a distinct
+     north/south-coast case. Full suite: **330 tests**; compileall and
+     `git diff --check` pass. The game 10 W1901A adjustment oracle generates
+     all **4/4** Albert complete order sets across 33 legal complete
+     candidates, with no Python failures.
+
+81. Board-ownership and supply-count channel separation
+
+   - Corrected `EvaluateProvinceScore`'s adjacent-threat strength. Recovered C
+     reads `curr_sc_cnt[adjacent_unit_power]`; Python summed that power's
+     `g_sc_ownership` row, which is the unit-presence scratch table after
+     `ScoreProvinces`. Captures, waives, and disbands therefore substituted
+     unit count for supply-centre count. The reader now uses board-derived
+     `sc_count` directly.
+   - WIN build eligibility now reads `g_board_sc_ownership`, matching
+     `GameBoard_GetPowerRec`, and no longer relies on saving and restoring the
+     dual-purpose scratch table around scoring. The generic `get_power_rec`
+     adapter was aligned to the same board channel.
+   - Two regressions distinguish 12 centres from one unit and real centre
+     ownership from a stale unit-presence hit. Full suite: **332 tests**;
+     compileall and `git diff --check` pass. Opening remains **6/7** covered
+     with 597 candidates, W1901A remains **4/4** covered with 33 candidates,
+     and the divergent-count F1902M checkpoint generates 2,692 legal
+     candidates with **3/7** Albert sets complete and no Python failures;
+     England (3 centres, 2 units) is candidate-covered.
+
+82. Live source-coast filtering for threatening fleets
+
+   - Corrected `EvaluateProvinceScore`'s adjacent-unit reach gate to pass the
+     threatening fleet's live coast into `can_reach_by_type`. Recovered C
+     filters the actual unit token; Python passed only FLT and therefore used
+     the union of both source coasts, allowing a fleet on SPA/NC, BUL/EC, or
+     STP/NC to threaten destinations reachable only from the other coast.
+   - A focused regression proves the same fleet is excluded from an SC-only
+     edge while on the north coast and included after moving its token to the
+     south coast. Full suite: **333 tests**; compileall and `git diff --check`
+     pass. The bounded opening oracle remains **6/7** candidate-covered and
+     **8/22** diagnostic submitted orders, with 597 complete legal candidates
+     and no Python failures.
+
+83. Refreshed bounded opening baseline
+
+   - Reran the same candidate oracle on S1901M for games 10, 100, and 1000 at
+     primary seed 1, then unioned seeds 0–9 only for misses. The current port
+     generates **18/21** Albert complete sets among 1,866 distinct legal
+     candidates; every game reaches 6/7 and no Python run fails.
+   - The three remaining misses are Germany's `A MUN - RUH` in games 10 and
+     100, which share the full-press/unserialized-context limitation, and
+     Russia's `A WAR - UKR` component in game 1000. France's previously
+     absent `MAR-SPA`/`PAR-PIC` combinations appear by seed 8, and game 1000
+     Germany's `BER-KIE`/`MUN-BUR` combination appears by seed 4.
+   - Diagnostic selection across the sample is **2/21 exact sets** and
+     **26/66 unit orders**. This replaces, rather than extends, the obsolete
+     pre-token-key 21/21 claim.
+
+84. Home-centre membership versus current-controller scoring
+
+   - Corrected four `ScoreProvinces.c:950–1228` branches after separating two
+     province-record channels. `GameBoard_GetPowerRec(province+0x14)` queries
+     the static set of powers for which the province is a home centre; the
+     power token at `province+0x20` is the current SCO controller. Python used
+     current ownership for the first and occupying-unit ownership for the
+     second.
+   - Lost-home detection, the controller/trust gate into
+     `EvaluateProvinceScore`, the home-centre 80/150 clamps, and the final
+     retained-home 90 versus lost-home 150 override now use the recovered
+     channels. A fleet occupying a retained home therefore scores 90 just
+     like an army; its token-specific WIN penalty still applies only to FLT.
+   - Corrected the adjacent build-pending reseed as part of the same channel
+     split. C writes 600 to every static home only when the power currently
+     controls none of its homes; Python tested whether an army occupied a
+     currently owned centre. One regression covers an empty retained home and
+     a completely lost home set.
+   - Full suite passes **334 tests**; compileall and `git diff --check` pass.
+     The refreshed bounded openings remain **18/21** covered with no failures,
+     now across 1,866 candidates: 583 for game 10, 615 for game 100, and 668
+     for game 1000. W1901A remains **4/4** candidate-covered. The deterministic
+     misses remain Germany `MUN-RUH` (current 599/364 threshold/target scores)
+     and no-press game-1000 Russia `WAR-UKR` (539/481).
+
+85. Controlled-centre effective-power scoring
+
+   - Completed the fallback-side controller/designation split in
+     `ScoreProvinces.c:980–1228`. A foreign-controlled centre now keeps its
+     SCO controller even when it is empty or fleet-occupied; only an
+     uncontrolled centre enters the neutral/opening-target branch. Python had
+     treated those controlled centres as neutral and assigned 75 instead of
+     the controller/trust score of 10 or 1.
+   - Restored the distinct own-controller exception: when designation A names
+     a foreign power, that designation becomes the effective power even if no
+     live-unit lookup supplies it. The entry gate itself now follows C's
+     matching designation-A/designation-B conditions.
+   - Corrected the controller-count adjustment's decompiled jump direction.
+     The +5 applies when `controller_centres * 100 / win_threshold <= 12`, not
+     when it is above 12; the under-two-centre +20 branch is unchanged. Two
+     regressions separate foreign control from UNO and designation state from
+     live unit presence.
+   - Full suite passes **336 tests**; compileall and `git diff --check` pass.
+     The refreshed openings remain **18/21** covered with no failures across
+     1,856 candidates: 597 for game 10, 608 for game 100, and 651 for game
+     1000. Diagnostic selection is **1/21** exact and **23/66** per-unit.
+     W1901A remains **4/4** covered across 32 candidates. Current deterministic
+     score gaps are Germany `MUN-RUH` at 691/433 and no-press game-1000 Russia
+     `WAR-UKR` at 664/595.
+
+86. Split early and main candidate-BFS epochs
+
+   - Restored the two distinct tree epochs in `ScoreProvinces.c:440–638` and
+     `1538–1738`. C first seeds all ten token-keyed slots from 1/5 on static
+     home centres. After main province scoring it overwrites round 0, clears
+     and recomputes only rounds 1–8, and deliberately preserves round 9 from
+     that early home-only diffusion. Python ran both epochs after main scoring
+     and recomputed round 9, collapsing two different source channels.
+   - Implemented C's intervening movement-phase clear of an early round-9 key
+     when its province has no enemy reach and every adjacent centre is own or
+     highly trusted. UNO/uncontrolled centres retain the key through their
+     default-zero trust slot. A regression proves the main-score round 8,
+     cleared home round 9, and retained neutral-frontier round 9 coexist.
+   - Corrected the adjacent fallback boundary at C:1049/1230. Provinces that
+     enter `EvaluateProvinceScore` jump directly to the loop tail and skip
+     fallback Adjustments 4–9; in particular, the 90/150 home override is not
+     unconditional. Keeping evaluated own centres at their computed score
+     restores the intended relation between source thresholds and frontier
+     targets.
+   - Full suite passes **337 tests**; compileall and `git diff --check` pass.
+     W1901A remains **4/4** candidate-covered across 32 candidates. The
+     opening sample now reaches **21/21** at primary seed 1 with no failures,
+     across exactly 520 candidates per game (1,560 total). This closes Germany
+     `MUN-RUH`, Italy `NAP-ION`, Russia `MOS-UKR`, and no-press game-1000
+     Russia `WAR-UKR` without weakening any target filter.
+
+87. S1902M Russia combination revalidation
+
+   - Re-ran the former hard game-10 Russia checkpoint after the split-BFS and
+     fallback-boundary corrections. The complete six-order Albert set now
+     appears at seed 6; the union through that seed contains 3,196 distinct
+     legal candidates and all six component orders, with no Python failures.
+   - This closes the previously documented 5/6 ceiling without any special
+     convoy or order-set exception. The remaining submitted-order difference
+     is selection-only and still depends on unavailable process PRNG history.
+
+88. Proposal-support lifetimes and complete late support sweep
+
+   - Corrected the no-press proposal record contract from
+     `BuildSupportProposals.c`. Record fields 4–8 are supporter power,
+     supporter province, mover power, mover province, and destination;
+     `g_xdo_press_sent` is indexed by prospective supporter then requester.
+     `ProcessTurn` consumes those records as `SUP_HLD` when mover equals
+     destination and `SUP_MTO` otherwise. Python had transposed the matrix,
+     reversed the parties, and emitted movement orders instead. The outer
+     random gate is now the recovered 15%/late-game 35% test, while the 65%
+     draw remains confined to secondary-target selection. `send_GOF` now
+     clears the shared proposal-history/deal container at its source lifetime
+     boundary.
+   - Restored `ProcessTurn.c:588–624`'s per-trial proximity reset: every runtime
+     cell starts at signed -1 and only active units' owner/province cells are
+     zeroed. The live support-demand refresh now computes the recovered peak
+     and total hostile reach from `g_ThreatScore - g_ProximityScore` before
+     each candidate unit and after the late support passes; the implementation
+     uses an equivalent vectorized reduction to avoid a large Python runtime
+     penalty.
+   - Completed `ProcessTurn.c:3033–3640`'s two-pass HLD conversion. The port had
+     implemented only destinations present in the move map (`SUP_MTO`) and
+     omitted own occupied non-moving destinations (`SUP_HLD`). The move branch
+     admits incoming strength equal to demand; the hold branch requires it to
+     be strictly lower; both receive the source's positive-total-reach override
+     on pass two. Removed two immediate synthetic support-emission passes after
+     `AssignHoldSupports`; that routine only ranks the shared candidate tree.
+     Support emission belongs to the recovered resolver and late sweep.
+   - The formerly impossible game-1000 orders `F BAL S A DEN` (F1902 Germany)
+     and `A RUM S A UKR` (S1903 Russia) are now generated. Bounded seeds 0–9
+     cover every individual reference order in those two cases and S1903
+     Italy; exact later-game combinations remain context/selection diagnostics.
+     The production-cap game-10 S1901 oracle remains **7/7** complete sets at
+     primary seed 1 across 528 legal candidates, and the production-cap game-10
+     S1902 Russia six-order set remains generated at seed 6 across 961
+     candidates. Full suite: **345 tests**; compileall and `git diff --check`
+     pass.
+
+89. Supported-unit coast serialization
+
+   - Corrected `_build_order_seq_from_table` to serialize every referenced live
+     unit through one coast-aware formatter. The recovered
+     `SerializeOrderToDAIDE.c` support cases resolve the supported unit record
+     and pass it to the complete unit serializer; Python instead rebuilt
+     `target_unit` as only type plus base province. Consequently legal orders
+     such as `A POR S F SPA/SC` and `F BOT S F STP/NC` were emitted as support
+     for nonexistent plain-coast fleets and failed exact oracle comparison.
+     The correction applies to both `SUP_HLD` and `SUP_MTO`; the same helper is
+     also used by the CTO/CVY compatibility sequences that name a live unit.
+   - Added direct support-hold and support-move regressions, including a full
+     builder → validator → existing-order formatter round trip proving that
+     the supported fleet's source coast survives independently of the move
+     destination coast. Game-1000 F1903 France now matches Albert's exact
+     three-order set at seed 0. F1903 Russia's former hard atom is also closed:
+     all six atoms and the complete reference set occur in the candidate pool.
+   - Across all 125 game-1000 movement phase/power pairs, bounded seeds 0–9 at
+     the diagnostic proposal cap 0 now cover **63/125** complete Albert sets,
+     up from **46/125** before the serializer correction, with no generation
+   failures. The earliest remaining hard examples are context-limited:
+   Austria's absent `A VIE S A TYR - BOH` supports an Italian unit, while the
+   saved logs contain only human free-text press and cannot reconstruct the
+   necessary XDO state. Full suite: **347 tests**; compileall and
+   `git diff --check` pass.
+
+90. Order-record unit/coast token fidelity
+
+   - Restored `DAT_00baedac` (order-table column 3) from the recovered builder
+     contract. `ParseDestinationWithCoast.c` proves that a plain destination
+     inherits the moving unit token (`AMY` = `0x4200`, `FLT` = `0x4201`), while
+     a compound destination stores its explicit `0x46xx` coast token.
+     `BuildOrder_HLD.c` likewise copies the live unit record's token, and
+     `BuildConvoyOrders.c` propagates the convoyed army token to the CTO and
+     every CVY row. Python instead left holds at the reset sentinel and wrote
+     zero for plain moves and convoy rows.
+   - Added one canonical unit/location-token mapper and applied it to direct
+     dispatch, Monte Carlo hold/move builders, and convoy assembly. This field
+     is not merely textual metadata: `snapshot_order_entry` includes it in the
+     five-field candidate identity, so wrong tokens can alter duplicate
+     collapse and stable BST ranking. Regression coverage now checks army
+     holds, plain fleet moves, and both army/fleet rows of a convoy.
+   - The diagnostic-cap game-10 opening remains **7/7** candidate-covered, as
+     do the corrected game-1000 F1903 France and Russia cases. The production
+     game-10 opening also remains **7/7** at primary seed 1 and contains exactly
+     **528** candidates; their internal identities now carry the source-faithful
+     tokens. Full suite: **349 tests**; compileall and `git diff --check` pass.
+
+91. Late support-sweep convoy promotion
+
+   - Restored `ProcessTurn.c:3247–3318`'s second entry into the shared
+     `LAB_00453cac` convoy-assignment promotion. During either late HLD support
+     pass, a destination with a pending assignment can consume the held source
+     as an `MTO` instead of emitting `SUP_MTO`. This entry uses the same strict
+     `(rand() / 0x17) % 100 > 60` gate as the earlier Phase-2 path, then adds
+     late-only requirements that the source have exactly one incoming move and
+     no support-chain conflict. The implementation preserves the recovered RNG
+     chronology by testing those source fields only after consuming the draw.
+   - Added the source-specific late MTO writer rather than calling the ordinary
+     `BuildOrder_MTO` equivalent. The recovered branch calls
+     `BuildOrder_CTO_Ring` and manually updates only the move map, order fields,
+     incoming marker, and destination score; it does not execute the ordinary
+     builder's move-history, convoy-registration, or support-assignment tail.
+     Regressions cover both late-only rejection gates, the complete assignment
+     promotion to depth 5, the plain-fleet token, move-map insertion, and the
+     absence of the ordinary move-history side effect.
+   - The production-cap game-10 `S1901M` oracle remains **7/7** complete Albert
+     sets at primary seed 1 across exactly **528** legal candidates, with 9/22
+     diagnostic submitted orders and no failures. Full suite: **352 tests**;
+     compileall and `git diff --check` pass.
+
+92. Late versus public support-writer contracts
+
+   - Separated the late `ProcessTurn.c:3319–3635` support setup from the public
+     `BuildOrder_SUP_MTO` / `BuildOrder_SUP_HLD` builders. The late block calls
+     only the low-level support ring writers, manually writes the order and
+     score fields, and then performs the same chain-robustness scan. Python had
+     routed it through the complete public builders, which additionally clear
+     army score fields, register convoy-fleet state, and apply foreign-unit
+     trust and `g_convoy_active_flag` side effects. Those extra tails can alter
+     subsequent candidate filtering even though they are absent from this C
+     path. The shared builders now expose an explicit late-sweep mode that
+     retains the common chain logic without those ordinary-builder effects.
+   - Restored the separate `BuildOrder_SUP_MTO.c:216–219` tail for ordinary
+     support-move construction. After either chain outcome, a target whose
+     assignment state is pending (`1`) is reset to zero and its
+     `g_SupportAssignmentMap` entry returns to the `-1` sentinel. The Python
+     public builder previously left both stale. This cleanup is intentionally
+     excluded from late-sweep mode because the manual ProcessTurn path does not
+     execute it.
+   - Regressions prove that foreign late support leaves the global trust
+     adjustment and convoy-active flag unchanged, while a public support-move
+     order clears its pending target assignment. The production-cap game-10
+     `S1901M` oracle remains **7/7** complete sets across exactly **528** legal
+     candidates, with 9/22 diagnostic submitted orders and no failures. Full
+     suite: **354 tests**; compileall and `git diff --check` pass.
+
+93. Proposal-exploit support writer
+
+   - Restored `ProcessTurn.c:1151–1203`'s proposal-history support writer as a
+     distinct path. After the proposal trust and negotiated-province gates, C
+     calls only the low-level `SUP_HLD`/`SUP_MTO` ring writer and manually sets
+     the order record, source score, requester trust tier, and destination
+     convoy-active flag. Python instead called the complete public support
+     builders, which additionally registered convoy-fleet state and ran the
+     chain-robustness scan, potentially increasing the supported destination's
+     live strength or conflict counter. Those effects do not occur in this
+     proposal-exploitation branch.
+   - Added a source-specific proposal writer keyed by the requester power stored
+     in the recovered ProposalHistory record. The regression now proves that a
+     foreign `SUP_MTO` proposal still applies the expected trust tier and
+     convoy-active marker while leaving convoy registration and both destination
+     chain counters untouched. `EvaluateOrderProposal`'s superficially similar
+     low-level calls were audited separately and need no table mutation: they
+     rebuild C's separate unit-node order state after `ResetPerTrialState`, which
+     the Python port intentionally elides.
+   - The production-cap game-10 `S1901M` oracle remains **7/7** complete Albert
+     sets across exactly **528** legal candidates, with 9/22 diagnostic
+     submitted orders and no failures. Full suite: **354 tests**; compileall and
+     `git diff --check` pass.
+
+94. Typed `AssignSupportOrder` reach
+
+   - Corrected both `AdjacencyList_FilterByUnitType` uses in
+     `AssignSupportOrder.c`. For the initial confirmation gate, C resolves the
+     unit at the destination, filters adjacency by that unit's type/coast, and
+     tests whether it can reach the source. Python instead tested the source's
+     raw province adjacency in the reverse direction. The same inversion was
+     present in the routine's final proximity update, which walked every raw
+     neighbor of the destination rather than only neighbors reachable by the
+     destination unit. This could let a coastal army confirm and project
+     proximity onto a fleet's sea province, or let fleets cross land-only
+     coastal borders.
+   - Both checks now use destination-to-source typed/coast-aware reach. The
+     regression constructs an enemy army adjacent at the province graph level
+     to a sea source and proves that neither the support score nor the army's
+     proximity at sea is changed. Assignment-map cleanup in the same routine
+     now stores Python's signed `-1` representation of C's `0xffffffff`
+     sentinel instead of the unsigned floating value `4294967295`.
+   - The production-cap game-10 `S1901M` oracle remains **7/7** complete Albert
+     sets across exactly **528** legal candidates, with 9/22 diagnostic
+     submitted orders and no failures. Full suite: **355 tests**; compileall and
+     `git diff --check` pass.
+
+95. Typed support-proposal reach
+
+   - Corrected both supporter scans in `BuildSupportProposals` to match
+     `BuildSupportProposals.c:194` and `:346`. The recovered routine resolves
+     each prospective supporter's live unit token and uses
+     `AdjacencyList_FilterByUnitType` before admitting a support-to-destination
+     proposal. Python used `get_unit_adjacencies`, whose name/comment imply a
+     typed unit view but whose implementation intentionally returns raw province
+     neighbors. That allowed terrain-invalid proposals such as an army offering
+     support into a sea zone. The two call sites now explicitly apply the
+     supporter's type and coast without changing raw-neighbor consumers in
+     scoring code.
+   - Added a regression with a prospective army supporter and a sea destination;
+     raw graph adjacency is present, but no ProposalHistory record or press-sent
+     matrix flag is created. The production game-10 `S1901M` candidate pool
+     changes from 528 to **524** legal sets, confirming that the invalid proposal
+     state was reachable even in offline generation, while all **7/7** Albert
+     reference sets remain covered and the submitted diagnostic stays 9/22.
+     Full suite: **356 tests**; compileall and `git diff --check` pass.
+
+96. Projected early-game order adjacency
+
+   - Restored `EvaluateOrderProposal.c:781–877`'s ordered-position adjacency
+     calculation. For `MTO` and `CTO`, C starts from the order destination and
+     filters neighbors with the order's destination unit/coast token; every
+     other order starts from the unit's current province and live token. Python
+     instead counted every own unit from its current province and applied only
+     broad army-water/fleet-land terrain checks. This missed formations created
+     by the proposed moves and could include land-only fleet borders or the
+     wrong coast of a multi-coast destination.
+   - Extracted a source-shaped projected-adjacency helper with DAIDE coast-token
+     decoding. Also restored the subsequent province-record `+3` gate: the
+     trusted foreign unit reached by more than one projected own unit must be
+     on a supply center before contributing the 160-point early-game bonus.
+     The regression proves that two moves converging around a trusted foreign
+     SC earn 160 even when neither source was adjacent, and that removing the
+     SC flag removes the bonus.
+   - The production-cap game-10 `S1901M` oracle remains **7/7** complete Albert
+     sets across the current **524** legal candidates, with 9/22 diagnostic
+     submitted orders and no failures. Full suite: **357 tests**; compileall and
+     `git diff --check` pass.
+
+97. Province power-token and controlled-centre audit
+
+   - Re-audited the category-`0x41` token stored at province record `+0x20`
+     across the recovered routines. `ComputeOrderDipFlags`, support assignment,
+     opening targets, position urgency, scoring seeds and threat paths, press
+     pressure, proposal evaluation, convoy exceptions, and Monte Carlo ally
+     pressure now read supply-centre control instead of inferring an AMY
+     occupant from the token's high byte. Live unit type and coast continue to
+     come only from the active UnitList / `unit_info` view.
+   - Restored the source lifecycle at winter adjustment: `ComputeBuildDelta`
+     overlays active-unit power tokens without first clearing the province
+     table, so occupied centres change hands while empty centres retain their
+     previous controller. It then derives each build/remove delta by recounting
+     controlled supply centres from that updated table. `ParseNOW` now performs
+     this winter calculation independently of whether HLO has arrived.
+   - Corrected two related control-flow ports. `MOVE_ANALYSIS` now begins
+     strategic reach at each defending power's controlled centres, uses typed
+     attacker reach, and applies the recovered designation gates. `ComputeDrawVote`
+     now floods from friendly units through passable empty/friendly provinces
+     and rejects only a reachable centre controlled outside the proposed draw;
+     it no longer expands only into hostile units or rejects any disconnected
+     foreign unit. `EvaluateAllianceScore` also requires a unit to control the
+     centre it occupies before awarding its favourable-move bonus, in both the
+     scalar and batched evaluators. The same evaluators now cancel ordinary key
+     value on a foreign-controlled centre when its controller is trusted, and
+     the final province-scoring pass clears or marks controller-indexed stale
+     ally-B designations exactly where the recovered tail does.
+   - The refreshed production `game_10.json` `S1901M` oracle still reaches
+     **7/7** complete Albert sets at primary seed 1. The corrected legal pool is
+     **518** candidates, with **10/22** diagnostic submitted orders and no
+     failures. Full suite: **378 tests**; compileall and `git diff --check`
+     pass. The sole warning is the existing `diplomacy` dependency's deprecated
+     `datetime.utcfromtimestamp` call.
+
+98. Source-faithful no-press `MOVE_ANALYSIS`
+
+   - Removed two deliberate gameplay substitutions from `MOVE_ANALYSIS` that
+     contradicted the recovered routine. Albert performs its first-Fall
+     pressure-derived trust updates with `DAT_00baed68 == 0` even in NO_PRESS;
+     Python had suppressed both the pre-ratio trust reset and every ratio
+     update whenever `g_minimal_press_mode` was set. The routine now follows
+     the source gate exactly: first year, Fall, transient press flag clear.
+   - Restored the recovered one-level three-slot ally shift. If slots zero and
+     one are invalid while slot two survives, Albert leaves
+     `[-1, slot2, -1]`; Python had intentionally full-packed that state to
+     `[slot2, -1, -1]`. Slot invalidation, original-low-trust restoration,
+     exact trust-1 enemy detection, and triple-front demotion now also consult
+     the signed high word and unsigned low word like the C comparisons.
+   - The `game_10.json` `F1901M` primary pool covers **5/7** complete reference
+     sets; a bounded seed 0–9 union reaches **7/7** (France by seed 5, Germany
+     by seed 2) across **647** candidates. Diagnostic selection is **1/7**
+     exact sets and **11/22** unit orders. Full suite: **380 tests**;
+     compileall and `git diff --check` pass.
+
+99. Typed/coast adjacency and draw-frontier audit
+
+   - Restored `ComputeDrawVote`'s complete `(province, unit/coast token)` reach
+     map. Armies no longer flood through sea, fleets no longer enter land or
+     leave a split-coast province through the coast opposite their arrival,
+     and the source's non-water AMY companion key is retained. The subsequent
+     commitment pass now counts reachable typed frontier provinces against
+     units outside the proposed draw set; Python previously reversed that
+     relation and initialized the solver on draw-member units.
+   - Replaced several other live-unit base-adjacency substitutions with the
+     recovered `AdjacencyList_FilterByUnitType` behavior. This includes
+     `ComputePress`, `ScoreProvinces`' core reach/threat matrix and its
+     mobility/weight passes, and both scalar and batched alliance-candidate
+     staging. Added a canonical C-style edge iterator that carries the
+     destination coast into chained flank-denial and support-reach walks.
+   - Preserved the source coast on completed movement-history records and use
+     it in `DEVIATE_MOVE`'s peace-signal scan. Result reconciliation now maps a
+     coasted unit result back to the base province used by the order-history
+     record, so bounce/cut/dislodged flags for STP/SPA/BUL fleets are no longer
+     silently lost.
+   - Investigated `DAT_00baed68`'s lifecycle rather than inventing a writer:
+     `GenerateAndSubmitOrders.c` proves it is a one-turn pulse copied from
+     `DAT_004c6bdc`, but the recovered corpus contains no write to that pending
+     global. The Python full-press lifecycle therefore remains an explicit
+     unresolved adaptation until the arming event can be recovered.
+   - The refreshed `game_10.json` `S1901M` primary oracle remains **7/7** at
+     **502** candidates and **10/22** diagnostic unit orders. `F1901M` remains
+     **5/7** at primary seed 1 across **600** candidates; seeds 0–9 reach
+     **7/7** across **639** candidates (France at seed 5, Germany at seed 2),
+     with **1/7** exact sets and **6/22** diagnostic unit orders. Full suite:
+     **391 tests**; compileall and `git diff --check` pass.
+
+100. `EvaluateAllianceScore` supply-centre pressure audit
+
+   - Corrected the phase-2 input ownership: Albert always reads the
+     candidate-local province and fleet pressure matrices. The Python port's
+     fallback to static reach scores had no recovered source counterpart and
+     could make a zero-pressure candidate inherit unrelated board pressure.
+   - Decoded province-record byte `+3` as the static supply-centre marker.
+     Python had treated the following source loop as current unit-occupancy
+     scoring and invented a `-10/+5` affinity adjustment. The recovered loop
+     instead compares each centre's controller, candidate-local pressure, and
+     threat score. It now ports the controller-owned defense deductions and
+     their signed truncation-toward-zero divisions, plus the Spring opening
+     bonus using `g_threat_path_score` and the per-power province maximum.
+     A defense deduction suppresses that bonus exactly as in the source.
+   - Corrected the preceding non-centre adjustment to iterate non-SCs rather
+     than empty provinces and to affect only the evaluated power when the
+     transient press flag is clear. Scalar and batched candidate evaluation
+     share the new centre-controller implementation, retaining exact parity.
+   - The refreshed `game_10.json` `S1901M` primary oracle remains **7/7** at
+     **502** candidates and **10/22** diagnostic unit orders. The bounded
+     `F1901M` seed 0–9 oracle remains **7/7** across **639** candidates, with
+     **1/7** exact sets and **6/22** diagnostic unit orders. Full suite:
+     **394 tests**; compileall and `git diff --check` pass.
+
+101. Assembly-backed `EvaluateAllianceScore` completion pass
+
+   - Restored the candidate-record cost fields, persistent maximum-base
+     penalty, signed token-key arithmetic, foreign-key deductions, second
+     influence-matrix scaling, whole-board minimum/history terms, and the
+     Spring/Fall scratch scaling shared by scalar and batched evaluation.
+     The maximum penalty's `1/8` versus `1/16` divisor and the seasonal
+     `100/300/10` constants were verified directly against `Albert.exe`.
+   - Ported the second owned-supply-centre pressure pass. With press disabled,
+     eligible other-power pressure now builds Albert's `20 + delta*10/trial`
+     cost and adds the centre's visit deficit before subtraction. The later
+     seasonal home-centre bonus now uses the board's static home-power set:
+     Spring adds the unmoved `10` term, while Fall consumes the positive
+     `counter_b` accumulator through two signed integer divisions.
+   - Corrected the water fleet-chain branch: `GameBoard_GetPowerRec` tests
+     static home-centre membership, not current ownership, and Albert assigns
+     the larger 10% contribution with a 20 cap to non-home provinces. Per-unit
+     reach bonuses and deductions now truncate each signed division at the C
+     boundary instead of combining fractional Python values.
+   - The refreshed `game_10.json` `S1901M` primary oracle remains **7/7** at
+     **502** candidates and records **8/22** diagnostic unit orders. The
+     bounded `F1901M` seed 0–9 oracle remains **7/7** across **639** candidates
+     and records **3/22** diagnostic unit orders; neither phase has an exact
+     submitted set at this checkpoint. Candidate coverage is intact, but the
+     ranking gap remains substantial. Full suite: **409 tests**; compileall
+     and `git diff --check` pass.
+
+102. `EvaluateOrderScore` numeric-storage audit
+
+   - Restored the final `PackScoreU64` boundary. Albert returns an integer
+     candidate base score by truncating the x87 accumulator toward zero;
+     Python previously retained a fractional score and allowed it to enter
+     duplicate-candidate and rank calculations.
+   - Restored the intermediate pack in the fleet-adjacency propagation pass.
+     The home-centre-discounted threshold `100*0.5*0.2*0.75`, for example,
+     is stored as `7`, not `7.5`. Integer-pair order fields are now consumed
+     as integers in the final score pass.
+   - Added explicit float32 store boundaries for Albert's move-probability,
+     unit-reach, cut-risk, and cumulative-score fields. Python's float64 order
+     table remains the compatibility container, but no longer postpones the
+     single-precision rounding that the C locals and record fields impose.
+   - The refreshed `game_10.json` oracles are unchanged: `S1901M` is **7/7**
+     candidate coverage at **502** candidates and **8/22** diagnostic unit
+     orders; bounded seed 0–9 `F1901M` is **7/7** across **639** candidates
+     and **3/22** diagnostic unit orders. Both remain **0/7** exact submitted
+     sets. Full suite: **411 tests**; compileall and `git diff --check` pass.
+
+103. Canonical `NormalizeInfluenceMatrix` call path
+
+   - Removed `_cleanup_turn`'s stale duplicate of the influence normalizer and
+     routed the production pre-`send_GOF` call through the canonical port.
+     The duplicate divided only by the low trust word and used a column sum
+     for noise; the recovered function reconstructs the full signed split-word
+     trust value and uses the current row's packed sum.
+   - Added a regression with a positive high trust word that distinguishes the
+     two paths after normalization. Full suite: **412 tests**; compileall and
+     `git diff --check` pass. The movement oracle was not rerun for this item:
+     this normalization occurs after the offline candidate-ranking checkpoint
+     measured in item 102.
+
+104. Proposal scoring and support-history field audit
+
+   - Corrected `EvaluateOrderProposal`'s near-end conviction interval. Albert
+     awards the per-unit `+50` when threat lies between own reach and combined
+     own-plus-allied reach, with a strict lower bound in the designated
+     year-5-to-6 arm and an inclusive lower bound after year 6. Python had the
+     principal inequality reversed and rewarded only threat above the combined
+     defense. Conviction continues to skip that unit's heat pass as in C.
+   - Restored the fallback move-heat branch's complete signed-int64 ally-A
+     comparison. A nonzero high word can no longer be mistaken for a small
+     power merely because its low word matches. The analogous ally-A/ally-B
+     filters and priority test in `BuildSupportProposals` now compare both
+     words as well.
+   - Corrected the one-threat support handshake gate from field-0 order type
+     `CVY` to field-20 convoy state `5`. The recovered `ProcessTurn` writes that
+     completion value explicitly. Proposal deduplication now consults the
+     authoritative history map, so a key created by the handshake branch is
+     accumulated rather than duplicated when a later multi-threat branch sees
+     it; the map is bound to its backing deal list at state construction.
+   - Corrected secondary proposal consumption: even when a history record is
+     admitted through the secondary-target arm, Albert retains the primary
+     cyclic proposal partner for the `30/10/-10` support-trust adjustment.
+     Python had substituted the record's secondary requester.
+   - Full suite: **417 tests**; compileall and `git diff --check` pass. The
+     movement oracle was not rerun for this item.
+
+105. Support/convoy construction and safe-reach audit
+
+   - Removed invented existing-order guards from the public SUP-HLD/SUP-MTO
+     builders; their dispatcher retains its separate upstream guard. Restored
+     `RegisterConvoyFleet`'s province-terrain gate (water only), and removed
+     nonexistent field-20 assignment writes from `BuildConvoyOrders`' CTO/CVY
+     setup.
+   - Corrected `AssignSupportOrder`'s build-centre commitment block. Source
+     demand 1 now bypasses the centre test; other sources require demand 0,
+     static home-centre membership, and current control. The port no longer
+     invents source/destination adjacency or substitutes own-unit occupancy
+     for the recovered enemy-presence gate.
+   - Restored `ComputeSafeReach`'s province-record pass: supply centres, not
+     fleet unit types, are contested for every power other than their current
+     controller, with neutral centres contested universally. Both safe-reach
+     unit walks and `EnumerateHoldOrders`' non-ally reach walk now use typed,
+     coast-aware adjacency. Restored the latter routine's C→B→A designation
+     read order, which gives slot A final precedence.
+   - Restored the destination-unit iterator cache written before every
+     `BuildOrder_MTO` call in both negotiated-order dispatch and ProcessTurn.
+     `AssignSupportOrder` can now observe an occupant's existing MTO and clear
+     its conflicting downstream support commitment; the Python cache had
+     previously been defined but never populated.
+   - Full suite: **429 tests**; compileall and `git diff --check` pass. The
+     bounded `game_10.json` `S1901M` oracle remains **7/7** candidate-covered
+     at seed sweep 0–9, with **1/7** exact sets and **9/22** diagnostic unit
+     orders.
+
+106. WIN removal ordered-multiset tie fidelity
+
+   - Disassembly of `FUN_00442040` confirms that removal candidates are
+     inserted while walking the own-unit map, with **200** added to the signed
+     score, and selected by repeatedly decrementing the ordered multiset's end
+     iterator. `BuildOrderSpec` orders equal keys to the right, so equal-score
+     units are consumed in reverse insertion order: the higher province key is
+     removed first.
+   - `compute_win_removes` now reproduces that secondary ordering, with a
+     focused equal-score regression. The refreshed `game_10.json` `W1903A`
+     oracle remains **4/4** candidate-covered and is **2/4** exact (**5/9**
+     diagnostic unit orders). Russia's current `ARM 141`, `BLA 213`, and
+     `BOH 394` candidate scores are distinct, confirming its `ARM/BLA` versus
+     Albert `ARM/BOH` difference is an independent scoring issue rather than
+     a tie-order regression. Full suite: **430 tests**.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
@@ -1322,16 +2460,12 @@ some unrelated candidate.
 
 ## Open work, in priority order
 
-1. Investigate the game 10 `S1902M` Russia combination gap. Seeds `{0,1,2}`
-   cover all six reference orders individually, but the best complete legal
-   candidate currently matches four of six.
+1. Expand candidate coverage beyond the bounded opening/S1902 checkpoints and
+   trace any remaining movement-phase misses against their recovered source
+   paths.
 2. Obtain a structured DAIDE message history, serialized Albert press state,
    or a captured PRNG-state trace for at least one reference run. Human free
    text cannot reconstruct XDO/ALY/DMZ constraints, and a fixed seed cannot
    reproduce an unknown process-wide call history.
 3. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
    before treating 100% retreat coverage as a meaningful target.
-4. Rerun the broader opening and midgame bounded-seed sample after the latest
-   token-key, convoy-route, chronology, and influence corrections. Historical
-   results from older candidate pools must not be promoted to the current
-   verification baseline.

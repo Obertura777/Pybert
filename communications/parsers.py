@@ -21,6 +21,24 @@ None of these functions touch ``InnerGameState`` — they are pure parsers.
 from .evaluators._common import _pow_idx
 
 
+_DAIDE_COAST_TO_INTERNAL = {
+    'NCS': 'NC',
+    'NEC': 'NE',
+    'ECS': 'EC',
+    'SEC': 'SE',
+    'SCS': 'SC',
+    'SWC': 'SW',
+    'WCS': 'WC',
+    'NWC': 'NW',
+}
+
+
+def _normalize_daide_coast(value: object) -> str:
+    """Convert a DAIDE coast token to the internal DipNet suffix form."""
+    coast = str(value or '').upper().lstrip('/')
+    return _DAIDE_COAST_TO_INTERNAL.get(coast, coast)
+
+
 def _extract_top_paren_groups(text: str) -> list:
     """Return a list of the content strings of each top-level ( ... ) group."""
     groups: list = []
@@ -184,7 +202,20 @@ def _parse_unit_triple(triple: list) -> "tuple[int, str, str] | None":
         unit_chr = 'F'
     else:
         return None
-    prov = str(triple[2]).upper()
+    location = triple[2]
+    if isinstance(location, list):
+        if not location:
+            return None
+        prov = str(location[0]).upper()
+    elif str(location) == '(':
+        # A coasted DAIDE unit location is nested inside the unit group:
+        # ( RUS FLT ( STP SCS ) ).  The outer group's raw token list keeps
+        # that inner pair as ``'(', 'STP', 'SCS', ')'``.
+        if len(triple) < 4:
+            return None
+        prov = str(triple[3]).upper()
+    else:
+        prov = str(location).upper().split('/', 1)[0]
     return p_idx, unit_chr, prov
 
 
@@ -195,9 +226,13 @@ def _parse_destination(item) -> "tuple[str, str]":
     """
     if isinstance(item, list):
         prov = str(item[0]).upper() if item else ''
-        coast = str(item[1]).upper() if len(item) > 1 else ''
+        coast = _normalize_daide_coast(item[1]) if len(item) > 1 else ''
         return prov, coast
-    return str(item).upper(), ''
+    destination = str(item).upper()
+    if '/' in destination:
+        prov, coast = destination.split('/', 1)
+        return prov, _normalize_daide_coast(coast)
+    return destination, ''
 
 
 def _parse_xdo_body_to_order(xdo_tokens: list) -> "tuple[int, dict] | None":

@@ -644,9 +644,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
 
     # ── Phase 4b: near-victory enemy designation (local_fc > 0x3b = 59) ──────
     # Decompile lines 878-1090
-    # NOTE: g_leading_flag is log-only — no C reads outside the archive-event
-    # writes below; it exists so AllianceMsgTree leading-power events are
-    # reproducible.  Kept for parity; do not remove.
+    # g_leading_flag is reset here and recomputed by the final dominance
+    # sweep. EvaluateAllianceScore reads it to select the 1/16 candidate-
+    # maximum penalty instead of the ordinary 1/8 scale.
     state.g_leading_flag = 0
     state.g_other_power_lead_flag = 0
     # Reset DAT_0062480c under both aliases: CAL_BOARD.c:99 writes -1 (0xffffffff)
@@ -1245,8 +1245,8 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
     # DAT_00baed6a = 0 first (reset), then check condition.
     # Condition: g_sc_percent[own] > 75.0 AND own_pct - g_sc_percent[local_128] >= 2.0
     # (Note: uses local_128 not max_pct; uses >= not >)
-    # NOTE: second write of log-only g_leading_flag — see note at first write
-    # above; no downstream C reads.  Kept for parity.
+    # EvaluateAllianceScore reads this flag to halve its candidate-maximum
+    # penalty (Albert.exe 0x43d738-0x43d75d).
     _apply_dominance_sweep(
         state, own_power, local_128, trust_hi_mat, num_powers,
     )

@@ -713,7 +713,9 @@ class _PressMixin:
                 self.state.g_order_table, entry, full_row=True)
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
-                rc = validate_and_dispatch_order(self.state, own_power_idx, seq)
+                rc = validate_and_dispatch_order(
+                    self.state, own_power_idx, seq, format_existing=True
+                )
                 if rc == 0:
                     _diag_dispatch_ok += 1
                 else:

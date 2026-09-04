@@ -12,7 +12,7 @@ _POWER_NAMES = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "T
 # DAIDE coast token value → DipNet coast suffix (subset covering standard coasts)
 _DAIDE_COAST_TO_STR = {
     0x4600: 'NC', 0x4602: 'NE', 0x4604: 'EC',
-    0x4606: 'SC', 0x4608: 'SC', 0x460A: 'SW',
+    0x4606: 'SE', 0x4608: 'SC', 0x460A: 'SW',
     0x460C: 'WC', 0x460E: 'NW',
     0: '',
 }
