@@ -656,6 +656,116 @@ def test_propose_dmz_decodes_c_flags_and_tracks_the_proposal():
     )
 
 
+def test_propose_dmz_first_pass_requires_flag3_clear():
+    """ProposeDMZ.c:110-111 reads flag3, not an active-DMZ lookup.
+
+    Iterator_GetData returns node+0xc, so its +0x12 is node+0x1e — the same
+    byte the two single-province arms read directly at :216 and :243.
+    """
+    def _run(flag3):
+        state = InnerGameState()
+        state.albert_power_idx = 2
+        state._id_to_prov = {10: 'BUR', 11: 'MUN'}
+        state.g_dmz_aggressiveness = 0
+        state.g_order_list[:] = [
+            {'power': 3, 'province': p, 'score': 2, 'done': False,
+             'flag1': True, 'flag2': True, 'flag3': flag3}
+            for p in (10, 11)
+        ]
+        sent = []
+        return _senders_mod.propose_dmz(state, 3, send_fn=sent.append), sent
+
+    ok, sent = _run(False)
+    assert ok and sent[0]['message'] == 'PRP ( DMZ ( FRA GER ) BUR MUN )'
+    # flag3 set blocks the multi-province pass and both single-province arms.
+    ok, sent = _run(True)
+    assert not ok and sent == []
+
+
+def test_propose_dmz_tracks_proposals_in_the_active_dmz_list():
+    """The send-count records live in g_active_dmz_list (DAT_00bb7130/34).
+
+    Fields are {power (+0), province (+4), count (+8)}; FUN_00419df0 inserts
+    with count 1 and the single-province arms increment to a cap of 2.
+    """
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'BUR', 11: 'MUN'}
+    state.g_dmz_aggressiveness = 0
+    state.g_order_list[:] = [
+        {'power': 3, 'province': p, 'score': 2, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False}
+        for p in (10, 11)
+    ]
+    assert _senders_mod.propose_dmz(state, 3, send_fn=lambda _m: None)
+    assert state.g_active_dmz_list == [
+        {'power': 3, 'province': 10, 'count': 1},
+        {'power': 3, 'province': 11, 'count': 1},
+    ]
+
+    # A pre-existing record excludes the province from the multi-province pass.
+    state2 = InnerGameState()
+    state2.albert_power_idx = 2
+    state2._id_to_prov = {10: 'BUR', 11: 'MUN'}
+    state2.g_dmz_aggressiveness = 0
+    state2.g_active_dmz_list = [{'power': 3, 'province': 10, 'count': 1}]
+    state2.g_order_list[:] = [
+        {'power': 3, 'province': p, 'score': 2, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False}
+        for p in (10, 11)
+    ]
+    sent = []
+    assert _senders_mod.propose_dmz(state2, 3, send_fn=sent.append)
+    # Only MUN survived the first pass, so the single-province arm fires and
+    # BUR's existing record is bumped rather than duplicated.
+    assert sent[0]['message'] == 'PRP ( DMZ ( FRA GER ) BUR )'
+    assert state2.g_active_dmz_list == [{'power': 3, 'province': 10, 'count': 2}]
+
+
+def test_propose_dmz_aborts_when_the_send_count_is_already_capped():
+    """ProposeDMZ.c:331 — bVar2 with count >= 2 jumps to LAB_004334b0.
+
+    That exit leaves the success byte unset and returns; it does not fall
+    through to the next order-list entry.
+    """
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'BUR', 11: 'MUN'}
+    state.g_dmz_aggressiveness = 0
+    state.g_active_dmz_list = [{'power': 3, 'province': 10, 'count': 2}]
+    state.g_order_list[:] = [
+        {'power': 3, 'province': 10, 'score': 2, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False},
+        {'power': 3, 'province': 11, 'score': 3, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False},
+    ]
+    sent = []
+    assert not _senders_mod.propose_dmz(state, 3, send_fn=sent.append)
+    assert sent == []
+    # MUN is never reached, so it acquires no record.
+    assert state.g_active_dmz_list == [{'power': 3, 'province': 10, 'count': 2}]
+
+
+def test_propose_dmz_marking_loop_covers_every_matching_order_entry():
+    """C re-walks the whole order list per province (ProposeDMZ.c:257-283)."""
+    state = InnerGameState()
+    state.albert_power_idx = 2
+    state._id_to_prov = {10: 'BUR', 11: 'MUN'}
+    state.g_dmz_aggressiveness = 0
+    duplicate = {'power': 3, 'province': 10, 'score': 1, 'done': False,
+                 'flag1': False, 'flag2': False, 'flag3': False}
+    state.g_order_list[:] = [
+        {'power': 3, 'province': 10, 'score': 2, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False},
+        {'power': 3, 'province': 11, 'score': 3, 'done': False,
+         'flag1': True, 'flag2': True, 'flag3': False},
+        duplicate,
+    ]
+    assert _senders_mod.propose_dmz(state, 3, send_fn=lambda _m: None)
+    # The duplicate never qualified on its own flags but shares (power, prov).
+    assert duplicate['done'] is True
+
+
 def test_propose_dmz_excludes_existing_counter_designation():
     state = InnerGameState()
     state.albert_power_idx = 2

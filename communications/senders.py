@@ -412,22 +412,34 @@ def propose_dmz(state: InnerGameState,
 
     g_dmz_aggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
 
+    g_active_dmz_list (DAT_00bb7130/34) records are ``{power, province,
+    count}``: field +0 is the power (``puVar1[3]``), +4 the province
+    (``puVar1[4]``) and +8 the send count (``puVar1[5]``), inserted with
+    count 1 by FUN_00419df0 and capped at 2.  ``_apply_dmz`` erases from the
+    same list, so an accepted DMZ re-opens the province for proposing.
+
     First pass (lines 65–163):
       Collects provinces absent from ally_power's counter-designation map
-      (GameBoard_GetPowerRec returns its end sentinel, lines 89–101), where
-      the territory is not already under an active DMZ, flag1==1, flag2==1,
-      and the (ally_power, province) pair has NOT yet been recorded in
-      g_sent_proposals.
+      (GameBoard_GetPowerRec returns its end sentinel, lines 89–101) with
+      flag1==1 (+0x1c), flag2==1 (+0x1d) and flag3==0 (+0x1e, reached through
+      ``Iterator_GetData`` which returns node+0xc, so its +0x12 is node+0x1e),
+      and for which g_active_dmz_list holds no (ally_power, province) record
+      at all.
 
     Multi-province marking loop (lines 246–287):
       Before building the message, iterates every province in the contested
-      list, records (ally_power, province) in g_sent_proposals, and marks
-      the matching g_order_list entry as done.
+      list, inserts {ally_power, province, 1} into g_active_dmz_list, and
+      marks EVERY g_order_list entry for that (power, province) as done — C
+      re-walks the whole list per province rather than touching one node.
 
     Second pass (lines 168–244, triggered when first pass yields <2):
       flag3=0, flag2=1 (bilateral)  → LAB_00432ff0
       flag3=0, flag2=0 (unilateral) → LAB_00433254
-      Both paths check g_sent_proposals count < 2 before sending.
+      Both walk g_active_dmz_list.  A matching record with count < 2 has its
+      count incremented and the proposal is sent; a matching record already
+      at 2 aborts the whole routine (``if (bVar2) goto LAB_004334b0``, which
+      returns without setting the success byte); no match inserts a fresh
+      count-1 record and sends.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -436,9 +448,11 @@ def propose_dmz(state: InnerGameState,
     own_power   = getattr(state, 'albert_power_idx', 0)
     threshold   = int(getattr(state, 'g_dmz_aggressiveness', 0))
     counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
-    active_dmz  = getattr(state, 'g_active_dmz_map', {})  # {province: power}
-    sent_props  = getattr(state, 'g_sent_proposals', {})
     order_list  = getattr(state, 'g_order_list', [])
+    # DAT_00bb7130/34 — the single container both passes read and write.
+    if getattr(state, 'g_active_dmz_list', None) is None:
+        state.g_active_dmz_list = []
+    active_dmz_list = state.g_active_dmz_list
     id_to_prov  = getattr(state, '_id_to_prov', None) or {
         v: k for k, v in getattr(state, 'prov_to_id', {}).items()
     }
@@ -458,6 +472,19 @@ def propose_dmz(state: InnerGameState,
 
     def _entry_power(entry: dict) -> int:
         return int(entry.get('power', entry.get('ally_power', -1)))
+
+    def _active_record(province: int):
+        """g_active_dmz_list record for (ally_power, province), or None.
+
+        C: puVar1[3] == power_index and puVar1[4] == puVar4[6].
+        """
+        for record in active_dmz_list:
+            if not isinstance(record, dict):
+                continue
+            if (int(record.get('power', -1)) == ally_power
+                    and int(record.get('province', -1)) == province):
+                return record
+        return None
 
     # ── First pass: collect provinces where ally owns the SC and flag3==1 ──────
     # C: puVar1[5]==power_index, !done, score>threshold, SC ownership,
@@ -483,12 +510,16 @@ def propose_dmz(state: InnerGameState,
             continue
         if not entry.get('flag2', False):
             continue
-        # Active-DMZ exclusion (*(char*)(iVar6+0x12)=='\0', line 111):
-        # skip territories already under an accepted DMZ.
-        if province in active_dmz:
+        # C line 111: *(char*)(Iterator_GetData(&iter) + 0x12) == '\0'.
+        # Iterator_GetData returns node+0xc, so +0x12 is node+0x1e — the same
+        # flag3 byte the two single-province arms read directly at
+        # ProposeDMZ.c:216 and :243.
+        if entry.get('flag3', False):
             continue
-        # First pass: skip if (ally_power, province) already in g_sent_proposals.
-        if (ally_power, province) in sent_props:
+        # C lines 112-140: no g_active_dmz_list record may already exist for
+        # this (ally_power, province); the multi-province path ignores the
+        # record's count entirely.
+        if _active_record(province) is not None:
             continue
         contested.append({'province': province, 'entry': entry,
                           'flag2': bool(entry.get('flag2', False)),
@@ -499,10 +530,17 @@ def propose_dmz(state: InnerGameState,
         # Before sending, iterate every province: record in g_sent_proposals and
         # mark the order entry done.
         for c in contested:
-            key = (ally_power, c['province'])
-            sent_props[key] = sent_props.get(key, 0) + 1
-            c['entry']['done'] = True
-        state.g_sent_proposals = sent_props
+            # C: local_a0/9c/98 = {power_index, province, 1};
+            #    FUN_00419df0(&DAT_00bb7130, ...) inserts the record.
+            active_dmz_list.append({
+                'power': ally_power, 'province': c['province'], 'count': 1,
+            })
+            # C re-walks the whole order list per province and sets the done
+            # byte on every entry matching (power_index, province).
+            for other in order_list:
+                if (_entry_power(other) == ally_power
+                        and int(other.get('province', -1)) == c['province']):
+                    other['done'] = True
 
         prov_str = ' '.join(id_to_prov.get(c['province'], str(c['province'])) for c in contested)
         msg = f"PRP ( DMZ ( {own_tok} {ally_tok} ) {prov_str} )"
@@ -533,16 +571,21 @@ def propose_dmz(state: InnerGameState,
         flag2 = bool(entry.get('flag2', False))
         if flag3:
             continue   # both single-province branches require flag3 == 0
-        # Count cap: both LAB_00432ff0 and LAB_00433254 check count < 2.
-        key = (ally_power, province)
-        if sent_props.get(key, 0) >= 2:
-            continue
-
-        # Record in g_sent_proposals and mark done (before send, LAB_004330d8 /
-        # LAB_0043334f — FUN_00419df0 + *(puVar4+4)=1 before PROPOSE call).
-        sent_props[key] = sent_props.get(key, 0) + 1
-        state.g_sent_proposals = sent_props
-        entry['done'] = True
+        # Both LAB_00432ff0 and LAB_00433254 walk g_active_dmz_list.
+        record = _active_record(province)
+        if record is None:
+            # Walk reached the end with bVar2 false → insert {power, prov, 1}.
+            active_dmz_list.append({
+                'power': ally_power, 'province': province, 'count': 1,
+            })
+        elif int(record.get('count', 0)) < 2:
+            record['count'] = int(record.get('count', 0)) + 1
+        else:
+            # bVar2 true and the count is already at the cap: C falls out of
+            # the walk to `if (bVar2) goto LAB_004334b0`, which leaves the
+            # success byte unset and returns — it does NOT try the next
+            # order-list entry.
+            return False
 
         prov_tok = id_to_prov.get(province, str(province))
         if flag2:
@@ -552,6 +595,8 @@ def propose_dmz(state: InnerGameState,
             # LAB_00433254 unilateral: PRP ( DMZ ally province )
             msg = f"PRP ( DMZ {ally_tok} {prov_tok} )"
         propose(state, msg, [ally_power], send_fn=_send)
+        # C LAB_004334a0: the done byte is set after PROPOSE returns.
+        entry['done'] = True
         _log.debug("ProposeDMZ: single-province %d to power %d (bilateral=%s)",
                    province, ally_power, flag2)
         return True

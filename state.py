@@ -122,8 +122,6 @@ class InnerGameState:
     # Dynamically-populated attributes (may be assigned lazily by other modules
     # via `hasattr(...)` guards). Declared here so the static type checker knows
     # they exist on every InnerGameState instance.
-    g_active_dmz_list: "Any"
-    g_active_dmz_map: "Any"
     g_alliance_orders: "Any"
     # g_alliance_orders_present removed: phantom global. The C binary reads
     # `&DAT_00bb6d00 + p*0xc` which is the std::set _Mysize field of slot p
@@ -865,8 +863,13 @@ class InnerGameState:
         self.g_press_count = np.zeros(7, dtype=np.int32)
 
         # ── ProposeDMZ globals ───────────────────────────────────────────────
-        # DAT_00bb7130 — per-(power,province) proposal send-count tracking
-        self.g_sent_proposals: dict = {}    # {(power, province): count}
+        # DAT_00bb7130/34 — active-DMZ records, {power, province, count}.
+        # ProposeDMZ inserts count-1 records and increments them to a cap of 2;
+        # _apply_dmz erases matching records, which re-opens the province.
+        # (The former g_sent_proposals dict was a phantom duplicate of this
+        # container, so ProposeDMZ's send-count tracking never interacted with
+        # the DMZ acceptance path.)
+        self.g_active_dmz_list: list = []
         # DAT_004c6bd4 / 4 − 4 — randomized DMZ aggressiveness ∈ [−4, 20]
         self.g_dmz_aggressiveness: int = 0
         # Press proposal candidate slate built by ApplyInfluenceScores / ProposeDMZ
