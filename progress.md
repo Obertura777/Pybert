@@ -2440,6 +2440,134 @@ some unrelated candidate.
      Albert `ARM/BOH` difference is an independent scoring issue rather than
      a tie-order regression. Full suite: **430 tests**.
 
+107. Press-evaluator set-membership and verdict fidelity
+
+   - Re-derived the `std::set` idiom shared by the `_eval_*` family.
+     `_eval_drw.c` pins the argument order of
+     `StdMap_FindOrInsert(set_object, ret_slot, key)`: its two sets are
+     constructed at unwind levels 3 and 4, and the epilogue destroys the
+     object at `local_48` with head `local_44` and the object at `local_54`
+     with head `local_50`, so the first argument is the container and the
+     second a scratch return slot. `_eval_aly.c:127` pins the polarity of the
+     `find` comparison — `piVar10[1] == head` is `end()`, i.e. **not** found.
+   - `_eval_slo`: the tested size `local_4c` belongs to the set fed by the SLO
+     power sublist (`local_1c`), not the participant set, whose size
+     `local_40` is never read. Albert answers YES only when the SLO names
+     exactly one distinct power and that power is himself; the port had been
+     counting unique message participants and so rejected `SLO (FRA)` sent to
+     Albert-as-France.
+   - `_eval_not_dmz` sub-check B: `bVar4` clears when the participant is
+     **absent** from the DMZ power set. The port had the membership test
+     inverted.
+   - `_eval_not_dmz` verdict: the two sender-membership gates are driven by
+     `uVar10 = local_90 = len(DMZ power sublist)`, not by the doubled
+     participant count. Only the `>= 3` early BWX reads `uVar9`. The port used
+     the participant count for all three and inverted the `> 1` arm.
+   - `_eval_single_xdo` SUB/PRP `NOT` arm (`_eval_single_xdo.c:238-243`):
+     unlike the top-level `NOT` arm at line 131, it never runs
+     `GetSubList(input, 1)` before re-testing element 0, so that element is
+     still `NOT`, the `XDO` test always jumps to `LAB_0042c5e4`, and
+     `CAL_VALUE` is unreachable. Albert scores a bare `NOT (XDO ...)` but
+     HUHs the identical clause wrapped in `PRP`. Reproduced rather than
+     repaired.
+   - Full suite: **435 tests** at this checkpoint.
+
+108. `DAT_00bc1e00` is a participant power set, not a round record
+
+   - `state.py` bound `DAT_00bc1e04` as "current round number" and
+     `DAT_00bc1e00` as a per-power round record, and both `UpdateScoreState`
+     and `BuildAndSendSUB`'s round-zero block tested
+     `record[p] != g_current_round`. The disassembly does not support that
+     reading:
+     * `BuildAndSendSUB.c:231-234` destroys the container with
+       `SerializeOrders(&DAT_00bc1e00, ..., *DAT_00bc1e04, ..., DAT_00bc1e04)`
+       — the tree-destroy call shape every `_eval_*` epilogue uses, whose last
+       argument is the head sentinel.
+     * `BuildAndSendSUB.c:285` types `DAT_00bc1e04` as `int **` and compares
+       it against an iterator's node pointer, so `puVar31[1] != ppiVar30` is
+       `find(power) != end()`. `UpdateScoreState.c` runs the identical test in
+       both of its passes.
+     * `BuildAndSendSUB.c:230-236` clears the container and re-copies the
+       current broadcast node's own set into it (`RegisterProposalOrders`) at
+       the top of every trial iteration.
+     * `register_received_press.c:64-75` builds that set from the sender plus
+       every recipient, and it is the only set of power indices on the record;
+       the other two are fed token lists through `FUN_00419300`.
+   - Bound as `g_proposal_order_powers`, reloaded per trial iteration, and
+     recorded on each entry by `register_received_press`. The no-press path is
+     unchanged: C always has a node here and Python does not materialise the
+     implicit base SUB node, so an entry carrying no participant information
+     still covers every live power — which is what the round model degenerated
+     to in practice, since every power stamped during the MC loop compared
+     unequal to the post-loop `g_current_round`.
+
+109. `ProposeDMZ` proposal tracking rebound to `g_active_dmz_list`
+
+   - `ProposeDMZ.c:110-111` tests
+     `*(char *)(Iterator_GetData(&iter) + 0x12)`. `Iterator_GetData` returns
+     `node + 0xc`, so `+0x12` is `node + 0x1e` — the same `flag3` byte the two
+     single-province arms read directly at `:216` and `:243`. The port read it
+     as a lookup in a `g_active_dmz_map` that nothing ever wrote.
+   - The `(power, province)` scan at `:112-140` walks `DAT_00bb7130/34`, whose
+     records are `{power (+0), province (+4), send count (+8)}`:
+     `FUN_00419df0` inserts them with count 1 at `:252-256`, `:337-340` and
+     `:430-433`, and the single-province arms increment to a cap of 2. The
+     port kept that count in a separate `g_sent_proposals` dict, so it never
+     met `_apply_dmz`, which erases from the same list — an accepted DMZ could
+     not re-open a province for proposing.
+   - Also restored the marking loop's whole-list re-walk (every order entry
+     sharing `(power, province)` is marked done, `:257-283`) and the
+     capped-record abort: `if (bVar2) goto LAB_004334b0` leaves the success
+     byte unset and returns instead of trying the next order entry.
+   - Full suite: **443 tests**; `compileall` and `git diff --check` pass.
+
+110. Audit coverage and confirmed-faithful routines
+
+   - Verified faithful against their sources with no change required:
+     `_eval_pce`, `_eval_not_pce`, `_eval_dmz`, `_eval_aly`, `_eval_drw`,
+     `_eval_sub_xdo`, `EvaluatePress`, `RECEIVE_PROPOSAL`, `REMOVE_DMZ`,
+     `CAL_MOVE`, `ParseHSTResponse`, `InboundDAIDEDispatcher`,
+     `NOTDispatcher`, `YESDispatcher`, `CCD_Handler`, `NOT_CCD_Handler`,
+     `OUT_Handler`, and `CAL_VALUE`'s broadcast-node matching walk.
+   - `CAL_VALUE.c:206-330` reads the matched node's positive clauses from the
+     set at `node+0x30` and its negative clauses from `node+0x3c`, in that
+     fixed order. `register_received_press` writes its two entries with those
+     two sets **swapped** relative to each other, so in C only the pass-1
+     entry can ever match a well-formed proposal. The Python collapses both
+     entries onto one polarity-tagged candidate list and always matches the
+     pass-1 entry first, which coincides with C — but the two entries are no
+     longer distinguishable, so the coincidence would break if the pass-1
+     entry were ever removed from `g_broadcast_list` while pass-2 survived.
+     No current code path removes it.
+   - Swept every global container head in the recovered sources
+     (`DAT_00baed74/80/98`, `bb65a4/c0/cc/e4/f0`, `bb6df8`, `bb6e04`,
+     `bb6f20`, `bb7128/34/40`, `bbf60c/18/48/60`, `bc1e04`, `bc1e20`) for the
+     `DAT_00bc1e04` misbinding class. All are documented as head/sentinel
+     pointers on the Python side; `bc1e04` was the only remaining offender.
+   - Swept the 275 `g_*` fields on `InnerGameState` for containers that no
+     production path ever writes. Two were phantoms and are gone
+     (`g_active_dmz_map`, `g_sent_proposals`). The rest are inert but
+     harmless: `g_hold_weight`, `g_xdo_sup_mto_score` and `g_xdo_sup_hld_map`
+     are self-documented legacy aliases with no reader, and `g_peace_zone`
+     and `g_defense_zone` are placeholders for logic marked "port pending".
+   - The following C files are inlined MSVC container mechanics with no
+     Albert semantics and are correctly absorbed into Python data structures
+     rather than ported: `RemoveOrderCandidate`, `InsertCandidateRecord`,
+     `InsertOrderCandidate`, `Container_Destroy`, `ClearOrderList`,
+     `ConcatTokenList`, `TokenList_BuildOffsets`, `UnitList_FindOrInsert`.
+   - **Open gap found, not closed.** `BuildAndSendSUB.c:243-282` runs, once
+     per proposal node whose history flag `puVar18[4]` is set, a full
+     `ScoreOrderCandidates` pass followed by a restore of the
+     `[n_powers][30]` best-order table from `DAT_00bc0a40/44` into
+     `DAT_00bbf690/694` (`g_current_best_order`). Python models only
+     `ScoreOrderCandidates`' writer loop, from `GenerateAndSubmitOrders`, and
+     never performs the per-proposal rescore or the restore. Closing it needs
+     `DAT_00bc0a40`'s writer, which does not appear in any recovered source,
+     so the step is left unimplemented rather than invented.
+   - The oracle corpora (`all_games`, `all_games_albert`) are absent from this
+     working tree, so no item in 107-110 was measured against the movement or
+     winter oracles.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
@@ -2460,6 +2588,10 @@ some unrelated candidate.
 
 ## Open work, in priority order
 
+0. Restore the oracle corpora (`all_games`, `all_games_albert`) to this
+   working tree. They are Git-ignored and currently absent, so items 107-110
+   were verified only against the source and the regression suite.
+
 1. Expand candidate coverage beyond the bounded opening/S1902 checkpoints and
    trace any remaining movement-phase misses against their recovered source
    paths.
@@ -2469,3 +2601,7 @@ some unrelated candidate.
    reproduce an unknown process-wide call history.
 3. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
    before treating 100% retreat coverage as a meaningful target.
+
+4. Recover the writer of `DAT_00bc0a40/44` so `BuildAndSendSUB`'s
+   per-proposal `ScoreOrderCandidates` pass and best-order-table restore
+   (item 110) can be ported instead of skipped.
