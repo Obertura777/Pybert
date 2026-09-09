@@ -2661,6 +2661,49 @@ some unrelated candidate.
      rewinds/retires its entries. That is a deliberate, load-bearing choice in
      the port, not an oversight.
 
+113. Heuristics / Monte-Carlo sweep for the classes found in 107-112
+
+   - Record-base confirmation. The alliance record sits at `node+0x18`,
+     established twice over: `BuildHostilityRecord` puts the 21-dword score
+     array at record `+0x30` and `BuildAndSendSUB.c:625` reads it at
+     `puVar18+0x12 = node+0x48`; and `BuildAndSendSUB.c:565` passes
+     `puVar18[0x2e]`/`[0x2f]` (`node+0xb8`/`+0xbc`) to `RESPOND` as the record
+     timestamp, which is record `+0xa0`/`+0xa4` — the pair
+     `test_respond_uses_record_timestamp_not_current_wall_clock` already pins.
+     `puVar18[4]` therefore lies inside the 12-byte map key, not the record.
+   - `find()`-polarity sweep, second pass. Checked every remaining
+     `GameBoard_GetPowerRec` comparison in `ComputeDrawVote` (7 sites),
+     `ApplyInfluenceScores` (2), `ScoreProvinces` (7) and
+     `ScoreOrderCandidates` (3) against the port. All are consistent: the
+     draw-vote walks correctly treat `== head` as "unit's power is not in the
+     friendly set", and the port's `no_order` / `flag_a` / vote-clearing gates
+     match. No further inversions found.
+   - **Gap: `ScoreOrderCandidates` is only partly ported.** Its three
+     `DAT_00bc1e00` gates (`:135`, `:351`, `:642`) are membership tests against
+     the participant power set that item 108 identified. Lines 116-215 reset
+     every `g_CandidateRecordList` record belonging to a participating power —
+     zeroing the score/flag fields, seeding `[10] = 10000` and `[0xc] =
+     0x461c4000` (float 10000.0), and clearing three 30-entry arrays. Nothing
+     in the port does this; `score_order_candidates_from_broadcast` models only
+     the writer loop at 217-294 (the projection into `g_general_orders` /
+     `g_alliance_orders`), and the port calls it from
+     `GenerateAndSubmitOrders` rather than from `BuildAndSendSUB`'s round zero,
+     where C invokes the whole routine. The reset block and the later blocks at
+     340-360 and 630-650 remain unported. This is the same unit of work as the
+     `DAT_00bc0a40/44` restore in item 110 — both live inside
+     `BuildAndSendSUB.c:243-282` — and both need an oracle to land safely.
+   - **Open question: `received_flag` may be a third alias for record `+0x00`.**
+     `_cal_value` documents its first gate as `*(char *)(puVar24 + 6) != '\0'`,
+     i.e. `node+0x18` = record `+0x00` — the same byte as `sent` and
+     `history_flag` (item 110). If so, `CAL_VALUE` should consider only nodes
+     whose flag byte is set (gate-passing proposals, and nodes
+     `BuildAndSendSUB.c:386` has finished), whereas `register_received_press`
+     sets `received_flag` unconditionally. Not changed: `_press.py`'s RESPOND
+     dispatch is guarded on `received_flag`, and C's own RESPOND call at
+     `BuildAndSendSUB.c:565` sits inside a deeply nested block whose guards are
+     not yet fully traced, so flipping it risks silencing the press-reply path.
+     Trace those guards before acting.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
@@ -2700,4 +2743,11 @@ some unrelated candidate.
    has a writer, then wire the round-zero restore at `C:265-282`. Both C
    writers are identified in item 110; the port lacks the accept branch, so
    the restore cannot be enabled on its own.
+
+5. Port `ScoreOrderCandidates`' candidate-record reset (`C:116-215`) and its
+   remaining blocks, and move the call to `BuildAndSendSUB`'s round zero
+   (item 113). Same unit of work as open item 4.
+
+6. Trace the guards around `BuildAndSendSUB.c:565` to settle whether
+   `received_flag` is a third Python alias for record `+0x00` (item 113).
 
