@@ -2528,7 +2528,9 @@ some unrelated candidate.
      `_eval_sub_xdo`, `EvaluatePress`, `RECEIVE_PROPOSAL`, `REMOVE_DMZ`,
      `CAL_MOVE`, `ParseHSTResponse`, `InboundDAIDEDispatcher`,
      `NOTDispatcher`, `YESDispatcher`, `CCD_Handler`, `NOT_CCD_Handler`,
-     `OUT_Handler`, and `CAL_VALUE`'s broadcast-node matching walk.
+     `OUT_Handler`, `UpdateRelationHistory`, `CancelPriorPress`,
+     `BuildAllianceMsg`, `BuildHostilityRecord`, and `CAL_VALUE`'s
+     broadcast-node matching walk.
    - `CAL_VALUE.c:206-330` reads the matched node's positive clauses from the
      set at `node+0x30` and its negative clauses from `node+0x3c`, in that
      fixed order. `register_received_press` writes its two entries with those
