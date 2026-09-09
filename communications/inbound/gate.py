@@ -37,6 +37,8 @@ from ..parsers import _parse_xdo_candidates
 from ..senders import send_alliance_press
 from ..evaluators import _split_xdo_clauses
 
+_DAIDE_POWERS = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
+
 _log = _logging.getLogger(__name__)
 
 
@@ -413,6 +415,22 @@ def register_received_press(
     # C copies the one FUN_00426140 result into every active-power slot.
     score_vec = [int(gate_score)] * 7
 
+    # C lines 64-75: the record's first set (local_1c8) is the sender plus
+    # every recipient.  BuildAndSendSUB.c:230-236 copies that set into
+    # DAT_00bc1e00 for each trial iteration, and UpdateScoreState.c gates its
+    # per-power work on membership in it.
+    def _power_of(tok) -> "int | None":
+        if isinstance(tok, int):
+            return tok & 0x7f if 0x4100 <= tok <= 0x4106 else None
+        name = str(tok).strip('()').upper()
+        return _DAIDE_POWERS.index(name) if name in _DAIDE_POWERS else None
+
+    participant_powers = set()
+    for _tok in [from_power_tok, *to_power_toks]:
+        _idx = _power_of(_tok)
+        if _idx is not None:
+            participant_powers.add(_idx)
+
     # ── Pass 1: external candidates, watermark = sentinel ────────────────
     # C: local_150 = 0xffffffff (no watermark); key = local_e4[0] = DAT_00bb65f4
     entry1: dict = {
@@ -430,6 +448,7 @@ def register_received_press(
         'sublist3':         list(press_content),
         'order_candidates': list(order_candidates),
         'score_vector':     list(score_vec),
+        'participant_powers': set(participant_powers),   # local_1c8
     }
     send_alliance_press(state, key=size_before, entry_data=entry1)
     _log.debug(

@@ -2508,11 +2508,6 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
                 if int(state.g_order_table[prov, _F_ORDER_TYPE]) == 0:
                     _build_order_hld(prov)
 
-    # Stamp this power as processed for the current round so UpdateScoreState's
-    # stale check (power_round_record[p] != g_current_round) fires correctly
-    # after _orders.py advances g_current_round post-MC-loop.
-    state.g_power_round_record[power_index] = state.g_current_round
-
 
 # ── UpdateScoreState ──────────────────────────────────────────────────────────
 
@@ -3436,35 +3431,38 @@ def update_score_state(state: InnerGameState) -> None:
     """
     Port of UpdateScoreState (FUN_0044c8e0).
 
-    Two-phase order-table refresh.  For each power that has an active alliance
-    (g_unit_count[power] > 0) whose per-power game-board record predates
-    g_current_round:
+    Two-phase order-table refresh.  For each power that has live units
+    (DAT_0062e460 / g_unit_count[power] > 0) and is a member of DAT_00bc1e00 —
+    the participant power set of the broadcast proposal BuildAndSendSUB is
+    currently running trials for:
 
       Pass 1 → UpdateAllyOrderScore (FUN_00442770)
       Pass 2 → RefreshOrderTable    (FUN_00424490)
 
-    Semantics: "stale" means the game board recorded a different round for
-    this power than the current simulation round, so its order table needs
-    refreshing before the next trial.
+    Both loops read ``iVar1 = DAT_00bc1e04`` (the container's head sentinel)
+    and take the branch on ``puVar3[1] != iVar1``, i.e. ``find(power) !=
+    end()``.  BuildAndSendSUB.c:283-305 runs the same membership test inline,
+    and BuildAndSendSUB.c:231-234 destroys the container by passing
+    DAT_00bc1e04 as the head argument of SerializeOrders — so DAT_00bc1e04 is
+    a node pointer, not a round counter.
 
     Research.md §5323.
     """
     num_powers = len(state.g_unit_count)
+    participants = state.g_proposal_order_powers
 
-    # Pass 1 — update ally order scores for stale-round powered alliances
+    # Pass 1 — update ally order scores for participating, live-unit powers
     for power in range(num_powers):
         if state.g_unit_count[power] <= 0:
             continue
-        power_round = state.g_power_round_record.get(power, 0)
-        if power_round != state.g_current_round:
+        if power in participants:
             _update_ally_order_score(state, power)
 
-    # Pass 2 — refresh order table entries for the same stale powers
+    # Pass 2 — refresh order table entries for the same powers
     for power in range(num_powers):
         if state.g_unit_count[power] <= 0:
             continue
-        power_round = state.g_power_round_record.get(power, 0)
-        if power_round != state.g_current_round:
+        if power in participants:
             _refresh_order_table(state, power)
 
 

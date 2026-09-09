@@ -82,6 +82,28 @@ def _set_round_value(values: list, index: int, value: int) -> None:
     values[index] = int(value)
 
 
+def _entry_participant_powers(state: InnerGameState, entry: dict) -> set:
+    """Participant power set of one broadcast node — C ``puVar18 + 9``.
+
+    ``register_received_press`` builds this set from the sender plus every
+    recipient (register_received_press.c:64-75), and BuildAndSendSUB copies it
+    into DAT_00bc1e00 for each trial iteration.
+
+    C always has a node here, including in a no-press game, where the implicit
+    base SUB node is the only one in the tree.  Python does not materialise
+    that base node (see the ephemeral ``{'trial_count': 0}`` fallback in
+    ``_build_and_send_sub``), so an entry that carries no participant
+    information stands in for it and covers every power with live units.
+    """
+    recorded = entry.get('participant_powers')
+    if recorded:
+        return {int(p) for p in recorded}
+    return {
+        power for power in range(len(state.g_unit_count))
+        if int(state.g_unit_count[power]) > 0
+    }
+
+
 def _advance_broadcast_proposal_trials(
         state: InnerGameState,
         entry: dict,
@@ -99,6 +121,7 @@ def _advance_broadcast_proposal_trials(
     trial_cap = max(int(trial_cap), 0)
     completed = max(int(entry.get('trial_count', 0)), 0)
     num_powers = len(state.g_unit_count)
+    participants = _entry_participant_powers(state, entry)
 
     while completed < trial_cap:
         if check_time_limit(state):
@@ -106,15 +129,20 @@ def _advance_broadcast_proposal_trials(
 
         state.g_n_trials_completed = completed
 
-        # C's round-zero block ranks/refreshes each active, stale power before
-        # the first UpdateScoreState call and adds its accepted-proposal count
-        # to g_CumScore. Subsequent rounds use the flag=1 ranker tail invoked by
-        # UpdateAllyOrderScore.
+        # C BuildAndSendSUB.c:230-236 clears DAT_00bc1e00 and re-copies this
+        # node's participant power set into it on every trial iteration, before
+        # the round-zero block and before UpdateScoreState read it.
+        state.g_proposal_order_powers = set(participants)
+
+        # C's round-zero block ranks/refreshes each active power that
+        # participates in this proposal before the first UpdateScoreState call
+        # and adds its accepted-proposal count to g_CumScore.  Subsequent rounds
+        # use the flag=1 ranker tail invoked by UpdateAllyOrderScore.
         if completed == 0:
             for power in range(num_powers):
                 if int(state.g_unit_count[power]) <= 0:
                     continue
-                if state.g_power_round_record.get(power, 0) == state.g_current_round:
+                if power not in state.g_proposal_order_powers:
                     continue
                 _rank_candidates_for_power(state, power, flag=0)
                 _refresh_order_table(state, power)

@@ -321,8 +321,6 @@ def _run_send_gof_candidate_pass(
                     re_trials = 1
                 process_turn(state, power, num_trials=re_trials)
 
-    state.g_current_round += 1
-
     broadcast = getattr(state, 'g_broadcast_list', None)
     watermark = int(getattr(state, 'g_broadcast_list_watermark', 0))
     no_press = int(getattr(state, 'g_minimal_press_mode', 0)) == 1

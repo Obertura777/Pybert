@@ -918,11 +918,19 @@ class InnerGameState:
         # non-deviating proposal gate.  RankCandidatesForPower and
         # BuildAndSendSUB both consume the resulting per-power count.
         self.g_power_call_count = np.zeros(7, dtype=np.int32)
-        # DAT_00bc1e04 — current round number
-        self.g_current_round: int = 0
-        # DAT_00bc1e00 per-power game-board round records; power → last seen round
-        # Used by UpdateScoreState to detect stale-round ally order tables.
-        self.g_power_round_record: dict = {}  # {power_idx: round_number}
+        # DAT_00bc1e00 — std::set<power_idx> holding the participant powers of
+        # the broadcast proposal node BuildAndSendSUB is currently running
+        # trials for.  BuildAndSendSUB.c:230-236 clears it and re-copies the
+        # node's own participant set (RegisterProposalOrders) at the top of
+        # every trial iteration; UpdateScoreState.c and BuildAndSendSUB.c:283
+        # then gate their per-power work on membership in it.
+        #
+        # DAT_00bc1e04 is this container's head sentinel, NOT a round counter:
+        # BuildAndSendSUB.c:231-234 passes it as the last argument of the
+        # standard SerializeOrders tree-destroy call, and BuildAndSendSUB.c:285
+        # types it `int **` before comparing it against an iterator's node
+        # pointer.  Both loops are therefore `find(power) != end()` tests.
+        self.g_proposal_order_powers: set = set()
         # DAT_00baed48 — cumulative score counter
         self.g_cum_score: int = 0
         # DAT_0062d34c — score baseline (subtracted from cumulative)
