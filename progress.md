@@ -2557,15 +2557,31 @@ some unrelated candidate.
      rather than ported: `RemoveOrderCandidate`, `InsertCandidateRecord`,
      `InsertOrderCandidate`, `Container_Destroy`, `ClearOrderList`,
      `ConcatTokenList`, `TokenList_BuildOffsets`, `UnitList_FindOrInsert`.
-   - **Open gap found, not closed.** `BuildAndSendSUB.c:243-282` runs, once
-     per proposal node whose history flag `puVar18[4]` is set, a full
-     `ScoreOrderCandidates` pass followed by a restore of the
-     `[n_powers][30]` best-order table from `DAT_00bc0a40/44` into
-     `DAT_00bbf690/694` (`g_current_best_order`). Python models only
-     `ScoreOrderCandidates`' writer loop, from `GenerateAndSubmitOrders`, and
-     never performs the per-proposal rescore or the restore. Closing it needs
-     `DAT_00bc0a40`'s writer, which does not appear in any recovered source,
-     so the step is left unimplemented rather than invented.
+   - **Open gap, now fully specified.** `DAT_00bc0a40/44` is a snapshot of the
+     `[n_powers][30]` best-order table `DAT_00bbf690/694`
+     (`g_current_best_order`), and both of its writers are in the recovered
+     sources — an earlier sweep missed them because they are written through
+     the `(int)&DAT_00bc0a40 + iVar` form:
+     * `GenerateAndSubmitOrders.c:139-143` seeds **both** tables each turn
+       with the same `{&DAT_00bbf614, *DAT_00bbf618}` sentinel pair;
+     * `BuildAndSendSUB.c:628-645` **saves** current → snapshot on the accept
+       branch, right after `DAT_00baed6d = 1` and the copy of the node's
+       21-dword score array into `g_PerPowerFinalScore`;
+     * `BuildAndSendSUB.c:265-282` **restores** snapshot → current at a node's
+       round zero, after its `ScoreOrderCandidates` pass.
+     So each proposal is evaluated from the last *accepted* best-order table
+     rather than from the previous, rejected node's leftovers.
+     `g_best_order_backup` is already declared for `DAT_00bc0a40/44` but is
+     never written, and the port has no equivalent of the accept branch, so
+     wiring only the restore would clear `g_current_best_order` from an empty
+     snapshot at round zero. Left unimplemented pending the accept branch and
+     an oracle to measure it against; the mechanism above is the spec.
+   - Correction to an earlier reading in this item: `puVar18[4]` is not the
+     history flag. The record base is `node+0x18` — fixed by the 21-dword
+     score array, which `BuildHostilityRecord` places at record `+0x30` and
+     `BuildAndSendSUB.c:625` reads at `puVar18+0x12 = node+0x48` — so
+     `puVar18[4]` (`node+0x10`) lies inside the map key, and record `+0x00` is
+     the flag byte `BuildAndSendSUB.c:215` gates on.
    - The oracle corpora (`all_games`, `all_games_albert`) are absent from this
      working tree, so no item in 107-110 was measured against the movement or
      winter oracles.
@@ -2629,6 +2645,15 @@ some unrelated candidate.
    - The base SUB node still sorts first in `g_broadcast_list` (key 0, inserted
      by `_reset_broadcast_for_turn` ahead of every key >= 0), so the primary
      trial entry is unaffected and the movement path still runs its trials.
+   - The same record `+0x00` byte is the port's `sent` flag: `senders.py`
+     documents it as `node+24 / node[6]`, `BuildAndSendSUB.c:215` processes a
+     node only while it is `'\0'` and sets it at `:386`, and every
+     self-generated broadcast record in the port already writes `sent` and
+     `history_flag` together. Only `register_received_press` diverged, setting
+     `history_flag` (which nothing reads) while leaving `sent` false — so a
+     gated proposal was run through the trial loop C skips. It now enqueues
+     with `sent` set, and remains answerable because RESPOND sits outside that
+     guard in both C and the port.
    - Full suite: **445 tests**; `compileall` and `git diff --check` pass.
    - Related divergence, left as-is: `GenerateAndSubmitOrders.c:102-106`
      destroys the whole broadcast tree each turn and rebuilds only the base SUB
@@ -2670,7 +2695,9 @@ some unrelated candidate.
 3. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
    before treating 100% retreat coverage as a meaningful target.
 
-4. Recover the writer of `DAT_00bc0a40/44` so `BuildAndSendSUB`'s
-   per-proposal `ScoreOrderCandidates` pass and best-order-table restore
-   (item 110) can be ported instead of skipped.
+4. Port `BuildAndSendSUB`'s accept branch (`C:628-645`, the
+   `DAT_00baed6d` / SendDM path) so the `DAT_00bc0a40/44` best-order snapshot
+   has a writer, then wire the round-zero restore at `C:265-282`. Both C
+   writers are identified in item 110; the port lacks the accept branch, so
+   the restore cannot be enabled on its own.
 

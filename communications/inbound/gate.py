@@ -351,7 +351,9 @@ def register_received_press(
     Python mapping:
       param_11 (BST)     → _parse_xdo_candidates() applied to press_content
       BuildHostilityRecord → fields embedded in each entry dict
-      local_1d4[0]=1     → history_flag = 1 iff gate_score != 0
+      local_1d4[0]=1     → sent = True (record +0x00, the byte
+                           BuildAndSendSUB.c:215 gates on); history_flag is
+                           the port's inert duplicate of the same byte
       local_1cc          → trial_count = g_press_proposals_cap iff gate_score != 0
                            (record +0x08; the same dword BuildAndSendSUB
                             reads and writes as puVar18[8])
@@ -419,9 +421,23 @@ def register_received_press(
     # loop entirely.  The port previously wrote two separate keys for this one
     # field -- `int_8` (which nothing read) and `trial_count: 0` -- so gated
     # proposals were given a full run of trials.
-    history_flag = 1 if gate_score != 0 else 0
+    #
+    # local_1d4[0] is record +0x00.  The record base is node+0x18 -- fixed by
+    # the 21-dword score array, which BuildHostilityRecord puts at record +0x30
+    # and BuildAndSendSUB.c:625 reads at puVar18+0x12 = node+0x48.  So record
+    # +0x00 is the byte BuildAndSendSUB.c:215 gates on (`*(char *)(puVar18 + 6)
+    # == '\0'` -- process only unflagged nodes) and sets at :386 when the node
+    # is finished; senders.py already documents it as `node+24 / node[6]`, the
+    # `sent` flag, and every self-generated record in this port sets `sent` and
+    # `history_flag` together.  A proposal whose legitimacy gate passed is
+    # therefore enqueued already flagged, and BuildAndSendSUB skips its trial
+    # loop entirely -- the gate has decided.  RESPOND still runs: C's
+    # RECEIVE_PROPOSAL/EvaluatePress/RESPOND block sits outside that guard, as
+    # does `_respond_to_received_press_entry` here.
+    gate_passed = gate_score != 0
+    history_flag = 1 if gate_passed else 0
     trial_count = (
-        int(getattr(state, 'g_press_proposals_cap', 30)) if gate_score != 0 else 0
+        int(getattr(state, 'g_press_proposals_cap', 30)) if gate_passed else 0
     )
 
     # C: local_1f8 = DAT_00bb65f4  (g_broadcast_list size before first insert)
@@ -449,6 +465,7 @@ def register_received_press(
     # ── Pass 1: external candidates, watermark = sentinel ────────────────
     # C: local_150 = 0xffffffff (no watermark); key = local_e4[0] = DAT_00bb65f4
     entry1: dict = {
+        'sent':             gate_passed,   # local_1d4[0], record +0x00
         'received_flag':    True,          # set by FUN_0042e450 (RB-tree insert)
         'type_flag':        0,             # external / received (sub-B)
         'trial_count':      trial_count,   # local_1cc, record +0x08

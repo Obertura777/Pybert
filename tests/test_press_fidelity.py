@@ -686,10 +686,17 @@ def test_gated_proposal_enters_the_broadcast_list_already_at_the_trial_cap():
     assert all(e['trial_count'] == 30 for e in gated)
     # The two keys must not disagree: they were one C dword.
     assert all('int_8' not in e for e in gated)
+    # local_1d4[0] is record +0x00 = the byte BuildAndSendSUB.c:215 gates on,
+    # so a gated proposal is enqueued already flagged and runs no trials.
+    assert all(e['sent'] is True for e in gated)
+    # ...but it is still answerable: RESPOND sits outside the sent guard.
+    assert all(e['received_flag'] is True and e['type_flag'] == 0
+               for e in gated)
 
     ungated = _run(0)
     assert all(e['history_flag'] == 0 for e in ungated)
     assert all(e['trial_count'] == 0 for e in ungated)
+    assert all(e['sent'] is False for e in ungated)
 
 
 def test_broadcast_node_at_the_cap_runs_no_trials():
