@@ -434,7 +434,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
       2. Sequence-catalog walk (C lines 299–401):
          Iterate ``state.g_broadcast_list`` (the Python equivalent of
          ``DAT_00bb65ec``) with three gates mirroring the C:
-           *(char *)(puVar24 + 6) != '\0'  → received_flag is set
+           *(char *)(puVar24 + 6) != '\0'  → record +0x00 (`sent`) is set
            puVar24[7] == 0                 → type_flag == 0 (skip self-generated)
            iStack_c0 == puVar24[0xe]       → exact positive XDO count match
            iStack_b4 == puVar24[0x11]      → exact negative NOT-XDO count match
@@ -490,6 +490,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
 
     # ── 2. Sequence-catalog walk ──────────────────────────────────────────
     matched_entry = None
+    matched_index = -1
     pos_set = set(positive)
     neg_set = set(negative)
     _NOT_TOK = 0x480D
@@ -508,13 +509,23 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
             t = t[1:-1]
         return ' '.join(str(x) for x in t)
 
-    for entry in state.g_broadcast_list:
+    for entry_index, entry in enumerate(state.g_broadcast_list):
         if not isinstance(entry, dict):
             continue
-        # C: *(char *)(puVar24 + 6) != '\0'
-        # Field at node+24: set by FUN_0042e450 (RB-tree insert) for received entries.
-        # Python equivalent: received_flag = True (set by register_received_press).
-        if not entry.get('received_flag', False):
+        # C: *(char *)(puVar24 + 6) != '\0' — node+0x18.  The map node holds
+        # _Myval = pair<Key(8B), Record> at node+0x10, so node+0x18 is record
+        # +0x00: the flag byte `senders.py` documents as `node+24 / node[6]`
+        # and the port carries as `sent`.  (The record base is pinned twice
+        # over: BuildHostilityRecord puts the 21-dword score array at +0x30,
+        # read at puVar18+0x12 = node+0x48, and RESPOND takes the record
+        # timestamp at +0xa0/+0xa4 = puVar18[0x2e]/[0x2f].)
+        #
+        # So CAL_VALUE scores only nodes whose flag byte is set: proposals
+        # register_received_press admitted through the legitimacy gate, and
+        # nodes BuildAndSendSUB.c:386 has finished.  `received_flag` was a
+        # third alias for the same byte, but set unconditionally, so every
+        # received entry was scorable from the moment it arrived.
+        if not entry.get('sent', False):
             continue
         # C: puVar24[7] == 0  — skip self-generated (type_flag == 1) entries.
         if entry.get('type_flag', 0) != 0:
@@ -540,6 +551,7 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         if not neg_set.issubset(neg_texts):
             continue
         matched_entry = entry
+        matched_index = entry_index
         break
 
     if matched_entry is None:

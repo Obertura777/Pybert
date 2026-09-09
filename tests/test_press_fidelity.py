@@ -664,6 +664,48 @@ def test_propose_dmz_decodes_c_flags_and_tracks_the_proposal():
     )
 
 
+def test_cal_value_scores_only_nodes_whose_record_flag_byte_is_set():
+    """CAL_VALUE.c:341 gates on `*(char *)(puVar24 + 6) != '\\0'`.
+
+    The map node holds _Myval = pair<Key(8B), Record> at node+0x10, so
+    node+0x18 is record +0x00 -- the byte senders.py documents as
+    `node+24 / node[6]` and the port carries as `sent`.  A received entry is
+    only scorable once that byte is set: either register_received_press
+    admitted it through the legitimacy gate, or BuildAndSendSUB.c:386 marked
+    it finished.  `received_flag` was a third alias for the same byte, set
+    unconditionally.
+
+    Also covers the matched path itself, which raised NameError on
+    `matched_index` -- the debug call evaluates its arguments eagerly, so
+    every successful match crashed.
+    """
+    toks = ['XDO', '(', '(', 'ENG', 'AMY', 'LON', ')', 'HLD', ')']
+
+    def _run(sent):
+        state = InnerGameState()
+        state.albert_power_idx = 2
+        state.g_broadcast_list[:] = [{
+            'sent': sent,
+            'received_flag': True,
+            'type_flag': 0,
+            'order_candidates': [{'tokens': list(toks), 'type_flag': 0}],
+            'score_vector': [0] * 7,
+            'target_power': 1,
+        }]
+        before = len(state.g_alliance_msg_tree)
+        verdict = _evals_mod._cal_value(state, toks)
+        # The no-match arm archives through BuildAllianceMsg before returning.
+        return verdict, len(state.g_alliance_msg_tree) > before
+
+    verdict, unmatched = _run(False)
+    assert unmatched is True
+    assert verdict == 0x4814
+
+    verdict, unmatched = _run(True)
+    assert unmatched is False
+    assert verdict == 0x481C
+
+
 def test_gated_proposal_enters_the_broadcast_list_already_at_the_trial_cap():
     """local_1cc is record +0x08 -- BuildAndSendSUB's puVar18[8].
 

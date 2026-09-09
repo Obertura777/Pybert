@@ -2692,17 +2692,32 @@ some unrelated candidate.
      340-360 and 630-650 remain unported. This is the same unit of work as the
      `DAT_00bc0a40/44` restore in item 110 — both live inside
      `BuildAndSendSUB.c:243-282` — and both need an oracle to land safely.
-   - **Open question: `received_flag` may be a third alias for record `+0x00`.**
-     `_cal_value` documents its first gate as `*(char *)(puVar24 + 6) != '\0'`,
-     i.e. `node+0x18` = record `+0x00` — the same byte as `sent` and
-     `history_flag` (item 110). If so, `CAL_VALUE` should consider only nodes
-     whose flag byte is set (gate-passing proposals, and nodes
-     `BuildAndSendSUB.c:386` has finished), whereas `register_received_press`
-     sets `received_flag` unconditionally. Not changed: `_press.py`'s RESPOND
-     dispatch is guarded on `received_flag`, and C's own RESPOND call at
-     `BuildAndSendSUB.c:565` sits inside a deeply nested block whose guards are
-     not yet fully traced, so flipping it risks silencing the press-reply path.
-     Trace those guards before acting.
+   - **Resolved: `received_flag` was a third alias for record `+0x00`.** The
+     map node holds `_Myval = pair<Key(8B), Record>` at `node+0x10`, so
+     `node+0x18` is record `+0x00`, `node+0x1c` is record `+0x04`
+     (`type_flag`), and `puVar18[4]`/`[5]` are the key's two words. That also
+     settles item 110's guard: `puVar18[4] != 0` at `BuildAndSendSUB.c:243` is
+     "this node's key is non-zero", i.e. *not the base SUB node*, whose key
+     `GenerateAndSubmitOrders` sets to 0 — it is not a history flag.
+     `CAL_VALUE.c:341` gates on that record `+0x00` byte, so only nodes whose
+     flag is set are scorable: proposals admitted through the legitimacy gate,
+     and nodes `BuildAndSendSUB.c:386` has finished. `_cal_value` now tests
+     `sent`. `received_flag` survives only as the port's own marker for its
+     RESPOND dispatch, which is redundant with `type_flag == 0`.
+   - **Latent crash fixed on the way.** `_cal_value` referenced an unbound
+     `matched_index` in a `_log.debug` call. Python evaluates those arguments
+     eagerly, so *every* successful broadcast-node match raised `NameError`
+     regardless of log level — the whole matched-scoring path, its verdict
+     bands and its legitimacy-gate demotion were unreachable. No test covered
+     a match. The matching loop now carries the index, and a regression
+     exercises both arms.
+   - C's RESPOND has exactly one call site (`BuildAndSendSUB.c:568`), nested
+     inside `*(char *)(puVar18 + 6) == '\0'` → `puVar18[8] == DAT_004c6bbc` →
+     `*(char *)(puVar18 + 0x2c) == '\x01'` (record `+0x98`, the `param_12`
+     byte only pass 2 sets) → `puVar18[7] == 0`. The port instead answers from
+     `_respond_to_received_press_entry`, reached outside the `sent` guard, so
+     item 112's flag change does not silence replies here even though C would
+     skip those nodes.
 
 ## Selection-context limitations (not generation blockers)
 
@@ -2747,7 +2762,3 @@ some unrelated candidate.
 5. Port `ScoreOrderCandidates`' candidate-record reset (`C:116-215`) and its
    remaining blocks, and move the call to `BuildAndSendSUB`'s round zero
    (item 113). Same unit of work as open item 4.
-
-6. Trace the guards around `BuildAndSendSUB.c:565` to settle whether
-   `received_flag` is a third Python alias for record `+0x00` (item 113).
-
