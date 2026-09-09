@@ -2570,43 +2570,37 @@ some unrelated candidate.
      working tree, so no item in 107-110 was measured against the movement or
      winter oracles.
 
-111. `ComputeWinBuilds_Populate` versus `compute_win_builds` — unresolved
+111. `ComputeWinBuilds_Populate` versus `compute_win_builds` — resolved in
+     favour of the port
 
-   - `BuildOrderSpec`'s insert descent is unambiguous: a new key goes **right**
-     when `new_hi < node_hi`, or when `new_hi <= node_hi && new_lo <= node_lo`,
-     and left otherwise. Smaller keys therefore sit to the right, in-order
-     traversal is descending, `begin()` is the maximum and the rightmost
-     element is the minimum. This is the premise item 106 already relies on.
-   - `ComputeWinBuilds_Populate` builds its multiset once, keyed on the
-     `this + pow*0xc + 0x4000` final score **plus 0x32 (50)**, then repeats
-     `param_1` times: seed an iterator with `{container, header}` (that is,
-     `end()`), step it with `FUN_0040f660`, commit via
-     `FUN_00461010(this+8, prov, prov)`, and erase with `RemoveOrderCandidate`.
-     `FUN_0040f660` is distinct from `TreeIterator_Advance` and
-     `std_Tree_IteratorIncrement`, both of which the same file uses for forward
-     iteration, so it is the decrement — the loop consumes the **minimum** key,
-     exactly as `FUN_00442040` does for removals.
-   - It is almost certainly `FUN_0044bd40`: it takes the same `(this, count)`
-     shape send_GOF.c:402 passes, and it is the only recovered routine that
-     increments `DAT_00baed34`, which send_GOF reads immediately after the WIN
-     branch to size its sleep.
-   - The port's `compute_win_builds` disagrees on two points. It selects
-     `begin()` (the maximum), and it re-runs `score_provinces` plus
-     `score_order_candidates_own_power` inside the selection loop so that
-     `ScoreProvinces`' `+/-0x9c4` adjustments apply as each build is committed.
-     Neither the per-iteration rescore nor a `begin()` consume appears in
-     `ComputeWinBuilds_Populate`, whose multiset is built once, outside the
-     loop.
-   - Both readings are internally coherent: "build where the final score is
-     lowest" is a defensible weakest-home-centre heuristic and would mirror the
-     removal path exactly, while the port's per-iteration rescore is grounded
-     in a real `ScoreProvinces` constant. They cannot both be `FUN_0044bd40`,
-     so one of the two recoveries is partial.
-   - **Left unchanged.** Flipping the selection end rewrites which centre gets
-     built and cannot be validated while the oracle corpora are absent from the
-     tree. Resolve it against `W1903A` first — that phase is already
-     4/4 candidate-covered and 2/4 exact, so a build-side inversion should show
-     up immediately.
+   - `ScoreProvinces.c:1572-1610` settles it. Whenever the phase is `WIN`,
+     ScoreProvinces walks the adjustment orders already placed in the map at
+     `inner+0x2474` and shifts each chosen province's score in the score set at
+     `local_554c+0x361c`:
+     * remove phase (`sc_count < unit_count`): `score += 0x9c4` (+2500);
+     * build phase (otherwise):                `score -= 0x9c4` (-2500).
+   - That is an exclusion mechanism, and its direction fixes each selector's
+     end. A chosen province must be pushed **away** from the end its selector
+     consumes, so builds, whose chosen provinces are pushed **down**, must
+     consume the **maximum**, and removes, whose chosen provinces are pushed
+     **up**, must consume the **minimum**. The `-2500` is also inert unless
+     ScoreProvinces is re-run between selections.
+   - `compute_win_builds` is therefore correct as written on both counts: it
+     takes the highest-scoring candidate and re-runs `score_provinces` plus
+     `score_order_candidates_own_power` inside the selection loop so the
+     exclusion applies. `compute_win_removes` taking the minimum is equally
+     confirmed, and matches item 106.
+   - `ComputeWinBuilds_Populate.c` is a mis-named recovery, not the live
+     `FUN_0044bd40`. Its body has the removal shape: it walks the map at
+     `inner+0x24b4` feeding `UnitList_FindOrInsert(inner+0x2450, ...)` — unit
+     keys, not build sites, which `SetOwnPower.c:39` places at `+0x24cc` — and
+     it consumes `--end()`, the minimum. Only its `+0x32` constant differs from
+     the `+200` item 106 read out of `FUN_00442040`. Nothing in the port should
+     be derived from this file; the `BuildOrderSpec` comparator analysis it
+     prompted (a new key goes right when `new <= node`, so in-order is
+     descending, `begin()` is the maximum and the rightmost element the
+     minimum) does stand and independently corroborates item 106.
+   - No code change. Open item 5 is withdrawn.
 
 112. `int_8` and `trial_count` are one record dword
 
@@ -2680,7 +2674,3 @@ some unrelated candidate.
    per-proposal `ScoreOrderCandidates` pass and best-order-table restore
    (item 110) can be ported instead of skipped.
 
-5. Settle item 111 against the `W1903A` oracle: `ComputeWinBuilds_Populate`
-   consumes the ordered multiset's minimum, while `compute_win_builds`
-   consumes its maximum and rescores per iteration. One of the two
-   recoveries of `FUN_0044bd40` is partial.
