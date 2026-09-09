@@ -2719,6 +2719,28 @@ some unrelated candidate.
      item 112's flag change does not silence replies here even though C would
      skip those nodes.
 
+114. Static sweep for unreachable-path defects
+
+   - The `matched_index` crash in item 113 was found only because a regression
+     finally exercised `_cal_value`'s matched arm. Ran `pyflakes` over the
+     whole package to find the rest of that class. It reports **no remaining
+     undefined names**, so `_cal_value` was the only latent `NameError`.
+   - Checked every "assigned but never used" local that could indicate a
+     dropped computation rather than a leftover:
+     * `heuristics/scoring.py` allocated a local `g_unit_presence` array with a
+       comment claiming Section 4g consumed it. Section 4g reads
+       `g_own_reach_score` — `ScoreProvinces.c:678` gates on
+       `DAT_0058f8e8/ec` — and never touched it. Removed, with the false
+       claim replaced by a note.
+     * `heuristics/_primitives.py` read `win_threshold` for a band cutoff that
+       the 2026-08-12 correction had already replaced with the caller's trial
+       weight. Removed likewise.
+     * The remainder (`iVar20` in `monte_carlo/trial.py`, `NUM_PROVINCES`,
+       `idx`, `_power`, `sec_name`, `power_name`, `_YES`/`_REJ`) are C-index
+       or formatting leftovers with no C counterpart to drop.
+   - Full suite: **446 tests**; `pyflakes`, `compileall` and
+     `git diff --check` pass.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker

@@ -753,7 +753,9 @@ def evaluate_alliance_score(
     state.g_alliance_desirability.fill(0.0)
 
     # --- Phase 0: Setup ---
-    win_threshold = state.win_threshold  # typically 18
+    # (win_threshold was read here for a band cutoff the 2026-08-12 correction
+    # replaced with the caller's trial weight; see the note at the supply-centre
+    # band below.  Nothing has used it since.)
     near_end_factor = float(state.g_near_end_game_factor)
 
     # Weight factors based on NearEndGameFactor

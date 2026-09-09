@@ -548,8 +548,9 @@ def score_provinces(state: InnerGameState,
     # Reset each trial; re-filled below.
     state.g_friendly_unit_flag.fill(0)
     state.g_established_ally_flag.fill(0)
-    # g_unit_presence stays local — only consumed below inside Section 4g.
-    g_unit_presence        = np.zeros(num_provinces, dtype=np.int32)
+    # (A local g_unit_presence array used to be allocated here with a comment
+    # claiming Section 4g consumed it.  Section 4g reads g_own_reach_score --
+    # ScoreProvinces.c:678 gates on DAT_0058f8e8/ec -- and never touched it.)
 
     # Section 2 — build reachability matrix from unit list
     # reachability[province][power] = units of power that can reach province
