@@ -2785,9 +2785,24 @@ some unrelated candidate.
      node rescores and restores while the key-zero base node does neither.
      Full suite: **448 tests**; `pyflakes`, `compileall` and
      `git diff --check` pass.
-   - Still unported from that routine: the blocks at `ScoreOrderCandidates.c`
-     340-360 and 630-650, which write further per-power trees the port does
-     not carry.
+   - **The rest of `ScoreOrderCandidates` is observably dead.** Its remaining
+     two blocks compute the function's return value and nothing else:
+     * `:340-628` counts, per participating power, the candidate records whose
+       order sequence survives a filter against three *function-local*
+       per-power tree arrays (`local_3fc`, `local_204`, `local_300`),
+       accumulating into the local `aiStack_450[21]`;
+     * `:630-649` reduces that to `min(aiStack_450[p])` over participating
+       powers with a non-empty `local_3fc[p]`, starting from
+       `DAT_00989680` = 10,000,000, and stores it in `local_56c`, which
+       `:682` returns.
+     Between `:340` and `:655` there is not one global write and not one call
+     beyond reads and comparisons — every `FUN_00419300` insert happens in the
+     writer loop at `:242-323`, and only two of those five target globals
+     (`:243` and `:292`); the other three fill the local tree arrays, which
+     `eh_vector_destructor_iterator` destroys on the way out. And
+     `BuildAndSendSUB.c:260`, the routine's sole call site, discards the
+     return value. So the two blocks cannot affect Albert's behaviour, and the
+     port is complete for this routine with respect to observable effects.
 
 ## Selection-context limitations (not generation blockers)
 
@@ -2822,8 +2837,3 @@ some unrelated candidate.
    reproduce an unknown process-wide call history.
 3. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
    before treating 100% retreat coverage as a meaningful target.
-
-4. Port the two remaining `ScoreOrderCandidates` blocks (`C:340-360` and
-   `C:630-650`), which write further per-power trees the port does not yet
-   carry. The rest of that routine and the `DAT_00bc0a40/44` snapshot landed
-   in item 115.
