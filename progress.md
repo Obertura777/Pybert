@@ -2804,6 +2804,38 @@ some unrelated candidate.
      return value. So the two blocks cannot affect Albert's behaviour, and the
      port is complete for this routine with respect to observable effects.
 
+116. Coverage close-out
+
+   - Additional routines read end to end this pass and found faithful with no
+     change: `EvaluateOrderProposalsAndSendGOF` (the readiness rule is "every
+     key of the node's `+0x30` participant set is present in its `+0x3c`
+     affirmative set", which `participants.issubset(affirmative)` reproduces,
+     and an existing regression already pins it), `PrepareDrawVoteSet` (own
+     power unconditionally, plus any power with `curr_sc_cnt > 0` and
+     `trust_hi >= 0 && (trust_hi > 0 || trust_lo > 1)`), and `SCO_Handler`.
+   - Checked one more suspected alias and cleared it: the
+     `g_pos_analysis_list` node byte at `+0x20` is carried in the port as
+     three keys (`board_satisfied`, `processed`, `processed_flag`), but
+     `bot/gof.py:221-223` writes all three together and the read gate ORs
+     them, so `receive_proposal`'s dedup filter does observe the update. Unlike
+     `sent`/`history_flag` (item 110) these never diverge.
+   - Remaining C files with no dedicated audit item are the mechanical server
+     handlers and helpers — `MAP_Handler`, `MDF_Handler`, `ORD_Handler`,
+     `YES_*_Handler`, `NOT_TME_Handler`, `NOWHandler`, `RECEIVE_MSG`,
+     `QueueIncomingMessage`, `SEND_LOG`, `CheckTimeLimit`, `BaseBot`,
+     `analyze_position`, `GetProvinceToken`, `ParseOrderToken`,
+     `RegisterAllowedPressToken`, `SendAlliancePress`, `SendAllyPressByPower`,
+     `g_BuildCandidateList`, `BuildOrder_CVY`, `BuildOrder_RTO` — each of
+     which either stores a server field verbatim or is STL/token plumbing
+     already absorbed into Python data structures.
+   - Every open item that named a defect or an unported behaviour is now
+     closed. What remains in "Open work" is the absent oracle corpora, the
+     coverage measurement that depends on them, the PRNG/call-history trace
+     (explicitly out of scope for this audit), and one inconsistent reference
+     data pair — no known incorrectness in the port itself.
+   - Full suite: **448 tests**; `pyflakes`, `compileall` and
+     `git diff --check` pass.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
