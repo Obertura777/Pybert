@@ -17,6 +17,14 @@ _press_mod = __import__(f'{_pkg_name}.communications.evaluators.press', fromlist
 _evals_mod = __import__(f'{_pkg_name}.communications.evaluators._evals', fromlist=['_eval_single_xdo'])
 _handlers_mod = __import__(f'{_pkg_name}.communications.evaluators.handlers', fromlist=['cal_move'])
 _respond_mod = __import__(f'{_pkg_name}.communications.inbound.respond', fromlist=['receive_proposal'])
+_gate_mod = __import__(
+    f'{_pkg_name}.communications.inbound.gate',
+    fromlist=['register_received_press'],
+)
+_press_mod_sub = __import__(
+    f'{_pkg_name}.bot.client._press',
+    fromlist=['_advance_broadcast_proposal_trials'],
+)
 _ack_mod = __import__(f'{_pkg_name}.communications.inbound.ack', fromlist=['ack_matcher'])
 _scheduling_mod = __import__(f'{_pkg_name}.communications.scheduling', fromlist=['dispatch_scheduled_press'])
 _senders_mod = __import__(f'{_pkg_name}.communications.senders', fromlist=['cancel_prior_press'])
@@ -654,6 +662,51 @@ def test_propose_dmz_decodes_c_flags_and_tracks_the_proposal():
     assert state.g_pos_analysis_list[0]['tokens'] == (
         'PRP ( DMZ ( FRA GER ) BUR MUN )'.split()
     )
+
+
+def test_gated_proposal_enters_the_broadcast_list_already_at_the_trial_cap():
+    """local_1cc is record +0x08 -- BuildAndSendSUB's puVar18[8].
+
+    register_received_press.c:150-158 stores DAT_004c6bbc there when the
+    legitimacy gate returns non-null, and BuildAndSendSUB.c:220 breaks out of
+    the trial loop on `DAT_004c6bbc <= puVar18[8]`.  A gated proposal is
+    therefore inserted already at the cap and runs no trials.
+    """
+    def _run(gate_score):
+        state = InnerGameState()
+        state.g_press_proposals_cap = 30
+        with patch.object(_gate_mod, 'legitimacy_gate', return_value=gate_score):
+            _gate_mod.register_received_press(
+                state, ['PCE', '(', 'ENG', 'FRA', ')'], 0x4101, [0x4102],
+            )
+        return state.g_broadcast_list
+
+    gated = _run(5)
+    assert all(e['history_flag'] == 1 for e in gated)
+    assert all(e['trial_count'] == 30 for e in gated)
+    # The two keys must not disagree: they were one C dword.
+    assert all('int_8' not in e for e in gated)
+
+    ungated = _run(0)
+    assert all(e['history_flag'] == 0 for e in ungated)
+    assert all(e['trial_count'] == 0 for e in ungated)
+
+
+def test_broadcast_node_at_the_cap_runs_no_trials():
+    """BuildAndSendSUB.c:220 breaks before the first iteration."""
+    state = InnerGameState()
+    state.g_unit_count[0] = 1
+    ran = []
+    with (
+        patch.object(_press_mod_sub, 'update_score_state',
+                     lambda _s: ran.append('update')),
+        patch.object(_press_mod_sub, 'check_time_limit', return_value=False),
+    ):
+        completed = _press_mod_sub._advance_broadcast_proposal_trials(
+            state, {'trial_count': 30}, 30,
+        )
+    assert completed is True
+    assert ran == []
 
 
 def test_propose_dmz_first_pass_requires_flag3_clear():

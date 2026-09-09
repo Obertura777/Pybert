@@ -2606,6 +2606,40 @@ some unrelated candidate.
      4/4 candidate-covered and 2/4 exact, so a build-side inversion should show
      up immediately.
 
+112. `int_8` and `trial_count` are one record dword
+
+   - `BuildHostilityRecord`'s copy constructor fixes the alliance record's
+     layout exactly, and it matches `register_received_press`'s stack
+     reconstruction field for field: byte at `+0x00`, dwords at `+0x04`/`+0x08`,
+     three 12-byte containers at `+0x0c`/`+0x18`/`+0x24`, a 21-dword array at
+     `+0x30`, a dword at `+0x84`, token lists at `+0x88`/`+0xa8`/`+0xbc`, a byte
+     at `+0x98`, a time64 at `+0xa0`, and a word at `+0xb8`.
+   - `local_1cc` is that record's `+0x08` dword, and `+0x08` is the field
+     `BuildAndSendSUB` uses as the node's completed-trial counter:
+     `BuildAndSendSUB.c:220` breaks the trial loop on
+     `DAT_004c6bbc <= puVar18[8]`, `:226` copies it into `DAT_0062cc64`,
+     `:373` writes it back after the round, and `:380-386` marks the node
+     processed once it equals the cap.
+   - `register_received_press.c:150-158` sets that dword to `DAT_004c6bbc`
+     whenever `FUN_00426140`'s legitimacy gate returns non-null, so a gated
+     proposal is enqueued **already at the cap** and skips the MC trial loop
+     entirely — the gate has already decided, and the node goes straight to
+     the post-loop handling.
+   - The port wrote two Python keys for that one dword with conflicting
+     values: `int_8` (the cap, which no reader consulted) and
+     `trial_count: 0`. Every gated proposal therefore received a full run of
+     trials. Unified onto `trial_count`; `int_8` is gone and
+     `alliance.py`'s layout table now names the field for what it is.
+   - The base SUB node still sorts first in `g_broadcast_list` (key 0, inserted
+     by `_reset_broadcast_for_turn` ahead of every key >= 0), so the primary
+     trial entry is unaffected and the movement path still runs its trials.
+   - Full suite: **445 tests**; `compileall` and `git diff --check` pass.
+   - Related divergence, left as-is: `GenerateAndSubmitOrders.c:102-106`
+     destroys the whole broadcast tree each turn and rebuilds only the base SUB
+     node, whereas `_reset_broadcast_for_turn` keeps a persistent tree and
+     rewinds/retires its entries. That is a deliberate, load-bearing choice in
+     the port, not an oversight.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker

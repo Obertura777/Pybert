@@ -331,7 +331,8 @@ def register_received_press(
       3. FUN_00426140(local_1e8) → local_1fc: legitimacy gate over the
          candidate set.  Returns a non-null pointer when score > 0.
          When non-null: local_1d4[0]=1 (registration flag) and
-         local_1cc=DAT_004c6bbc (int_8 / trial-cap token).
+         local_1cc=DAT_004c6bbc, i.e. record +0x08 -- the node's completed-
+         trial counter -- starts at the cap so BuildAndSendSUB skips it.
          When null: both stay 0. The function always enqueues regardless.
       4. local_134 = __time64(NULL) — wall-clock capture.
       5. Two-pass split of param_11 (order-candidates BST) by candidate polarity:
@@ -351,7 +352,9 @@ def register_received_press(
       param_11 (BST)     → _parse_xdo_candidates() applied to press_content
       BuildHostilityRecord → fields embedded in each entry dict
       local_1d4[0]=1     → history_flag = 1 iff gate_score != 0
-      local_1cc          → int_8 = g_press_proposals_cap iff gate_score != 0
+      local_1cc          → trial_count = g_press_proposals_cap iff gate_score != 0
+                           (record +0x08; the same dword BuildAndSendSUB
+                            reads and writes as puVar18[8])
       local_1e4/local_f0 → one Python candidate list retaining the polarity
                            byte; CAL_VALUE reconstructs the two C trees
       score_vector[p]    → the one legitimacy_gate score replicated to all
@@ -404,10 +407,22 @@ def register_received_press(
         _log.warning("register_received_press: legitimacy_gate raised %s; proceeding", exc)
 
     # C: local_1d4[0] = 1 and local_1cc = DAT_004c6bbc only when local_1fc != NULL.
-    # history_flag maps to local_1d4[0]; int_8 maps to local_1cc. CAL_VALUE's
-    # delta-baseline branch is instead controlled by local_150 (`watermark`).
+    # history_flag maps to local_1d4[0].  CAL_VALUE's delta-baseline branch is
+    # instead controlled by local_150 (`watermark`).
+    #
+    # local_1cc is record +0x08 (BuildHostilityRecord's `int_8` slot), and that
+    # is the very dword BuildAndSendSUB uses as the node's completed-trial
+    # counter: BuildAndSendSUB.c:220 breaks on `DAT_004c6bbc <= puVar18[8]`,
+    # :226 copies it to DAT_0062cc64, :373 writes it back, and :380 marks the
+    # node processed once it equals the cap.  A proposal whose legitimacy gate
+    # passed is therefore inserted already AT the cap and skips the MC trial
+    # loop entirely.  The port previously wrote two separate keys for this one
+    # field -- `int_8` (which nothing read) and `trial_count: 0` -- so gated
+    # proposals were given a full run of trials.
     history_flag = 1 if gate_score != 0 else 0
-    int_8 = int(getattr(state, 'g_press_proposals_cap', 30)) if gate_score != 0 else 0
+    trial_count = (
+        int(getattr(state, 'g_press_proposals_cap', 30)) if gate_score != 0 else 0
+    )
 
     # C: local_1f8 = DAT_00bb65f4  (g_broadcast_list size before first insert)
     size_before = len(state.g_broadcast_list)
@@ -436,11 +451,10 @@ def register_received_press(
     entry1: dict = {
         'received_flag':    True,          # set by FUN_0042e450 (RB-tree insert)
         'type_flag':        0,             # external / received (sub-B)
-        'trial_count':      0,
+        'trial_count':      trial_count,   # local_1cc, record +0x08
         'sched_time':       sched_time,
         'watermark':        None,          # local_150 = 0xffffffff
         'history_flag':     history_flag,  # local_1d4[0]
-        'int_8':            int_8,         # local_1cc = DAT_004c6bbc when gate passes
         'from_power_tok':   from_power_tok,
         'target_power':     int(from_power_tok) & 0x7f,
         'sublist1':         [from_power_tok],

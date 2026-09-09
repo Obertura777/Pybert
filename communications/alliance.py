@@ -240,7 +240,11 @@ def build_hostility_record(src: dict) -> dict:
     Struct layout (C offset → Python key):
       +0x00  1B   'flag_0'        — leading flag/type byte
       +0x04  4B   'int_4'         — dword
-      +0x08  4B   'int_8'         — dword
+      +0x08  4B   'trial_count'   — dword; the node's completed-trial
+                                    counter (BuildAndSendSUB's puVar18[8]),
+                                    seeded to the cap by
+                                    register_received_press when the
+                                    legitimacy gate passes
       +0x0c  12B  'obj_0c'        — 12-byte token/proposal object
                                     (FUN_00405090 copy constructor)
       +0x18  12B  'obj_18'        — 12-byte object
