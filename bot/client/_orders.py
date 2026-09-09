@@ -114,6 +114,15 @@ def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
         'history_flag': 0,
         'order_candidates': [{'tokens': ['SUB'], 'type_flag': 0}],
     }
+    # GenerateAndSubmitOrders.c:139-143 seeds BOTH best-order tables with the
+    # same sentinel pair for every (power, slot): DAT_00bbf690/694
+    # (g_current_best_order) and its DAT_00bc0a40/44 snapshot
+    # (g_best_order_backup).  They only diverge once BuildAndSendSUB's accept
+    # branch saves into the snapshot.
+    state.g_current_best_order = {}
+    state.g_current_best_order_records = {}
+    state.g_best_order_backup = {}
+
     entries = state.g_broadcast_list
     insert_at = next(
         (i for i, entry in enumerate(entries)

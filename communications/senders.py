@@ -290,6 +290,65 @@ def emit_xdo_proposals_to_broadcast(state: 'InnerGameState') -> int:
     return emitted
 
 
+def _reset_participating_candidate_records(state: "InnerGameState") -> int:
+    """ScoreOrderCandidates.c:116-215 — re-arm the candidate records.
+
+    For every record in ``g_candidate_record_list`` (DAT_00bbf60c) whose power
+    field is a member of DAT_00bc1e00 — the participant power set of the
+    proposal being scored, bound as ``g_proposal_order_powers`` — C restores
+    the TrialEvaluateOrders constructor defaults:
+
+      puVar5[9] = puVar5[8]      base_score  <- score      (+0x24 <- +0x20)
+      puVar5[10] = 10000         min_rank                  (+0x28)
+      puVar5[0xb] = 0            max_rank                  (+0x2c)
+      puVar5[0xc] = 0x461c4000   running_avg = 10000.0f    (+0x30)
+      puVar5[0xd] = 0            round_count               (+0x34)
+      puVar5[0x10] = 0           weight (8-byte double)    (+0x40/+0x44)
+      puVar5[0x11] = 0
+      *(byte *)(puVar5 + 0x14) = 0   processed             (+0x50)
+      *(byte *)(puVar5 + 0x51) = 0   pareto_flag           (+0x51)
+      puVar5[0x16] = 0           output_score              (+0x58)
+      puVar5[0x71] = 0                                     (+0x1c4)
+
+    plus three contiguous 30-entry arrays at +0x5c / +0xd4 / +0x14c and one
+    per-province array at +0x21c.  The port carries two of the 30-entry arrays
+    (``trial_scores`` and ``output_score_history``); the third and the
+    per-province array have no Python counterpart, so nothing is zeroed for
+    them.  These constants are exactly the defaults
+    ``_insert_candidate_record`` applies on creation, which is what makes the
+    mapping unambiguous.
+
+    Returns the number of records reset.
+    """
+    participants = getattr(state, 'g_proposal_order_powers', None) or set()
+    if not participants:
+        return 0
+    reset = 0
+    for record in getattr(state, 'g_candidate_record_list', []) or []:
+        if not isinstance(record, dict):
+            continue
+        power = record.get('power_idx', record.get('power', -1))
+        try:
+            power = int(power)
+        except (TypeError, ValueError):
+            continue
+        if power not in participants:
+            continue
+        record['base_score'] = record.get('score', 0)
+        record['min_rank'] = 10000
+        record['max_rank'] = 0
+        record['running_avg'] = 10000.0
+        record['round_count'] = 0
+        record['weight'] = 0.0
+        record['processed'] = 0
+        record['pareto_flag'] = 0
+        record['output_score'] = 0.0
+        record['trial_scores'] = [0.0] * 30
+        record['output_score_history'] = [0.0] * 30
+        reset += 1
+    return reset
+
+
 def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
     """
     Python port of ScoreOrderCandidates' writer loop
@@ -315,6 +374,9 @@ def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+
+    # C:116-215 runs before the writer loop, inside the same routine.
+    _reset_participating_candidate_records(state)
 
     bl = getattr(state, 'g_broadcast_list', None)
     if not bl:

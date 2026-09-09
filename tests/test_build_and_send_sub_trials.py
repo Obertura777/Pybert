@@ -17,6 +17,10 @@ _press_mod = __import__(
     fromlist=['_advance_broadcast_proposal_trials'],
 )
 
+_senders_mod = __import__(
+    f'{_pkg_name}.communications.senders',
+    fromlist=['_reset_participating_candidate_records'],
+)
 _trial_mod = __import__(
     f'{_pkg_name}.monte_carlo.trial',
     fromlist=['update_score_state'],
@@ -180,3 +184,89 @@ def test_update_score_state_follows_the_participant_set():
 
     assert ally_calls == []
     assert refresh_calls == []
+
+
+def test_candidate_records_are_rearmed_for_participating_powers_only():
+    """ScoreOrderCandidates.c:116-215 restores the constructor defaults.
+
+    The gate is membership in DAT_00bc1e00 (g_proposal_order_powers), and the
+    constants are exactly the ones _insert_candidate_record applies on
+    creation.
+    """
+    state = InnerGameState()
+    state.g_proposal_order_powers = {0, 2}
+
+    def _dirty(power):
+        return {
+            'power': power, 'score': 42,
+            'base_score': 7, 'min_rank': 3, 'max_rank': 9,
+            'running_avg': 1.5, 'round_count': 4, 'weight': 2.5,
+            'processed': 1, 'pareto_flag': 1, 'output_score': 99.0,
+            'trial_scores': [5.0] * 30,
+            'output_score_history': [5.0] * 30,
+        }
+
+    participating, bystander = _dirty(0), _dirty(1)
+    state.g_candidate_record_list = [participating, bystander, _dirty(2)]
+
+    reset = _senders_mod._reset_participating_candidate_records(state)
+    assert reset == 2
+
+    assert participating['base_score'] == 42      # puVar5[9] = puVar5[8]
+    assert participating['min_rank'] == 10000     # puVar5[10]
+    assert participating['max_rank'] == 0         # puVar5[0xb]
+    assert participating['running_avg'] == 10000.0  # 0x461c4000
+    assert participating['round_count'] == 0      # puVar5[0xd]
+    assert participating['weight'] == 0.0         # puVar5[0x10]/[0x11]
+    assert participating['processed'] == 0        # byte +0x50
+    assert participating['pareto_flag'] == 0      # byte +0x51
+    assert participating['output_score'] == 0.0   # puVar5[0x16]
+    assert participating['trial_scores'] == [0.0] * 30
+    assert participating['output_score_history'] == [0.0] * 30
+
+    # A power outside the proposal's participant set is untouched.
+    assert bystander['base_score'] == 7
+    assert bystander['min_rank'] == 3
+    assert bystander['output_score'] == 99.0
+
+    # An empty participant set resets nothing.
+    state.g_proposal_order_powers = set()
+    assert _senders_mod._reset_participating_candidate_records(state) == 0
+
+
+def test_round_zero_restores_the_best_order_snapshot_for_non_base_nodes():
+    """BuildAndSendSUB.c:243-282 runs only when the node's map key is non-zero.
+
+    The base SUB node's key is 0 (GenerateAndSubmitOrders), so it neither
+    rescores nor restores.
+    """
+    def _run(key):
+        state = InnerGameState()
+        state.g_unit_count[0] = 1
+        state.g_current_best_order = {0: ['stale']}
+        state.g_current_best_order_records = {0: ['stale-rec']}
+        state.g_best_order_backup = {0: ['accepted']}
+        state.g_best_order_backup_records = {0: ['accepted-rec']}
+        rescored = []
+        with (
+            patch.object(_press_mod, 'score_order_candidates_from_broadcast',
+                         lambda _s: rescored.append(True)),
+            patch.object(_press_mod, '_rank_candidates_for_power',
+                         lambda _s, power, flag=0: None),
+            patch.object(_press_mod, '_refresh_order_table',
+                         lambda _s, power: None),
+            patch.object(_press_mod, 'update_score_state', lambda _s: None),
+            patch.object(_press_mod, 'check_time_limit', return_value=False),
+        ):
+            _advance_trials(state, {'trial_count': 0, 'key': key}, 1)
+        return state, rescored
+
+    state, rescored = _run(3)
+    assert rescored == [True]
+    assert state.g_current_best_order == {0: ['accepted']}
+    assert state.g_current_best_order_records == {0: ['accepted-rec']}
+
+    # The base SUB node keeps whatever the MC loop left in place.
+    state, rescored = _run(0)
+    assert rescored == []
+    assert state.g_current_best_order == {0: ['stale']}

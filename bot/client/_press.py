@@ -60,6 +60,7 @@ from ..orders import (
     _format_retreat_commands,
     _build_order_seq_from_table,
 )
+from ...communications import score_order_candidates_from_broadcast
 from ..gof import _send_gof, _evaluate_order_proposals_and_send_gof
 from ..analysis import (
     _phase_handler, _analyze_position, _move_analysis,
@@ -133,6 +134,32 @@ def _advance_broadcast_proposal_trials(
         # node's participant power set into it on every trial iteration, before
         # the round-zero block and before UpdateScoreState read it.
         state.g_proposal_order_powers = set(participants)
+
+        # C BuildAndSendSUB.c:243-282: for a node whose map key is non-zero --
+        # i.e. any node but the base SUB node, whose key
+        # GenerateAndSubmitOrders sets to 0 -- round zero runs the whole of
+        # ScoreOrderCandidates over this node's two clause sets and then
+        # restores the best-order table from its DAT_00bc0a40/44 snapshot, so
+        # each proposal is scored from the last *accepted* table rather than
+        # from the previous, rejected node's leftovers.
+        if completed == 0 and int(entry.get('key', 0)) != 0:
+            try:
+                score_order_candidates_from_broadcast(state)
+            except (KeyError, IndexError, TypeError, ValueError):
+                logger.exception(
+                    "score_order_candidates_from_broadcast raised during"
+                    " round zero; continuing"
+                )
+            backup = getattr(state, 'g_best_order_backup', None) or {}
+            state.g_current_best_order = {
+                power: list(slots) for power, slots in backup.items()
+            }
+            state.g_current_best_order_records = {
+                power: list(records)
+                for power, records in (
+                    getattr(state, 'g_best_order_backup_records', None) or {}
+                ).items()
+            }
 
         # C's round-zero block ranks/refreshes each active power that
         # participates in this proposal before the first UpdateScoreState call
@@ -838,6 +865,17 @@ class _PressMixin:
                         _time_expired = True
                         break
                     _entry['sent'] = True
+                    # C BuildAndSendSUB.c:628-645: once the node reaches the
+                    # trial cap the accept branch saves the current best-order
+                    # table into the DAT_00bc0a40/44 snapshot.
+                    self.state.g_best_order_backup = {
+                        power: list(slots) for power, slots
+                        in self.state.g_current_best_order.items()
+                    }
+                    self.state.g_best_order_backup_records = {
+                        power: list(records) for power, records
+                        in self.state.g_current_best_order_records.items()
+                    }
 
                 # C lines 490–570: RECEIVE_PROPOSAL + EvaluatePress + RESPOND
                 # Only for received entries (received_flag==1, type_flag==0).

@@ -2741,6 +2741,54 @@ some unrelated candidate.
    - Full suite: **446 tests**; `pyflakes`, `compileall` and
      `git diff --check` pass.
 
+115. `BuildAndSendSUB.c:243-282` ported — closes open items 4 and 5
+
+   - **Candidate-record reset (`ScoreOrderCandidates.c:116-215`).** For every
+     `g_candidate_record_list` record whose power is a member of
+     `DAT_00bc1e00` (`g_proposal_order_powers`, item 108), C restores the
+     `TrialEvaluateOrders` constructor defaults: `base_score <- score`
+     (`+0x24 <- +0x20`), `min_rank = 10000` (`+0x28`), `max_rank = 0`
+     (`+0x2c`), `running_avg = 0x461c4000` — float `10000.0` — (`+0x30`),
+     `round_count = 0` (`+0x34`), the 8-byte `weight = 0` (`+0x40`/`+0x44`),
+     the `processed` and `pareto_flag` bytes (`+0x50`, `+0x51`),
+     `output_score = 0` (`+0x58`), the dword at `+0x1c4`, three contiguous
+     30-entry arrays at `+0x5c`/`+0xd4`/`+0x14c`, and a per-province array at
+     `+0x21c`. The mapping is unambiguous because those constants are exactly
+     what `_insert_candidate_record` already applies on creation. Ported as
+     `_reset_participating_candidate_records`, called from the head of
+     `score_order_candidates_from_broadcast` where C runs it — ahead of the
+     writer loop, inside the same routine. The port carries two of the three
+     30-entry arrays (`trial_scores`, `output_score_history`); the third and
+     the per-province array have no Python counterpart and are left alone.
+   - **Best-order snapshot (`DAT_00bc0a40/44`).** Wired in all three places
+     C touches it: `GenerateAndSubmitOrders.c:139-143` seeds the snapshot and
+     `g_current_best_order` together each turn (now in
+     `_prepare_broadcast_nodes_for_movement`); `BuildAndSendSUB.c:628-645`
+     saves current → snapshot once a node reaches the trial cap; and
+     `BuildAndSendSUB.c:265-282` restores snapshot → current at round zero.
+     Each proposal is therefore scored from the last *accepted* best-order
+     table rather than the previous, rejected node's leftovers.
+   - **Guard.** The round-zero block runs only when the node's map key is
+     non-zero. Item 113 established that `puVar18[4]` is the key's first word
+     and that `GenerateAndSubmitOrders` gives the base SUB node key 0, so the
+     base node neither rescores nor restores — which is what keeps the
+     no-press movement path on the table the MC loop just built.
+   - **`ScoreOrderCandidates`' call site is deliberately not moved.** C invokes
+     the whole routine only from `BuildAndSendSUB.c:260`, but the port also
+     calls it from `_prepare_proposal_orders_for_turn` because ProcessTurn's
+     per-power proposal trees must exist before the MC loop, which in C runs
+     earlier in `send_GOF`. The early call is harmless with respect to the new
+     reset: `g_candidate_record_list` is cleared immediately above it, so
+     there is nothing to re-arm at that point.
+   - Two regressions pin the behaviour: one that the reset applies exactly the
+     C constants and only to participating powers, and one that a non-base
+     node rescores and restores while the key-zero base node does neither.
+     Full suite: **448 tests**; `pyflakes`, `compileall` and
+     `git diff --check` pass.
+   - Still unported from that routine: the blocks at `ScoreOrderCandidates.c`
+     340-360 and 630-650, which write further per-power trees the port does
+     not carry.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
@@ -2775,12 +2823,7 @@ some unrelated candidate.
 3. Correct or replace the inconsistent game 10 `S1904R` state/reference pair
    before treating 100% retreat coverage as a meaningful target.
 
-4. Port `BuildAndSendSUB`'s accept branch (`C:628-645`, the
-   `DAT_00baed6d` / SendDM path) so the `DAT_00bc0a40/44` best-order snapshot
-   has a writer, then wire the round-zero restore at `C:265-282`. Both C
-   writers are identified in item 110; the port lacks the accept branch, so
-   the restore cannot be enabled on its own.
-
-5. Port `ScoreOrderCandidates`' candidate-record reset (`C:116-215`) and its
-   remaining blocks, and move the call to `BuildAndSendSUB`'s round zero
-   (item 113). Same unit of work as open item 4.
+4. Port the two remaining `ScoreOrderCandidates` blocks (`C:340-360` and
+   `C:630-650`), which write further per-power trees the port does not yet
+   carry. The rest of that routine and the `DAT_00bc0a40/44` snapshot landed
+   in item 115.

@@ -1014,8 +1014,15 @@ class InnerGameState:
         # stores node pointers; retaining them alongside the compatibility
         # order lists avoids reconstructing semantic keys during rescoring.
         self.g_current_best_order_records: dict = {}
-        # DAT_00bc0a40/44[pow*0xf0] — backup of best orders at best-trial point
+        # DAT_00bc0a40/44[pow*0xf0] — snapshot of the [n_powers][30] best-order
+        # table DAT_00bbf690/694 (g_current_best_order).
+        # GenerateAndSubmitOrders.c:139-143 seeds both with the same sentinel
+        # each turn; BuildAndSendSUB.c:628-645 saves current -> snapshot on the
+        # accept branch; BuildAndSendSUB.c:265-282 restores snapshot -> current
+        # at a non-base node's round zero, so each proposal is scored from the
+        # last accepted table rather than the previous node's leftovers.
         self.g_best_order_backup: dict = {}
+        self.g_best_order_backup_records: dict = {}
         # DAT_00baed94/98 — press deal records (earlier proposals received)
         self.g_deal_list: list = []
         # DAT_00baed98 is the authoritative proposal-history map used by
