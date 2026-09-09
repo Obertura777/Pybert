@@ -160,6 +160,34 @@ def test_single_evaluator_reconstructs_wire_sublists():
     ) == 0x481C
 
 
+def test_sub_not_xdo_arm_is_dead_and_answers_huh():
+    """_eval_single_xdo.c:238-243 never descends into the SUB/PRP NOT payload.
+
+    The top-level NOT arm (line 131) runs GetSubList(input, 1) before
+    re-testing element 0, so `NOT (XDO ...)` reaches CAL_VALUE.  The SUB/PRP
+    arm only calls AppendList(local_48, input) and then re-reads element 0 of
+    the same list, which is still NOT -- so `XDO != *psVar4` always holds and
+    control jumps to LAB_0042c5e4 (HUH).  Albert therefore scores a bare
+    `NOT (XDO ...)` but HUHs the identical clause wrapped in PRP.
+    """
+    state = InnerGameState()
+    state.albert_power_idx = 2  # FRA
+
+    wrapped = ['PRP', '(', 'NOT', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON',
+               ')', 'HLD', ')', ')', ')']
+    assert _evals_mod._eval_single_xdo(state, wrapped, from_power=1) == 0x4806
+
+    # The unwrapped form still reaches CAL_VALUE rather than HUH.
+    bare = ['NOT', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON', ')', 'HLD', ')',
+            ')']
+    assert _evals_mod._eval_single_xdo(state, bare, from_power=1) != 0x4806
+
+    # SUB XDO remains the unconditional REJ of _eval_sub_xdo (FUN_0040d450).
+    sub_xdo = ['PRP', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON', ')', 'HLD',
+               ')', ')']
+    assert _evals_mod._eval_single_xdo(state, sub_xdo, from_power=1) == 0x4814
+
+
 def test_xdo_parser_preserves_not_wrapper_for_negative_clause_catalog():
     cands = _parsers_mod._parse_xdo_candidates(
         'AND ( XDO ( ( ENG AMY LON ) HLD ) ) '
@@ -231,12 +259,26 @@ def test_context_sensitive_evaluators_use_recipients_plus_sender():
     state = InnerGameState()
     state.albert_power_idx = 2  # FRA
 
-    # _eval_slo.c counts unique message participants, not SLO targets.
+    # _eval_slo.c sizes the set built from the SLO power sublist (local_4c),
+    # not the participant set (local_40, never read).  YES iff the SLO names
+    # exactly one distinct power and that power is Albert.
     assert _evals_mod._eval_slo(
         state, [['FRA']], from_power=1, context_powers=[2, 1],
-    ) == 0x4814
+    ) == 0x481C
     assert _evals_mod._eval_slo(
         state, [['FRA']], from_power=2, context_powers=[2, 2],
+    ) == 0x481C
+    # Someone else soloing is rejected regardless of the participant set.
+    assert _evals_mod._eval_slo(
+        state, [['ENG']], from_power=1, context_powers=[2, 1],
+    ) == 0x4814
+    # A two-power SLO fails the local_4c == 1 gate even though Albert occurs.
+    assert _evals_mod._eval_slo(
+        state, [['FRA', 'ENG']], from_power=1, context_powers=[2],
+    ) == 0x4814
+    # Repeated tokens collapse in the set, so FRA twice still passes.
+    assert _evals_mod._eval_slo(
+        state, [['FRA', 'FRA']], from_power=1, context_powers=[2, 1],
     ) == 0x481C
 
     # _eval_aly.c requires every ALY member to occur in recipients+sender.
@@ -274,6 +316,63 @@ def test_dmz_evaluator_checks_every_message_participant():
     assert _evals_mod._eval_dmz(
         state, rest, from_power=1, context_powers=[2, 1, 3],
     ) == 0x481C
+
+
+def test_not_dmz_ledger_gate_clears_on_absence_from_the_dmz_power_set():
+    """_eval_not_dmz.c:203-208 clears bVar4 when the participant is ABSENT.
+
+    ``piVar13[1] == ppiVar5`` compares the found node against the set's head
+    sentinel, so it is the ``find() == end()`` test — the same idiom as
+    _eval_aly.c:127, where the flag means "every ALY power was a
+    participant".
+    """
+    def _run(dmz_powers):
+        state = InnerGameState()
+        state.albert_power_idx = 2                      # FRA
+        state.g_ally_counter_list = {1: [{'dest_prov': 5}]}
+        state.g_ally_promise_list = {1: [{'dest_prov': 5}]}
+        return _evals_mod._eval_not_dmz(
+            state, [dmz_powers, [5]], from_power=1, context_powers=[1],
+        )
+
+    # ENG is in both ledgers for province 5 but is not named in the DMZ, so
+    # bVar4 clears and the verdict is REJ.
+    assert _run(['GER']) == 0x4814
+    # Naming ENG in the DMZ leaves bVar4 set, so the same ledgers give YES.
+    assert _run(['ENG', 'FRA']) == 0x481C
+
+
+def test_not_dmz_bwx_gate_counts_dmz_powers_not_participants():
+    """The verdict block reads uVar10 = local_90 = len(DMZ power sublist).
+
+    ``uVar9`` (the doubled participant count) only gates the ``>= 3`` early
+    BWX; the sender-membership tests at _eval_not_dmz.c:255 and :265 are
+    driven by the DMZ power list length.
+    """
+    def _run(dmz_powers, participants):
+        state = InnerGameState()
+        state.albert_power_idx = 2                      # FRA
+        # Empty ledgers for the sender clear bVar3 and select the BWX path.
+        state.g_ally_counter_list = {}
+        state.g_ally_promise_list = {}
+        return _evals_mod._eval_not_dmz(
+            state, [dmz_powers, [5]], from_power=1,
+            context_powers=participants,
+        )
+
+    # One DMZ power that is not the sender → BWX.
+    assert _run(['GER'], [1]) == 0x4A02
+    # One DMZ power that IS the sender → falls through to YES.
+    assert _run(['ENG'], [1]) == 0x481C
+    # Two DMZ powers including the sender → falls through to YES.
+    assert _run(['ENG', 'GER'], [1]) == 0x481C
+    # Two DMZ powers excluding the sender → BWX.
+    assert _run(['GER', 'ITA'], [1]) == 0x4A02
+    # An empty DMZ power list never reaches either membership test.
+    assert _run([], [1]) == 0x481C
+    # Two participants double to four, tripping the uVar9 >= 3 early BWX
+    # before the DMZ list is consulted at all.
+    assert _run(['ENG'], [1, 3]) == 0x4A02
 
 
 def test_receive_proposal_copies_evaluate_press_accept_tree():

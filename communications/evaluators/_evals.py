@@ -690,26 +690,39 @@ def _eval_slo(state: "InnerGameState", rest: list, from_power: int = 0,
     Port of FUN_0041ea20 — SLO (solo-win) proposal evaluator.
 
     C logic (from _eval_slo.c):
-      local_4c is the element-count field of the StdSet built from the hidden
-      caller context ``recipients + sender`` (local_54/local_50/local_4c).
-      StdMap_FindOrInsert increments local_4c for each unique insertion.
-      bVar2 = own power found in the SLO target list.
-      Returns YES iff local_4c == 1 (exactly one unique message participant)
-                 AND bVar2 (Albert occurs in the SLO target list).
+      Two ``std::set<int>`` objects are built.  The first-constructed set
+      lives at ``local_54`` (head ``local_50``, size ``local_4c``); the
+      second at ``local_48`` (head ``local_44``, size ``local_40``).  The
+      destructor pairing in the epilogue fixes that binding, and
+      ``_eval_drw.c`` uses the identical idiom, which confirms the argument
+      order ``StdMap_FindOrInsert(set_object, ret_slot, key)``.
+
+      * The participant list ``recipients + sender`` (``local_2c``) is
+        inserted into the ``local_48`` set — whose size ``local_40`` is
+        never read.
+      * The SLO power sublist ``GetSubList(input, 1)`` (``local_1c``) is
+        inserted into the ``local_54`` set, and sets ``bVar2`` when Albert
+        occurs in it.
+
+      The verdict is ``local_4c == 1 && bVar2``: YES iff the SLO names
+      exactly one distinct power and that power is Albert — i.e. Albert
+      accepts only a proposal that *he* takes the solo.  REJ otherwise.
 
     `rest` is tokens[1:] after SLO is stripped; rest[0] is the (power) sublist.
+
+    ``context_powers`` is retained for signature compatibility with the other
+    context-sensitive evaluators; C builds the participant set but never
+    consults its size here.
     """
     own = state.albert_power_idx
     pwr_section = rest[0] if rest else []
-    iterable = pwr_section if isinstance(pwr_section, (list, tuple)) else rest
-    own_is_target = False
-    for tok in iterable:
-        p = _pow_idx(tok)
-        if p == own:
-            own_is_target = True
+    if not isinstance(pwr_section, (list, tuple)):
+        pwr_section = rest
+    slo_powers = _extract_powers(pwr_section)
 
-    participants = set(context_powers) if context_powers is not None else {from_power}
-    if len(participants) == 1 and own_is_target:
+    distinct = set(slo_powers)
+    own_is_target = own in distinct
+    if len(distinct) == 1 and own_is_target:
         return 0x481C   # YES
     return 0x4814        # REJ
 
@@ -800,7 +813,7 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
                     NOR promise lists → ``bVar3 = False`` (no rejection signal
                     came from the proposer's own ledgers).
                   • If (q,d) is recorded in BOTH counter AND promise AND q is
-                    in the DMZ-powers set → ``bVar4 = False``.
+                    NOT in the DMZ-powers set → ``bVar4 = False``.
                   • If (q,d) is recorded in counter but NOT in promise AND
                     g_near_end_game_factor < 3.0 → ``bVar4 = False``.
 
@@ -809,9 +822,11 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
 
       Verdict (lines 251-281):
                 bVar3 still True   → REJ if !bVar4 else YES
-                bVar3 False        → BWX path: returns BWX unless count<3 and
-                                     local_cc DOES NOT contain from_power, in
-                                     which case fall through to YES/REJ.
+                bVar3 False        → BWX when the doubled participant count is
+                                     >= 3; otherwise BWX iff the DMZ power
+                                     sublist is non-empty and does not name
+                                     the sender.  Everything else falls
+                                     through to YES/REJ.
 
     The C appends the sender to the recipient list twice into ``local_7c``.
     The duplicate traversal matters to its later ``count < 3`` verdict gate,
@@ -869,8 +884,13 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
             if q == from_p and (not in_counter) and (not in_promise):
                 bVar3 = False
 
-            # Sub-check B (lines 186-213): both ledgers record (q,d) AND q ∈ DMZ.
-            if in_counter and in_promise and (q in dmz_set):
+            # Sub-check B (lines 186-213): both ledgers record (q,d) and q is
+            # NOT named in the DMZ power set.  C tests
+            # ``piVar13[1] == ppiVar5`` — the returned node IS the head
+            # sentinel, i.e. ``find() == end()`` — so the clearing case is
+            # absence, not membership.  (_eval_aly.c:127 and _eval_dmz.c:154
+            # use the same idiom with the opposite comparison.)
+            if in_counter and in_promise and (q not in dmz_set):
                 bVar4 = False
 
             # Sub-check C (lines 215-232): counter says yes, promise says no,
@@ -893,20 +913,27 @@ def _eval_not_dmz(state: "InnerGameState", rest: list, from_power: int = 0,
         # No "from_power silent" signal → straight YES/REJ.
         return _YES if bVar4 else _REJ
 
-    # bVar3 False: BWX path with from_power-in-DMZ override.
-    n_iter = len(iter_powers)
+    # bVar3 False: BWX path.  C branches on TWO different counts here —
+    # ``uVar9`` is local_a4, the doubled participant count, but ``uVar10`` is
+    # local_90, the length of the DMZ *power* sublist (local_5c).  Both are
+    # reloaded from their backing locals on every loop exit, so the verdict
+    # block always sees those two values.
+    n_iter = len(iter_powers)          # uVar9  — doubled participants
+    n_dmz  = len(dmz_powers)           # uVar10 — DMZ power sublist length
     from_in_dmz = (from_p in dmz_set)
-    if n_iter < 3:
-        # For n_iter > 1 OR (n_iter == 1 AND from_p ∈ DMZ): emit BWX.
-        if n_iter > 1:
-            if from_in_dmz:
-                return _BWX
-            # Fall through to YES/REJ when from_power is not in DMZ-set.
-            return _YES if bVar4 else _REJ
-        if n_iter == 1 and from_in_dmz:
+    if n_iter >= 3:
+        return _BWX
+    if n_dmz > 1:
+        # C: found → LAB_0041fb83 (uVar10 != 1, so straight on to the
+        # YES/REJ tail); not found → LAB_0041fbc2 → BWX.
+        if not from_in_dmz:
             return _BWX
-        return _YES if bVar4 else _REJ
-    return _BWX
+    elif n_dmz == 1:
+        # LAB_0041fb83: the single-power list only escapes BWX when the
+        # sender is that power.
+        if not from_in_dmz:
+            return _BWX
+    return _YES if bVar4 else _REJ
 
 
 def _eval_sub_xdo(rest: list) -> int:
@@ -1033,10 +1060,15 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
         if _teq(t1, _XDO):
             return _eval_sub_xdo(rest2)                       # FUN_0040d450
         if _teq(t1, _NOT):
-            not_inner = _unwrap(rest2[0]) if rest2 and isinstance(rest2[0], list) else rest2
-            if not not_inner or not _teq(not_inner[0], _XDO):
-                return _HUH
-            return _cal_value(state, not_inner)
+            # _eval_single_xdo.c:238-243.  The top-level NOT arm (line 131)
+            # descends with GetSubList(input, 1) before re-testing element 0;
+            # this SUB/PRP arm calls AppendList(local_48, input) and then
+            # re-reads element 0 of the *undescended* list, which is still
+            # NOT.  The `XDO != *psVar4` test therefore always jumps to
+            # LAB_0042c5e4, so CAL_VALUE is unreachable here and Albert
+            # answers HUH to every `PRP (NOT (XDO ...))`.  Reproduced rather
+            # than repaired: this is a fidelity port.
+            return _HUH
         return _HUH
 
     return _HUH
