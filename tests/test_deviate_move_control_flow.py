@@ -201,7 +201,8 @@ def test_near_end_gate_creates_deviation_but_does_not_force_stab():
     assert int(state.g_stab_flag[0, 1]) == 0
 
 
-def test_dislodged_army_relation_override_can_classify_stab_without_trust():
+def test_successful_move_relation_override_can_classify_stab_without_trust():
+    """0x43aea8 reads node +0x6b: the move into the designated centre succeeded."""
     state = _state3()
     state.g_order_hist_list = [
         {
@@ -209,7 +210,7 @@ def test_dislodged_army_relation_override_can_classify_stab_without_trust():
             "src_province": 5,
             "dst_province": 10,
             "order_type": 2,
-            "flag_c": 1,
+            "moved": 1,
         }
     ]
     state.g_spr_desig_a[10] = 0

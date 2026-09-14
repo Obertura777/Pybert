@@ -13,4 +13,8 @@ wheels/
 all_games/
 all_games_albert
 
+.DS_Store
 games/
+albert.exe.txt
+work/
+

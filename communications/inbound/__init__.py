@@ -45,7 +45,7 @@ from .not_handlers import handle_not_ccd, handle_not_tme, handle_not_unknown
 from .yes_handlers import (
     handle_yes_nme, handle_yes_obs, handle_yes_iam, handle_yes_not,
     handle_yes_gof, handle_yes_tme, handle_yes_drw, handle_yes_snd,
-    handle_yes_unknown,
+    handle_yes_unknown, handle_own_press_delivered,
 )
 from .server_handlers import (
     handle_map, handle_mdf, handle_ord, handle_sco, handle_rej,
@@ -55,4 +55,6 @@ from .server_handlers import (
 from .dispatcher import inbound_daide_dispatcher, not_dispatcher, yes_dispatcher
 from .frm import process_frm_message, parse_message
 from .now_parser import parse_now, parse_now_unit
-from .respond import receive_proposal, _respond_walk_pos_analysis, respond
+from .respond import (
+    receive_proposal, _respond_walk_pos_analysis, respond, send_huh_and_try,
+)

@@ -92,46 +92,62 @@ def _begin_turn_timing(state: InnerGameState, now: float | None = None) -> None:
     )
 
 
-def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
-    """Insert/reset the base SUB record before movement BuildAndSendSUB.
+def _refresh_opening_turn_flag(state: InnerGameState) -> None:
+    """GenerateAndSubmitOrders.c:125-131 (0x0045953f-0x0045955e).
 
-    ``GenerateAndSubmitOrders.c`` inserts a key-zero SUB record immediately
-    before HOSTILITY.  ``send_GOF.c:170-267`` then normalizes the complete
-    persistent broadcast tree:
+    DAT_00baed68 is cleared when set, then set from DAT_004c6bdc, which is
+    cleared in turn.  Neither has another writer and DAT_004c6bdc starts at 1,
+    so the flag is 1 for the first call only, whatever the press level.
+    """
+    if int(state.g_press_flag) == 1:
+        state.g_press_flag = 0
+    if int(getattr(state, 'g_opening_turn_pending', 0)) == 1:
+        state.g_press_flag = 1
+        state.g_opening_turn_pending = 0
 
-    * key zero: rebuild as an unsent base SUB at trial zero;
-    * self-generated type 1: retire as type -1, sent at the trial cap;
-    * unsent received type 0: rewind to trial zero.
+
+def _insert_base_broadcast_node(state: InnerGameState) -> dict:
+    """GenerateAndSubmitOrders.c:130-149, 405-460 — the base SUB record.
+
+    C seeds both best-order tables (DAT_00bbf690/694 and the DAT_00bc0a40/44
+    snapshot) and, for a movement phase, inserts the key-zero SUB record:
+    every power a participant, content ``SUB ( turn )``, no reference key,
+    and — when Albert has no units — already done at the trial cap.
     """
     cap = max(int(getattr(state, 'g_press_proposals_cap', 30)), 0)
-    base = {
-        'key': 0,
-        'base_sub': True,
-        'sent': False,
-        'type_flag': 0,
-        'trial_count': 0,
-        'score_vector': [0] * 7,
-        'history_flag': 0,
-        'order_candidates': [{'tokens': ['SUB'], 'type_flag': 0}],
-    }
-    # GenerateAndSubmitOrders.c:139-143 seeds BOTH best-order tables with the
-    # same sentinel pair for every (power, slot): DAT_00bbf690/694
-    # (g_current_best_order) and its DAT_00bc0a40/44 snapshot
-    # (g_best_order_backup).  They only diverge once BuildAndSendSUB's accept
-    # branch saves into the snapshot.
+    own = int(getattr(state, 'albert_power_idx', 0))
+    own_units = int(state.g_unit_count[own]) if own < len(state.g_unit_count) else 0
     state.g_current_best_order = {}
     state.g_current_best_order_records = {}
     state.g_best_order_backup = {}
+    n_powers = len(state.g_unit_count)
+    from ...communications import send_alliance_press
+    return send_alliance_press(state, key=0, entry_data={
+        'base_sub': True,
+        'sent': own_units == 0,
+        'type_flag': 0,
+        'trial_count': cap if own_units == 0 else 0,
+        'score_vector': [0] * 7,
+        'history_flag': 0,
+        'watermark': None,
+        'received_flag': False,
+        'sublist3': ['SUB'],
+        'order_candidates': [{'tokens': ['SUB'], 'type_flag': 0}],
+        'participant_powers': set(range(n_powers)),
+    })
 
-    entries = state.g_broadcast_list
-    insert_at = next(
-        (i for i, entry in enumerate(entries)
-         if int(entry.get('key', 0)) >= 0),
-        len(entries),
-    )
-    entries.insert(insert_at, base)
 
-    for entry in entries:
+def _normalize_broadcast_nodes(state: InnerGameState) -> None:
+    """send_GOF.c:170-282 — re-arm the broadcast records before BuildAndSendSUB.
+
+    After the ten ProcessTurn rounds, every key-zero record is rebuilt as an
+    unfinished base SUB at trial zero (set A cleared, type 0, flag byte 0,
+    zero scores); every self-generated record (type 1) is retired as type -1,
+    done at the cap; every unfinished received record (type 0) is rewound to
+    trial zero.
+    """
+    cap = max(int(getattr(state, 'g_press_proposals_cap', 30)), 0)
+    for entry in getattr(state, 'g_broadcast_list', None) or []:
         if int(entry.get('key', 0)) == 0:
             entry['trial_count'] = 0
             entry['type_flag'] = 0
@@ -139,6 +155,9 @@ def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
             entry['received_flag'] = False
             entry['score_vector'] = [0] * 7
             entry['history_flag'] = 0
+            entry['flag'] = 0
+            entry['sublist3'] = ['SUB']
+            entry.pop('clause_set_a', None)
             entry['order_candidates'] = [
                 {'tokens': ['SUB'], 'type_flag': 0}
             ]
@@ -149,35 +168,29 @@ def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
         elif (int(entry.get('type_flag', 0)) == 0
               and not entry.get('sent', False)):
             entry['trial_count'] = 0
+
+
+def _prepare_broadcast_nodes_for_movement(state: InnerGameState) -> dict:
+    """Insert the base SUB record and apply send_GOF's normalisation."""
+    base = _insert_base_broadcast_node(state)
+    _normalize_broadcast_nodes(state)
     return base
 
 
 def _prepare_proposal_orders_for_turn(state: InnerGameState) -> None:
-    """Rebuild ProcessTurn's proposal trees from current received press.
+    """send_GOF.c:101-112 — clear the general-order trees before ProcessTurn.
 
-    ``ScoreOrderCandidates`` destroys all per-power trees before translating
-    its press inputs.  With no press it leaves those trees empty; ordinary
-    order variation is generated later by ProcessTurn's Phase 2 walk.
+    After ComputeSafeReach and EnumerateHoldOrders, C zeroes DAT_00b9fe88[p]
+    and destroys DAT_00bb6cf8[p] (``g_general_orders``) for every power, so
+    the ten ProcessTurn rounds see no general orders at all.  The alliance
+    orders (DAT_00bb65f8) keep the XDOs agreed this turn: XDO() writes them
+    and GenerateAndSubmitOrders clears them.  BuildAndSendSUB fills the
+    general orders per node, from that node's set A, on its round zero.
     """
     for power in range(7):
         _destroy_candidate_tree(state.g_general_orders.get(power))
     state.g_general_orders = {}
-    state.g_alliance_orders = {}
-    state.g_candidate_record_list = []
-    state.__dict__.pop('_candidate_key_map', None)
-    state.__dict__.pop('_candidate_keys', None)
-
-    if getattr(state, 'g_minimal_press_mode', 0) == 1:
-        return
-
-    from ...communications import score_order_candidates_from_broadcast
-    try:
-        score_order_candidates_from_broadcast(state)
-    except Exception:
-        logger.exception(
-            "score_order_candidates_from_broadcast raised; continuing"
-            " with empty g_general_orders/g_alliance_orders"
-        )
+    state.g_power_call_count.fill(0)
 
 
 def _reset_send_gof_order_state(state: InnerGameState) -> None:
@@ -204,6 +217,14 @@ def _run_send_gof_candidate_pass(
     the ordering of the call to send_GOF in the executable.
     """
     movement_phase = phase in ('SPR', 'FAL')
+
+    # send_GOF.c:23-27 destroys g_CandidateRecordList (DAT_00bbf60c) first,
+    # and :50 (0x00456c03) zeroes DAT_00baed34, the count of committed
+    # retreats/adjustments.
+    state.g_order_commit_count = 0
+    state.g_candidate_record_list = []
+    state.__dict__.pop('_candidate_key_map', None)
+    state.__dict__.pop('_candidate_keys', None)
 
     snapshot_province_state(state)
     _reset_send_gof_order_state(state)
@@ -330,24 +351,7 @@ def _run_send_gof_candidate_pass(
                     re_trials = 1
                 process_turn(state, power, num_trials=re_trials)
 
-    broadcast = getattr(state, 'g_broadcast_list', None)
-    watermark = int(getattr(state, 'g_broadcast_list_watermark', 0))
-    no_press = int(getattr(state, 'g_minimal_press_mode', 0)) == 1
-    if bool(broadcast) and watermark > 0 and not no_press:
-        try:
-            from ...heuristics import apply_press_corroboration_penalty
-            penalised = apply_press_corroboration_penalty(state)
-            if penalised:
-                logger.debug(
-                    "Press corroboration: penalised %d candidate(s) for"
-                    " disagreeing with received XDOs", penalised,
-                )
-        except Exception:
-            logger.exception(
-                "apply_press_corroboration_penalty raised; continuing"
-                " without press-corroboration penalty"
-            )
-
+    _normalize_broadcast_nodes(state)
     return state.g_candidate_record_list
 
 
@@ -364,6 +368,28 @@ class _OrdersMixin:
     _submit_draw_vote: Callable[..., None]
     _validate_orders: Callable[..., None]
 
+    def _initialize_press_session(self) -> None:
+        """The HLO handler's press setup, once per game (ParseHSTResponse).
+
+        python-diplomacy sends no HLO, so the client supplies the variant: a
+        press game is LVL 100 and a no-press game LVL 0 with DAT_00baed40
+        set.  process_hst also seeds the CRT stream from the clock, as the
+        HLO handler does.  In a press game press is scheduled for immediate
+        dispatch (DAT_00baed32): python-diplomacy games may run without a
+        deadline, so the 5–21 s response windows would never elapse.
+        """
+        if getattr(self.state, 'g_press_session_initialized', False):
+            return
+        if self.power_name in _POWER_NAMES:
+            self.state.albert_power_idx = _POWER_NAMES.index(self.power_name)
+        from ...communications.inbound.history import process_hst
+        if getattr(self.state, 'g_minimal_press_mode', 0) == 1:
+            process_hst(self.state, 'LVL 0')
+        else:
+            process_hst(self.state, 'LVL 100')
+            self.state.g_press_instant = 1
+        self.state.g_press_session_initialized = True
+
     def generate_and_submit_orders(self) -> None:
         """
         Port of FUN_004592a0 = GenerateAndSubmitOrders.
@@ -376,17 +402,17 @@ class _OrdersMixin:
           Step 1  Record turn-start timestamp.
           Step 2  Reset per-turn scalar flags.
           Step 3  Cancel stale orders if reconnecting.
-          Step 4  Press-flag refresh.
+          Step 4  Opening-turn pulse (DAT_00baed68).
           Step 5  Main AI block (skipped when game_over):
             5a  Reset press candidate tables.
             5b  PhaseHandler(0).
             5c  Per-power reset loop (trust counters, score matrices).
             5d  Phase checks: increment g_deceit_level (SPR), AnalyzePosition,
-                MOVE_ANALYSIS (year-1 FAL, press-off, allied).
+                MOVE_ANALYSIS (year-1 FAL, not the opening turn, allied).
             5e  Clear g_baed6d sentinel.
             5f  GenerateOrders.
             5g  PostProcessOrders (SPR/FAL).
-            5h  ComputePress (if press active).
+            5h  ComputePress (opening turn only).
             5i  Alliance block (STABBED / DEVIATE_MOVE / FRIENDLY / HOSTILITY /
                 PhaseHandler 1–3).
             5j  HOSTILITY / PhaseHandler(3), NormalizeInfluenceMatrix, then
@@ -451,40 +477,28 @@ class _OrdersMixin:
             self.state.g_pending_orders_A = 0
             self.state.g_pending_orders_B = 0
 
-        # Step 4 — press flag refresh
-        # DAT_00baed68: 0 = press off, 1 = run ComputePress this turn.
-        # In the DAIDE path, process_hst (called from hlo_dispatch) sets
-        # g_history_counter from HLO LVL.  In the python-diplomacy client
-        # path there is no DAIDE HLO, so g_history_counter stays 0.
-        # Detect that case: if g_minimal_press_mode is 0 (press game) but
-        # g_history_counter has not been set yet, initialize it to 100 so
-        # all DAIDE press types (PCE, DMZ, ALY, VSS, XDO, AND, ORR) are
-        # enabled and the g_history_counter > N gates in the press pipeline
-        # pass correctly.  process_hst is idempotent after first call
-        # (g_history_counter will be 100, not 0, so the guard won't re-fire).
-        if (self.state.g_history_counter == 0
-                and getattr(self.state, 'g_minimal_press_mode', 0) == 0):
-            from ...communications.inbound.history import process_hst
-            process_hst(self.state, 'LVL 100')
-            # No server deadline in this path (process_hst received no MTL).
-            # _send_ally_press_by_power normally schedules THN entries 7+ s in
-            # the future so other bots can press first; with deadline=0 that
-            # window never elapses (g_turn_start_time resets each phase).
-            # g_press_instant=1 sets target=elapsed so entries fire on the
-            # first dispatch_scheduled_press call instead.
-            self.state.g_press_instant = 1
+        # GenerateAndSubmitOrders.c:118-123: with DAT_00baed47 cleared, a power
+        # that still has units (inner +0x24bc) or centres (+0x24e0) withdraws
+        # its readiness until AwaitPressAndSendGOF gives it back.
+        if not game_over and (
+            int(self.state.g_unit_count[own_power_idx]) != 0
+            or int(self.state.sc_count[own_power_idx]) != 0
+        ):
+            cancel_prior_press(self.state, own_power_idx, self._send_dm)
 
-        self.state.g_press_flag = (
-            1
-            if (self.state.g_history_counter > 0
-                and getattr(self.state, 'g_minimal_press_mode', 0) == 0)
-            else 0
-        )
+        # play() runs the HLO-equivalent press setup on joining; a caller
+        # that drives generation directly gets it here on the first turn.
+        if getattr(self.state, 'g_minimal_press_mode', 0) == 0:
+            self._initialize_press_session()
+
+        # Step 4 — GenerateAndSubmitOrders.c:125-131: DAT_00baed68 is a
+        # one-call pulse armed by DAT_004c6bdc's initial 1.
+        _refresh_opening_turn_flag(self.state)
 
         if game_over:
             logger.info("Game-over flag set — skipping order generation")
             _cleanup_turn(self.state)
-            _send_gof(self.state, self._send_dm)
+            self._await_press_and_send_gof()
             return
 
         # ── Step 5 — main AI block ──────────────────────────────────────────
@@ -500,22 +514,27 @@ class _OrdersMixin:
         # 5b — PhaseHandler step 0
         _phase_handler(self.state, 0)
 
-        # 5c — per-power reset loop
-        # DAT_00ba2888[power] = signed trust/relationship counter:
-        #   own/ally powers: converges +1 toward 0 each movement turn (started negative)
-        #   non-ally powers: reset to 0
-        if not hasattr(self.state, 'g_trust_counter'):
-            self.state.g_trust_counter = np.zeros(num_powers, dtype=np.int32)
-
+        # 5c — per-power reset loop (GenerateAndSubmitOrders.c:236-300).
+        # For Albert and every power still holding centres, a negative
+        # g_AllyMatrix entry (DAT_00ba2888[p*21+j], e.g. FUN_004325a0's -4
+        # ALY/VSS cool-down) moves one step toward 0 in SPR/FAL.  For an
+        # eliminated power C zeroes its g_AllyMatrix row, its trust row and
+        # column, and its promise and counter lists (DAT_00bb6f2c/702c).
         for p in range(num_powers):
-            ally_p = int(self.state.g_ally_matrix[own_power_idx, p]) != 0
-            is_self = (p == own_power_idx)
+            alive = p == own_power_idx or int(self.state.sc_count[p]) != 0
             for j in range(num_powers):
-                if is_self or ally_p:
-                    if self.state.g_trust_counter[j] < 0 and movement_phase:
-                        self.state.g_trust_counter[j] += 1
+                if alive:
+                    if self.state.g_ally_matrix[p, j] < 0 and movement_phase:
+                        self.state.g_ally_matrix[p, j] += 1
                 else:
-                    self.state.g_trust_counter[j] = 0
+                    self.state.g_ally_trust_score[p, j] = 0
+                    self.state.g_ally_trust_score_hi[p, j] = 0
+                    self.state.g_ally_trust_score[j, p] = 0
+                    self.state.g_ally_trust_score_hi[j, p] = 0
+                    self.state.g_ally_matrix[p, j] = 0
+            if not alive:
+                self.state.g_ally_promise_list.pop(p, None)
+                self.state.g_ally_counter_list.pop(p, None)
 
         # 5d — phase-specific pre-processing
 
@@ -554,7 +573,8 @@ class _OrdersMixin:
         if movement_phase:
             _post_process_orders(self.state)
 
-        # 5h — ComputePress if press mode is active this turn
+        # 5h — ComputePress (neutral centres next to each power's units) on
+        # the opening turn only (GenerateAndSubmitOrders.c:324).
         if self.state.g_press_flag == 1:
             _compute_press(self.state)
 
@@ -584,10 +604,16 @@ class _OrdersMixin:
 
         # 5j — finish GenerateAndSubmitOrders before entering send_GOF.
         if movement_phase:
-            _prepare_broadcast_nodes_for_movement(self.state)
+            _insert_base_broadcast_node(self.state)
             _hostility(self.state)
             _phase_handler(self.state, 3)
             _prepare_draw_vote_set(self.state)
+            # GenerateAndSubmitOrders.c:483-505 sends DRW, or NOT ( DRW ), here:
+            # before NormalizeInfluenceMatrix and send_GOF, so the vote reaches
+            # the server ahead of GOF.  python-diplomacy clears every vote when
+            # it processes a phase, which stands in for NOT ( DRW ).
+            if self.state.g_draw_sent and self.game is not None:
+                self._submit_draw_vote()
         else:
             if phase == 'WIN':
                 compute_build_delta(self.state)
@@ -598,16 +624,43 @@ class _OrdersMixin:
         # before send_GOF. The old port ran it after ProcessTurn and selection.
         _cleanup_turn(self.state)
 
+        self._send_gof_pass(phase, own_power_idx, num_powers)
+
+    def _send_gof_pass(self, phase: str, own_power_idx: int, num_powers: int) -> None:
+        """Port of send_GOF (0x00456b50) from its candidate pass onwards.
+
+        GenerateAndSubmitOrders calls it once per phase, and
+        EvaluateOrderProposalsAndSendGOF calls it again whenever CAL_MOVE has
+        applied an agreement.  Movement phases run the ProcessTurn rounds,
+        reset the proposal-round diagnostics, set DAT_00baed46 and clear
+        DAT_00baed6d, then BuildAndSendSUB; retreats and adjustments select
+        and submit their orders; every phase ends in AwaitPressAndSendGOF.
+        """
+        movement_phase = phase in ('SPR', 'FAL')
         best_orders = _run_send_gof_candidate_pass(
             self.state, phase, own_power_idx, num_powers
         )
 
         if movement_phase:
+            if int(self.state.g_unit_count[own_power_idx]) == 0:
+                # send_GOF.c:70-76: no units — straight to AwaitPressAndSendGOF.
+                self._await_press_and_send_gof()
+                return
+            # send_GOF.c:285-380 resets the proposal-round diagnostics.
+            self.state.g_score_alt = 0
+            self.state.g_score_group_duplicates = 0
+            self.state.g_score_baseline = 0
+            self.state.g_trial_score_a.clear()
+            self.state.g_trial_score_b.clear()
+            self.state.g_trial_score_c.clear()
+            self.state.g_trial_prev_score_alt = 0
+            self.state.g_trial_prev_score_baseline = 0
+            self.state.g_baed46 = 1
+            self.state.g_baed6d = 0
             self._build_and_send_sub(best_orders)
-            if self.state.g_draw_sent and self.game is not None:
-                self._submit_draw_vote()
+            return
 
-        elif phase == 'WIN':
+        if phase == 'WIN':
             # WIN build/remove candidate pipeline — send_GOF.c:69-80,398-403.
             self.state.g_adjustment_build_candidates.clear()
             self.state.g_adjustment_candidate_scores.clear()
@@ -640,25 +693,50 @@ class _OrdersMixin:
                     self.state.g_win_remove_attack_weight,
                 )
                 compute_win_removes(self.state, own_delta['delta'])
-            self._submit_adjustment_orders()
 
+        retreat_cmds: list[str] = []
         if phase in ('SUM', 'AUT') and self.game is not None:
             self.state.g_retreat_order_list = _populate_retreat_orders(
                 self.state, self.game, self.power_name, own_power_idx)
+            # CommitMoveCandidatesPostPress increments DAT_00baed34 per unit
+            # (0x00441f73), whether it retreats or disbands.
+            self.state.g_order_commit_count += len(self.state.g_retreat_order_list)
             retreat_cmds = _format_retreat_commands(self.state)
-            if retreat_cmds:
-                logger.info("Retreat orders for %s: %s",
-                            self.power_name, retreat_cmds)
-                self._validate_orders(retreat_cmds)
-                try:
-                    self._schedule_set_orders(retreat_cmds)
-                except Exception:
-                    logger.exception(
-                        "Failed to submit retreat orders to game engine")
 
-        # send_GOF's final network signal; FUN_00443ed0 cleanup is represented
-        # by Python state lifecycle hooks rather than NormalizeInfluenceMatrix.
-        _send_gof(self.state, self._send_dm)
+        # send_GOF.c:388-409 (0x0045745e-0x004574c6): after committing
+        # retreats or adjustments, Albert without DAT_00baed32 sleeps
+        # (count+2)*2000 ms (retreats) or count*2000+5000 ms (adjustments)
+        # plus (rand()/23)%6000 before FUN_0045aa40 sends SUB.  The port takes
+        # the draw and skips the pause.
+        if (phase in ('SUM', 'AUT', 'WIN')
+                and self.state.g_order_commit_count > 0
+                and not int(getattr(self.state, 'g_press_instant', 0))):
+            from ... import rng as _rng
+            _rng.randrange(6000)
+
+        if phase == 'WIN':
+            self._submit_adjustment_orders()
+        elif retreat_cmds:
+            logger.info("Retreat orders for %s: %s",
+                        self.power_name, retreat_cmds)
+            self._validate_orders(retreat_cmds)
+            try:
+                self._schedule_set_orders(retreat_cmds)
+            except Exception:
+                logger.exception(
+                    "Failed to submit retreat orders to game engine")
+
+        self._await_press_and_send_gof()
+
+    def _rerun_send_gof(self) -> None:
+        """EvaluateOrderProposalsAndSendGOF's send_GOF call for the live phase."""
+        if self.game is None:
+            return
+        live_phase = _game_phase(self.game)
+        if self.current_phase and live_phase and live_phase != self.current_phase:
+            return
+        own_power_idx = int(getattr(self.state, 'albert_power_idx', 0))
+        self._send_gof_pass(self.state.g_season, own_power_idx, 7)
 
 
     def _validate_orders(self, orders: list[str]) -> None:

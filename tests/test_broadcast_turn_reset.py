@@ -40,7 +40,9 @@ def test_movement_broadcast_reset_normalizes_all_node_classes():
 
     base = prepare(state)
 
-    assert state.g_broadcast_list[0] is base
+    # SendAlliancePress descends right on an equal key, so the new base
+    # record follows the existing key-zero record.
+    assert state.g_broadcast_list[1] is base
     for entry in (base, prior_zero):
         assert entry['sent'] is False
         assert entry['received_flag'] is False
@@ -61,22 +63,20 @@ def test_movement_broadcast_reset_normalizes_all_node_classes():
     }
 
 
-def test_no_press_leaves_process_turn_proposal_trees_empty():
+def test_send_gof_clears_general_orders_but_keeps_agreed_xdos():
+    """send_GOF.c:101-112 destroys DAT_00bb6cf8[p] and zeroes DAT_00b9fe88[p]
+    before ProcessTurn.  DAT_00bb65f8 — the XDOs agreed this turn — is left
+    for ProcessTurn's first pass; GenerateAndSubmitOrders clears it."""
     state = InnerGameState()
-    state.g_minimal_press_mode = 1
     state.g_general_orders = {
         0: [{'type': 'MTO', 'tokens': ['stale']}],
         3: [{'type': 'HLD'}],
     }
     state.g_alliance_orders = {0: [{'type': 'SUP'}]}
-    state.g_candidate_record_list = [{'power': 0}]
-    state._candidate_key_map = {('stale',): state.g_candidate_record_list[0]}
-    state._candidate_keys = [('stale',)]
+    state.g_power_call_count[2] = 5
 
     prepare_proposals(state)
 
     assert state.g_general_orders == {}
-    assert state.g_alliance_orders == {}
-    assert state.g_candidate_record_list == []
-    assert not hasattr(state, '_candidate_key_map')
-    assert not hasattr(state, '_candidate_keys')
+    assert state.g_alliance_orders == {0: [{'type': 'SUP'}]}
+    assert int(state.g_power_call_count.sum()) == 0

@@ -25,6 +25,8 @@ from ..tokens import (
 _ACK_TOK_YES = 0x481C
 _ACK_TOK_REJ = 0x4814
 _ACK_TOK_BWX = 0x4A02
+_ACK_TOK_HUH = 0x4806
+_ERR_TOK = 0x4902
 
 
 def ack_matcher(
@@ -34,82 +36,89 @@ def ack_matcher(
     proposal_tokens: "list | None" = None,
 ) -> int:
     """
-    Port of FUN_0042c970 — the ack-matcher that walks ``g_pos_analysis_list``
-    (DAT_00bb65c8) looking for an unprocessed received-proposal whose
-    sender matches an incoming YES/REJ/BWX ack, then runs role-set
-    bookkeeping for each match.
+    Port of FUN_0042c970 — match a reply against ``g_pos_analysis_list``.
 
-    C semantics (from FRMHandler.md + daide_semantics_notes.md):
+    C arguments: the replied-to proposal (the reply's first sub-list, e.g.
+    ``PRP ( ... )``), the replying power byte and the reply token.
 
-      For each node in DAT_00bb65c8 where ``node.processed_flag == 0``:
-        * Primary sender-match: sender must occur in the participant map at
-          +0xc. The +0xf map is the affirmative role set and +0x12 is the
-          rejection/deviation role set.
-        * If matched:
-            - ``YES`` → StdMap_FindOrInsert into role-B sub-tree.
-            - ``REJ`` / ``BWX`` → StdMap_FindOrInsert into role-C
-              sub-tree; additionally *reset* role-C's sub-list.
-            - Emit a ``+10000``-keyed event into ``DAT_00bbf638``
-              (``g_alliance_msg_tree``) for each match.
+    C flow:
+      * ``sender != own power`` → SendAllyPressByPower(sender), before the
+        walk and whether or not anything matches.
+      * For every node (DAT_00bb65c8) whose token list equals the proposal
+        (FUN_00465d90) and whose processed byte (node+0x20) is clear, and
+        whose participant set (node+0x30) contains the sender:
+          - insert the sender into the responded set (node+0x3c) — for every
+            reply token;
+          - for any token other than YES, also insert the sender into the
+            rejection set (node+0x48) and, on first insertion, clear the
+            node's clause list (node+0x54);
+          - log "We have received a reply" and archive elapsed + 10000.
+      * Returns 1 when any node matched.
 
-      **Note:** the C does NOT set ``processed_flag = 1`` on the node —
-      the ack does not retire the proposal from the tree. We mirror
-      that here (the flag is only consulted as a read-side filter).
-
-      Returns 1 if any node matched, 0 otherwise.
-
-    The ``proposal_tokens`` parameter is optional; when provided it is
-    used as an additional exact-token gate against ``node.tokens`` to
-    disambiguate when multiple pending proposals share a sender.
+    The reply is not optional: FUN_00465d90 is false for an empty list, so a
+    reply with no proposal body matches nothing.
     """
     import logging as _logging
     import time as _t
+    from ..senders import send_ally_press_by_power
     _log = _logging.getLogger(__name__)
 
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    if int(sender_power) != own_power:
+        send_ally_press_by_power(state, int(sender_power))
+
     is_yes = (ack_tok == _ACK_TOK_YES)
-    match_count = 0
+    matched = 0
 
     for entry in getattr(state, 'g_pos_analysis_list', []):
         if not isinstance(entry, dict):
             continue
+        if not _token_seq_equal(entry.get('tokens', []), proposal_tokens or []):
+            continue
         if entry.get('processed_flag', 0) != 0:
             continue
-
-        # +0xc is the participant map. +0xf is populated by the YES path.
         if sender_power not in set(entry.get('participant_powers', set())):
             continue
 
-        # Optional exact token-sequence gate for disambiguation.
-        if proposal_tokens is not None:
-            entry_tokens = entry.get('tokens', [])
-            if not _token_seq_equal(entry_tokens, proposal_tokens):
-                continue
+        entry.setdefault('role_b_set', set()).add(sender_power)
+        if not is_yes:
+            rejected = entry.setdefault('role_c_set', set())
+            if sender_power not in rejected:
+                rejected.add(sender_power)
+                entry['press_entries'] = []
 
-        # ── Role-set bookkeeping ──────────────────────────────────────────
-        if is_yes:
-            entry.setdefault('role_b_set', set()).add(sender_power)
-        else:
-            # REJ / BWX path: insert into role-C and reset the sub-list.
-            role_c = entry.setdefault('role_c_set', set())
-            role_c.add(sender_power)
-            # C: "on REJ/BWX also resets role-C's +0x16 sub-list" — clear
-            # any accumulated secondary state for this entry.
-            entry['role_c_sub'] = []
-
-        # ── +10000-keyed event into g_alliance_msg_tree ─────────────────────
-        # C: BuildAllianceMsg(&DAT_00bbf638, buf, elapsed_sec + 10000).
-        # elapsed_sec = current_time − _DAT_00ba2880 (turn start).
+        matched = 1
         state.g_alliance_msg_tree.add(
             int(_t.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
         )
-
-        match_count += 1
         _log.debug(
-            "ack_matcher: matched sender=%d tok=0x%x (role=%s) match_count=%d",
-            sender_power, ack_tok, 'B' if is_yes else 'C', match_count,
+            "We have received a reply: 0x%x from %d", ack_tok, sender_power,
         )
 
-    return 1 if match_count > 0 else 0
+    return matched
+
+
+def _strip_err_tokens(tokens: list) -> list:
+    """The ERR-removal copy loop of the inbound HUH handler (0x0042cd70).
+
+    C counts the ERR tokens, then copies ``len - count`` tokens, advancing a
+    skip counter whenever the token at the *output* index is ERR.  The source
+    index is ``output + skips``, so the ERR test lags behind the source once
+    one ERR has been skipped; a single ERR is removed exactly, later ones are
+    not always.  Reproduced as-is.
+    """
+    def _is_err(tok) -> bool:
+        return tok == _ERR_TOK or (isinstance(tok, str) and tok.upper() == 'ERR')
+
+    tokens = list(tokens)
+    out_len = len(tokens) - sum(1 for tok in tokens if _is_err(tok))
+    out: list = []
+    skips = 0
+    for i in range(out_len):
+        if _is_err(tokens[i]):
+            skips += 1
+        out.append(tokens[i + skips])
+    return out
 
 
 def huh_err_strip_replay(
@@ -118,48 +127,25 @@ def huh_err_strip_replay(
     huh_body_tokens: list,
 ) -> int:
     """
-    Port of FUN_0042cd70 — inbound-HUH handler that salvages the
-    successfully-parsed subset of our own press as an implicit ack.
+    Port of HUH (0x0042cd70) — a peer's HUH reply to our press.
 
-    C flow (from FRMHandler.md:141 + follow-up #234):
+    The FRM handler passes the HUH message's first sub-list (``ERR PRP
+    ( ... )``).  The handler strips the ERR markers and, when anything is
+    left, runs FUN_0042c970 with the reply token HUH.  HUH is not YES, so the
+    sender lands in both the responded and the rejection sets of the matching
+    proposal: a proposal the peer could not parse counts as rejected.
 
-      1. Allocate a filtered buffer.
-      2. Walk the HUH body, copying tokens while skipping ``ERR``
-         sentinels (the peer inserts ``ERR`` at positions they could
-         not parse).
-      3. Log ``"message :%s"`` with the filtered remainder.
-      4. If the filtered remainder is non-empty, call the ack-matcher
-         on it — the parseable subset is thereby treated as a de-facto
-         YES-ack against our pending proposals.
-
-    Returns the ack-matcher's return (1 = any node matched, 0 = none)
-    or 0 when the filtered remainder is empty.
+    Returns the ack-matcher's result, or 0 when nothing survives the strip.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # Strip ERR tokens (both string-mode 'ERR' and the raw ushort code).
-    _ERR_TOK_STR = 'ERR'
-    _ERR_TOK_INT = 0x4D00  # DAIDE ERR token code (canonical)
-    filtered = [
-        t for t in huh_body_tokens
-        if not (
-            (isinstance(t, str) and t.upper() == _ERR_TOK_STR)
-            or (isinstance(t, int) and t == _ERR_TOK_INT)
-        )
-    ]
-
-    _log.debug("huh_err_strip_replay: message :%r", filtered)
-
+    filtered = _strip_err_tokens(huh_body_tokens)
+    _log.debug("message :%s", ' '.join(str(t) for t in filtered))
     if not filtered:
         return 0
-
-    # Replay through ack-matcher. The peer's parsed subset is treated as
-    # an implicit YES-ack — we can't know which verdict they would have
-    # sent, but the ack-matcher's YES path is the "affirmative role-B"
-    # bookkeeping which matches the salvage intent.
     return ack_matcher(
-        state, sender_power, _ACK_TOK_YES, proposal_tokens=filtered,
+        state, sender_power, _ACK_TOK_HUH, proposal_tokens=filtered,
     )
 
 
@@ -178,15 +164,15 @@ _STANCE_TOKEN_CODES = {
     'NOT': 0x480D,   # utils/tokens.py "480D":"NOT"
     'HUH': 0x4806,   # utils/tokens.py "4806":"HUH"
     'TRY': 0x4A1A,   # utils/tokens.py "4A1A":"TRY"
-    'FCT': 0x4A07,   # utils/tokens.py "4A07":"FCT"
+    'FCT': 0x4A06,   # python-diplomacy daide/tokens.py FCT
     'THK': 0x4A18,   # utils/tokens.py "4A18":"THK"
     'WHY': 0x4A1E,   # utils/tokens.py "4A1E":"WHY"
     'IDK': 0x4A0A,   # utils/tokens.py "4A0A":"IDK"
     'SUG': 0x4A17,   # utils/tokens.py "4A17":"SUG"
     'HOW': 0x4A09,   # utils/tokens.py "4A09":"HOW"
     'QRY': 0x4A14,   # utils/tokens.py "4A14":"QRY"
-    'NAR': 0x4A21,   # (no entry in utils/tokens.py — keep as-is)
-    'CCL': 0x4A22,   # (no entry in utils/tokens.py — keep as-is)
+    'NAR': 0x4A25,   # python-diplomacy daide/tokens.py NAR
+    'CCL': 0x4A26,   # DAT_004c6e14 in Albert.exe; python-diplomacy CCL
     'FRM': 0x4802,   # utils/tokens.py "4802":"FRM"
     'SND': 0x4817,   # utils/tokens.py "4817":"SND"
 }

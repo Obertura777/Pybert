@@ -2,15 +2,20 @@
 
 Split from communications/inbound.py during the 2026-04 refactor.
 
-Holds the three functions that, given a previously-accepted inbound
-proposal, produce the outbound response:
+Holds the functions that, given an inbound proposal, record it and produce
+the outbound response:
 
-  * ``receive_proposal``           — record a proposal in the ledger and
-    classify it for the response pipeline.
-  * ``_respond_walk_pos_analysis`` — per-province walk/position helper
-    used by ``respond``.
-  * ``respond``                    — the top-level reply generator; emits
+  * ``receive_proposal``           — record a proposal in the ledger
+    (RECEIVE_PROPOSAL).
+  * ``send_huh_and_try``           — FUN_0040d4d0: answer a message Albert
+    does not understand with ``HUH ( ERR ... )`` and ``TRY ( ... )``.
+  * ``_respond_walk_pos_analysis`` — RESPOND's LAB_00421ebc walk that adds
+    Albert to a proposal's rejection set.
+  * ``respond``                    — the top-level reply generator; queues
     the outbound DAIDE press answering an inbound proposal.
+
+Token lists are flat wire tokens.  A proposal's content keeps its ``PRP``
+wrapper, as the C node token list (node+0x10) does.
 
 Module-level deps: ``...state.InnerGameState``;
 ``..senders._prepare_ally_press_entry`` (receive_proposal),
@@ -24,6 +29,22 @@ import time as _time
 from ...state import InnerGameState
 from ..senders import _prepare_ally_press_entry, send_ally_press_by_power as _send_ally_press_by_power
 from ..alliance import build_alliance_msg
+from ..tokens import _c_token_at, _token_seq_equal
+
+_POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
+               "ITALY", "RUSSIA", "TURKEY"]
+
+_YES = 0x481c
+_REJ = 0x4814
+_HUH = 0x4806
+
+
+def _power_name(power: int) -> "str | None":
+    return _POWER_FULL[power] if 0 <= power < len(_POWER_FULL) else None
+
+
+def _wire(tokens) -> str:
+    return ' '.join(str(t) for t in tokens)
 
 
 def receive_proposal(
@@ -34,167 +55,122 @@ def receive_proposal(
     participant_powers: "list[int] | None" = None,
 ) -> None:
     """
-    Port of RECEIVE_PROPOSAL (named; no binary address recovered by Ghidra).
+    Port of RECEIVE_PROPOSAL (0x00431fe0).
 
-    Deduplicates an incoming proposal press against g_pos_analysis_list
-    (DAT_00bb65c8/cc).  If this proposal has not yet been recorded:
+    C arguments: the proposal content (``PRP ( ... )``), the sender byte and
+    the FRM recipient list.
 
-      1. Appends its token sequence to g_pos_analysis_list.
-      2. Logs "We have received the proposal: %s" (mirrors C SEND_LOG).
-      3. Adds the elapsed proposal event to g_alliance_msg_tree
-         (DAT_00bbf638), mirroring BuildAllianceMsg's sorted-BST insert.
-      4. Calls _prepare_ally_press_entry(state, sender_power) [FUN_00418db0
-         — removes any existing THN(<sender_power>) entries from
-         g_master_order_list so that the new entry added by
-         _send_ally_press_by_power is not duplicated].
-
-    C parameters (recovered as in_stack offsets by Ghidra, pushed by caller):
-      +0x14  sender_power     — byte index of the sending power
-      +0x18  proposal_tokens  — ordered token list (iterated for map inserts)
-      +0x04  sub_tokens       — token list used by FUN_00465d90 equality check
-                                (same data as proposal_tokens in practice;
-                                 Python uses proposal_tokens for both roles)
-
-    Called from BuildAndSendSUB when:
-      puVar18[0x2c] == 1  (has-received-proposal flag set)
-      puVar18[7]    == 0  (not yet marked as sent)
-
-    Callees absorbed inline:
-      FUN_00465870  — std::list default-constructor → []
-      FUN_0047020b  — get own-power context ptr (→ state.albert_power_idx)
-      FUN_004243a0  — init analysis-record struct
-      FUN_00465930  — TokenSeq_Count (→ len())
-      FUN_00401950  — list content destructor (→ no-op; locals start empty)
-      StdMap_FindOrInsert  — std::map lower-bound+insert (→ set.add / dict)
-      FUN_00419cb0  — list/range iterator init for g_pos_analysis_list (→ loop)
-      FUN_00411a80  — bind iteration to DAT_00bb65d4 secondary sentinel (→ loop)
-      GetListElement  — indexed token fetch (→ list index)
-      FUN_00465d90  — token-sequence equality
-      GameBoard_GetPowerRec — participant/acknowledgement set lookup
-      TreeIterator_Advance  — BST iterator step (→ absorbed in loop)
-      FUN_0040f860  — std::list::iterator++ (→ Python for-loop)
-      FUN_00465f60  — token-list copy (→ list())
-      FUN_004223c0  — analysis-struct copy/init (→ absorbed)
-      FUN_00430370  — std::list insert at sentinel (→ list.append)
-      FUN_00421400  — free analysis struct (→ no-op)
-      FreeList      — free temp token list (→ no-op)
-      FUN_0046b050  — token-list → string repr (→ str(), already in unchecked)
-      SEND_LOG      — debug/log sink (→ logging.info)
-      BuildAllianceMsg — BST insert of sender into DAT_00bbf638
-                         (→ g_alliance_msg_tree.add; already in unchecked)
-      FUN_00418db0  — PrepareAllyPressEntry (→ _prepare_ally_press_entry)
+    C flow:
+      1. Build a fresh analysis record: processed byte 0, elapsed time,
+         participant set {sender} ∪ recipients (node+0x30), responded set
+         {sender} (node+0x3c), empty rejection set (node+0x48), and the clause
+         list (node+0x54) copied from DAT_00bb65d4 — the clauses the
+         preceding EvaluatePress accepted.
+      2. Walk g_pos_analysis_list for an unprocessed node with an equal token
+         list (FUN_00465d90) and an identical participant set; if found, stop.
+      3. Otherwise insert the record, log "We have received the proposal",
+         archive elapsed + 10000 in DAT_00bbf638 and call FUN_00418db0(sender)
+         to drop the sender's pending THN entries.
     """
     import logging as _log_module
     _log = _log_module.getLogger(__name__)
 
-    # ── Exact-match check against g_pos_analysis_list ────────────────────────
-    # C outer loop iterates g_pos_analysis_list nodes; FUN_00465d90(node+4, &stack4)
-    # returns True when the ordered token sequences are identical.
-    # C line 126: if (*(char*)(puVar2+8) != '\0') goto LAB_0043232b — processed
-    # entries are skipped (the goto path does NOT set the match flag, so the
-    # outer loop simply advances to the next node without treating it as a match).
-    # The C then compares the freshly-built participant map with node+0xc.
-    # Both the ordered token sequence and participant set must match.
     participants = {int(sender_power)}
     participants.update(int(p) for p in (participant_powers or []))
     already_seen = any(
-        list(proposal_tokens) == entry.get('tokens', [])
+        _token_seq_equal(entry.get('tokens', []), proposal_tokens)
         and participants == set(entry.get('participant_powers', set()))
         for entry in state.g_pos_analysis_list
         if entry.get('processed_flag', 0) == 0
     )
-
     if already_seen:
         return
 
-    # ── Insert into g_pos_analysis_list ────────────────────────────────────────
-    # C: FUN_00465f60(copy, &stack4)  →  copy proposal token list
-    #    FUN_004223c0(analysis, record)  →  init analysis struct (absorbed)
-    #    FUN_00430370(&sentinel, &iter, copy)  →  std::list insert
+    elapsed = int(_time.time() - getattr(state, 'g_turn_start_time', 0.0))
     state.g_pos_analysis_list.append({
         'tokens': list(proposal_tokens),
         'token_set': frozenset(proposal_tokens),
         'participant_powers': participants,
-        # ── Press-entries for CAL_MOVE inner loop (C node+0x15/0x16) ──────
-        # RECEIVE_PROPOSAL runs after EvaluatePress and copies the accepted
-        # DAT_00bb65d4 clauses into this analysis record.
         'press_entries': [
             {'tokens': _copy.deepcopy(t)}
             for t in getattr(state, 'g_accepted_proposals', [])
         ],
-        # C record maps: +0xc participants, +0xf affirmative acknowledgers,
-        # +0x12 rejection/deviation acknowledgers.
-        'sender_power':     sender_power,
-        'processed_flag':   0,          # C node[+8]; 0 = unprocessed, set by ack-matcher bookkeeping
-        'role_b_set':       {sender_power},
-        'role_c_set':       set(),      # C node[+0x16 / per-role sub-tree] — REJ/BWX role-C set
+        'sender_power': sender_power,
+        'elapsed': elapsed,
+        'processed_flag': 0,
+        'role_b_set': {sender_power},
+        'role_c_set': set(),
     })
 
-    # ── Log ──────────────────────────────────────────────────────────────────
-    # C: FUN_0046b050(&stack4, buf) → string repr of token list
-    #    SEND_LOG(&pvStack_ec, L"We have received the proposal: %s")
-    _log.info("We have received the proposal: %s", proposal_tokens)
-
-    # ── BuildAllianceMsg — record sender in g_alliance_msg_tree ────────────────
-    # C: puStack_f4 = (int)(elapsed_seconds + 10000)
-    #    BuildAllianceMsg(&DAT_00bbf638, &pvStack_e8, (int *)&puStack_f4)
-    event_key = int(_time.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
-    build_alliance_msg(state, event_key)
-
-    # ── PrepareAllyPressEntry — FUN_00418db0(sender_power) ───────────────────
-    # C: final call; marks sender's per-power press-entry as pending so that
-    #    RESPOND / SendAllyPressByPower can schedule the DM reply.
+    _log.info("We have received the proposal: %s", _wire(proposal_tokens))
+    build_alliance_msg(state, elapsed + 10000)
     _prepare_ally_press_entry(state, sender_power)
+
+
+def send_huh_and_try(
+    state: "InnerGameState",
+    sender_power: int,
+    content_tokens: list,
+    send_fn=None,
+) -> bool:
+    """
+    Port of FUN_0040d4d0 — reply to a message Albert does not understand.
+
+    Called from the FRM handler for an unrecognised press token and from
+    RESPOND for a HUH verdict.  Unless the content already starts with HUH or
+    TRY it sends, immediately and to the sender only:
+
+      * ``SND ( sender ) ( HUH ( ERR <content> ) )`` — ERR is prepended to the
+        content (FUN_004665f0), not inserted at an error position;
+      * ``SND ( sender ) ( TRY ( <DAT_00bb6f0c> ) )`` — the press tokens this
+        bot accepts, as built by the HLO handler.
+
+    Returns True when the two messages were sent.
+    """
+    first = _c_token_at(content_tokens, 0)
+    if str(first).upper() in ('HUH', 'TRY') or first in (_HUH, 0x4A1A):
+        return False
+    if send_fn is None:
+        return False
+
+    recipient = _power_name(int(sender_power))
+    allowed = list(getattr(state, 'g_allowed_press_token_list', []) or [])
+    huh_body = f"HUH ( ERR {_wire(content_tokens)} )"
+    try_body = f"TRY ( {_wire(allowed)} )" if allowed else "TRY ( )"
+    send_fn({'message': huh_body, 'recipient': recipient})
+    send_fn({'message': try_body, 'recipient': recipient})
+    return True
 
 
 def _respond_walk_pos_analysis(
     state: "InnerGameState",
-    sublist3: list,
+    content_tokens: list,
     sender_power: int,
     response_type: int,
     own_power: int,
 ) -> None:
     """
-    LAB_00421ebc — walk g_pos_analysis_list for proposals matching *sublist3*
-    and register *own_power* in g_deviation_tree for each match.
+    LAB_00421ebc — RESPOND's walk over g_pos_analysis_list.
 
-    C flow (decompiled.txt lines 261–316):
-      Iterate g_pos_analysis_list (DAT_00bb65c8/cc sentinel loop):
-        FUN_00465d90(node+0x10, local_3c) — token-sequence equality.
-        If equal:
-          iStack_68 = node[0x34]  (participant-map head)
-          GameBoard_GetPowerRec(node+0x30, apuStack_8c, &uStack_c4)
-          if puVar13[1] != iStack_68                  ← own power is a participant
-             AND (YES != param_2 OR g_power_active_turn[sender] == 1):
-               StdMap_FindOrInsert(node+0x48, &send_time, &uStack_c4)
-        FUN_0040f860(&iter)  ← advance list iterator
-
-    GameBoard_GetPowerRec is represented by membership in participant_powers.
-    StdMap_FindOrInsert → g_deviation_tree[(token_key, own_power)] insert.
-    FUN_00465d90        → ordered-list equality.
-    FUN_0047a948        → AssertFail (absorbed).
-    FUN_0040f860        → list iterator advance (absorbed as Python for-loop).
+    For every node whose token list equals the answered content
+    (FUN_00465d90; the processed byte is not consulted) and whose participant
+    set (node+0x30) contains Albert: when the answer is not YES, or the
+    sender is flagged in DAT_00633768 (a deceitful YES), insert Albert into
+    the node's rejection set (node+0x48) if it is not there yet.
     """
-    _YES = 0x481c
     g_active = getattr(state, 'g_power_active_turn', None)
-    sender_active = bool(g_active is not None and g_active[sender_power])
-
-    if not sublist3:
+    sender_flagged = bool(
+        g_active is not None and int(g_active[sender_power]) == 1
+    )
+    if response_type == _YES and not sender_flagged:
         return
 
     for entry in state.g_pos_analysis_list:
-        if entry.get('tokens', []) != list(sublist3):
+        if not _token_seq_equal(entry.get('tokens', []), content_tokens):
             continue
         if own_power not in set(entry.get('participant_powers', set())):
             continue
-        # C: lookup result differs from the participant-map head: key found.
-        # C: (YES != param_2 || g_power_active_turn[sender] == 1)
-        if response_type != _YES or sender_active:
-            key = (frozenset(entry['tokens']), own_power)
-            state.g_deviation_tree[key] = state.g_deviation_tree.get(key, 0)
-            if 'deviation_powers' not in entry:
-                entry['deviation_powers'] = set()
-            entry['deviation_powers'].add(own_power)
+        entry.setdefault('role_c_set', set()).add(own_power)
 
 
 def respond(
@@ -206,101 +182,54 @@ def respond(
     send_fn=None,
 ) -> None:
     """
-    Port of RESPOND (named; called from BuildAndSendSUB after RECEIVE_PROPOSAL).
-
-    Generates Albert's reply to an incoming ally press and queues it for dispatch.
+    Port of RESPOND (0x004216f0).
 
     C signature:
       void __thiscall RESPOND(void *this, void *param_1, short param_2,
                                uint param_3, int param_4)
 
     Mapping:
-      this      → state
-      param_1   → press_list  — incoming press as a dict with three sublists:
-                    'sublist1': [sender_power_token]   e.g. [0x4103] for GER
-                    'sublist2': [power_tokens …]        powers named in proposal
-                    'sublist3': [order_tokens …]        XDO/PRP content
+      param_1   → press_list — the FRM message as three sublists:
+                    'sublist1': [sender_power_token]
+                    'sublist2': [recipient power tokens]
+                    'sublist3': content tokens, ``PRP ( ... )``
       param_2   → response_type  YES=0x481c, REJ=0x4814, HUH=0x4806
-      param_3   → elapsed_lo     low-word of current timestamp (uint32)
-      param_4   → elapsed_hi     high-word of current timestamp (int32)
+      param_3/4 → the int64 wall-clock time the message was received
 
-    Deception path (REJ + single power + enemy + trust gate):
-      If g_enemy_flag[sender]==1 AND sender's trust toward own is positive AND
-      relation >= 0 AND random gate fails to trigger avoidance → respond YES
-      (deceitfully accept).  Logs "We are DECEITFULLY responding to: (%s)".
-      Sets g_power_active_turn[sender] = 1.
+    Reply recipients (local_2c) are the sender followed by every recipient
+    other than Albert, and the queued message is
+    ``SND ( turn ) ( recipients ) ( <verdict> ( <content> ) )``.
 
-    Normal path:
-      Echoes response_type unchanged.
-      Logs "Our response to a message was: %s".
+    Deception path (REJ + exactly one recipient + enemy sender + trust gate):
+      answers YES to the sender alone and sets DAT_00633768[sender].
 
-    Both paths: enqueue SND entry into g_master_order_list, update
-    g_alliance_msg_tree, then walk g_pos_analysis_list via
-    _respond_walk_pos_analysis.
-
-    HUH path:
-      FUN_0040d4d0 (absorbed) + _send_ally_press_by_power(sender) → schedule
-      THN response.  Skips queueing step; goes straight to proposal-list walk.
+    HUH path: FUN_0040d4d0 (``send_huh_and_try``) + SendAllyPressByPower
+      (sender), then the rejection-set walk; nothing is queued.
 
     Timing (non-tournament mode):
-      target = received_timestamp - turn_start + rand(0–7) + 5 s
-      If target < best_ally_turn_score  → push to best_score + 2 s
-      If g_move_time_limit_sec > 0        → cap at limit − 20 s
+      target = received - turn_start + rand(0–7) + 5 s
+      target <= best recipient turn score → best score + 2 s
+      g_move_time_limit_sec > 0 → cap at limit − 20 s
     Timing (tournament mode / g_press_instant != 0):
-      target = received_timestamp - turn_start  (send immediately)
-
-    Callees absorbed inline:
-      FUN_00465870  list init          → []
-      FUN_0047020b  own-context ptr    → state.albert_power_idx
-      GetSubList    sublist extraction → press_list['sublistN']
-      AppendList / FreeList            → Python list ops
-      FUN_004658f0  first token        → list[0]
-      FUN_00465930  TokenSeq_Count     → len()
-      FUN_00465f30  wrap token→list    → [token]
-      FUN_00466480  filter by type     → absorbed in power-loop
-      FUN_00466f80  prefix+content     → [type_token] + sublist3
-      FUN_00466e10  add power token    → list.append
-      FUN_00466c40  concat token lists → list + list
-      FUN_00465f60  copy token list    → list()
-      FUN_00419c30  enqueue press      → g_master_order_list.append
-      FUN_0046b050  serialize tokens   → str()
-      SEND_LOG                         → logging.debug
-      BuildAllianceMsg                 → g_alliance_msg_tree.add
-      FUN_0040d4d0  HUH forward        → absorbed (no-op)
-      ATL::CSimpleStringT::CloneData   → absorbed
-      LOCK / UNLOCK                    → absorbed
+      target = received - turn_start
+    Every queued answer archives target + 2500 in DAT_00bbf638.
     """
     import logging as _logging
     from ... import rng as _random
 
     _log = _logging.getLogger(__name__)
 
-    # DAIDE token constants (from daide_client/tokens.h)
-    _YES = 0x481c
-    _REJ = 0x4814
-    _HUH = 0x4806
-
     own_power: int = getattr(state, 'albert_power_idx', 0)
-    # DAT_00baed32 — tournament mode (g_press_instant in Python)
     tournament_mode: int = int(getattr(state, 'g_press_instant', 0))
 
-    # ── Extract sublists ─────────────────────────────────────────────────────
-    # C: GetSubList(param_1, buf, 1/2/3)
-    sublist1: list = press_list.get('sublist1', [])   # sender power token(s)
-    sublist2: list = press_list.get('sublist2', [])   # powers in proposal
-    sublist3: list = press_list.get('sublist3', [])   # order content
+    sublist1: list = press_list.get('sublist1', [])
+    sublist2: list = press_list.get('sublist2', [])
+    content: list = press_list.get('sublist3', [])
 
-    # local_c8[0] = FUN_004658f0(local_1c, &uStack_8e) → first token of sublist1
-    # (byte)local_c8[0] extracts the low byte = power index (0-6)
     sender_token: int = sublist1[0] if sublist1 else 0
     sender_power: int = sender_token & 0xff
 
-    # uStack_c4 = *(byte *)(*(int *)(this+8) + 0x2424) — own power index
-    # (already extracted above as own_power)
-
-    # ── Initial best ally turn-score lookup ──────────────────────────────────
-    # C: iVar16 = -1; puStack_bc = 0xffffffff
-    #    if (DAT_00ba27b4[power*8] >= 0): iVar16 = ...; puStack_bc = ...
+    # ── Best recipient turn score (DAT_00ba27b0/b4) ──────────────────────────
     g_turn_score = getattr(state, 'g_turn_score', None)
     best_score_hi: int = -1
     best_score_lo: int = 0xffffffff
@@ -313,14 +242,14 @@ def respond(
             best_score_hi = hi_val
             best_score_lo = lo_val
 
-    # ── Power-list loop (local_4c = sublist2) — update best turn score ───────
-    # C: uStack_84 = FUN_00465930(local_4c)  (count of entries)
-    #    for each entry != own_power: FUN_00466480 filter + score comparison
+    # local_2c = [sender] + every recipient that is not Albert.
+    recipients: list = [sender_power]
     power_count: int = len(sublist2)
     for pw_token in sublist2:
         pw_idx = pw_token & 0xff
         if pw_idx == own_power:
             continue
+        recipients.append(pw_idx)
         if g_turn_score is not None and pw_idx < len(g_turn_score):
             val = int(g_turn_score[pw_idx])
             hi_val = val >> 32
@@ -332,10 +261,7 @@ def respond(
                 best_score_hi = hi_val
                 best_score_lo = lo_val
 
-    # ── Compute target send time ──────────────────────────────────────────────
-    # C uses RESPOND's param_3/param_4 timestamp captured on the broadcast
-    # record, not a fresh __time64() call. Reconstruct the signed int64 before
-    # subtracting the turn-start int64.
+    # ── Target send time ─────────────────────────────────────────────────────
     received_timestamp = (
         ((int(elapsed_hi) & 0xffffffff) << 32)
         | (int(elapsed_lo) & 0xffffffff)
@@ -347,155 +273,107 @@ def respond(
     )
 
     if not tournament_mode:
-        # C: uVar17 = (rand() / 0x17) & 0x80000007  → 0-7 (mod-8 random)
         rand_val = _random.randint(0, 0x7fff)
-        rand_offset = (rand_val // 23) % 8          # 0-7 units
+        rand_offset = (rand_val // 23) % 8
         target = elapsed + rand_offset + 5.0
 
-        # C: if (pvVar8 <= iVar16 && ...): puVar20 = puStack_bc + 2
-        # Push target forward past best ally's score + 2 s if needed
         if best_score_hi >= 0:
             best_f = float(best_score_hi) * float(2**32) + float(best_score_lo)
             if target <= best_f:
                 target = best_f + 2.0
 
-        # C: if (0 < DAT_00624ef4): cap at limit - 0x14
         move_limit = int(getattr(state, 'g_move_time_limit_sec', 0))
         if move_limit > 0:
             cap = float(move_limit - 20)
             if target > cap:
                 target = cap
     else:
-        # Tournament mode: send at current elapsed (no random delay)
         target = elapsed
 
     # ── HUH path ─────────────────────────────────────────────────────────────
-    # C: if (HUH == param_2) { FUN_0040d4d0(...); SendAllyPressByPower(sender); goto end }
     if response_type == _HUH:
-        # FUN_0040d4d0(local_6c, param_1) — unknown HUH forward handler; absorbed
+        send_huh_and_try(state, sender_power, content, send_fn)
         _send_ally_press_by_power(state, sender_power)
-        _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)
+        _respond_walk_pos_analysis(state, content, sender_power, response_type, own_power)
         return
 
-    # ── REJ + single ally power → potential deceit YES ───────────────────────
-    # C: if ((REJ == param_2) && (uStack_84 == 1)) { ... } else { LAB_00421d01: ... }
+    # ── REJ + single recipient → potential deceit YES ────────────────────────
     if response_type == _REJ and power_count == 1:
         uVar17 = sender_power
 
-        # Gate 1: sender must be designated enemy
-        # C: (&DAT_004cf568)[uVar17*2] == 1  AND  (&DAT_004cf56c)[uVar17*2] == 0
         g_enemy = getattr(state, 'g_enemy_flag', None)
         g_enemy_hi = getattr(state, 'g_enemy_flag_hi', None)
         enemy_flag = int(g_enemy[uVar17]) if g_enemy is not None else 0
         enemy_flag_hi = int(g_enemy_hi[uVar17]) if g_enemy_hi is not None else 0
 
         if enemy_flag == 1 and enemy_flag_hi == 0:
-            # Gate 2: trust and relation check
-            # C: iVar18 = uVar17*21 + own_power  (sender→own direction in int64 array)
             trust_hi = int(state.g_ally_trust_score_hi[uVar17, own_power])
             trust_lo = int(state.g_ally_trust_score[uVar17, own_power])
-            # g_relation_score[own_power, uVar17]  (DAT_00634e90[own*21+sender])
             relation = int(state.g_relation_score[own_power, uVar17])
 
-            # Condition to SKIP deceit (goto normal path):
-            #   (trust_hi < 0 OR (trust_hi < 1 AND trust_lo == 0) OR relation < 0)
-            #   AND random passes
             low_trust = (
                 trust_hi < 0
                 or (trust_hi < 1 and trust_lo == 0)
                 or relation < 0
             )
 
-            aggressiveness = int(getattr(state, 'g_dmz_aggressiveness', 0))
+            aggressiveness = int(getattr(state, 'g_press_thresh_random', 50))  # DAT_004c6bd4
             press_mode = int(getattr(state, 'g_press_flag', 0)) == 1
 
-            # C: (iVar18 = rand(), (iVar18 / 0x17) % 0x14 + aggressiveness < 0x51)
-            r1 = _random.randint(0, 0x7fff)
-            rand_check1 = (r1 // 23) % 20 + aggressiveness < 81
-
-            if press_mode:
-                # C: DAT_00baed68 == '\x01': RandUpTo(n)(0x14) + aggressiveness < 0x47
-                r2 = _random.randrange(20)
-                rand_check2 = r2 + aggressiveness < 71
-                random_passes = rand_check1 and rand_check2
+            # C: (rand() / 0x17) % 0x14 + DAT_004c6bd4 < 0x51, evaluated only
+            # once the trust test has passed (&& short-circuit).
+            if low_trust:
+                r1 = _random.randint(0, 0x7fff)
+                random_passes = (r1 // 23) % 20 + aggressiveness < 81
+                if random_passes and press_mode:
+                    r2 = _random.randrange(20)
+                    random_passes = r2 + aggressiveness < 71
+                skip_deceit = random_passes
             else:
-                random_passes = rand_check1
-
-            skip_deceit = low_trust and random_passes
+                skip_deceit = False
 
             if not skip_deceit:
-                # ── Deceit path: respond YES instead of REJ ───────────────────
-                # Build a properly formatted DAIDE response string directed at
-                # the sender.  In python-diplomacy there is no FRM envelope —
-                # the message body alone is delivered, so we must produce the
-                # full DAIDE string (e.g. "YES ( PRP ( ALY ... ) )") rather
-                # than the C-internal token-int list.
-                _press_str = ' '.join(str(t) for t in sublist3)
-                _deceit_msg = f"YES ( PRP ( {_press_str} ) )"
-                _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
-                               "ITALY", "RUSSIA", "TURKEY"]
-                _rcpt = (_POWER_FULL[sender_power]
-                         if 0 <= sender_power < len(_POWER_FULL) else None)
+                deceit_msg = f"YES ( {_wire(content)} )"
+                _log.debug("We are DECEITFULLY responding to: (%s)", deceit_msg)
 
-                _log.debug("We are DECEITFULLY responding to: %s", _deceit_msg)
+                state.g_master_order_list.append({
+                    'scheduled_time': target,
+                    'press_type':     'SND',
+                    'data':           {'message': deceit_msg,
+                                       'recipient': _power_name(sender_power)},
+                    'target_powers':  [sender_power],
+                })
 
-                # C: (&DAT_00633768)[(byte)local_c8[0]] = 1
                 g_active = getattr(state, 'g_power_active_turn', None)
                 if g_active is not None:
                     g_active[sender_power] = 1
 
-                # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_bc)
-                state.g_master_order_list.append({
-                    'scheduled_time': target,
-                    'press_type':     'SND',
-                    'data':           {'message': _deceit_msg, 'recipient': _rcpt},
-                    'target_power':   sender_power,
-                })
-
-                state.g_alliance_msg_tree.add(int(target) + 2500)
+                build_alliance_msg(state, int(target) + 2500)
 
                 _respond_walk_pos_analysis(
-                    state, sublist3, sender_power, response_type, own_power
+                    state, content, sender_power, response_type, own_power
                 )
                 return
 
     # ── Normal path (LAB_00421d01) ────────────────────────────────────────────
-    # Build a properly formatted DAIDE response string directed at the sender.
-    # In python-diplomacy the FRM envelope is absent; callers expect a plain
-    # DAIDE body like "YES ( PRP ( ALY ( AUS GER ) VSS ( RUS ) ) )".
-    _resp_name = {_YES: 'YES', _REJ: 'REJ', _HUH: 'HUH'}.get(response_type, 'REJ')
-    _press_str = ' '.join(str(t) for t in sublist3)
-    _resp_msg = f"{_resp_name} ( PRP ( {_press_str} ) )"
+    resp_name = {_YES: 'YES', _REJ: 'REJ', _HUH: 'HUH'}.get(response_type)
+    if resp_name is None:
+        resp_name = str(response_type)
+    resp_msg = f"{resp_name} ( {_wire(content)} )"
+    _log.debug("Our response to a message was: %s", resp_msg)
 
-    _log.debug("Our response to a message was: %s", _resp_msg)
+    names = [_power_name(p) for p in recipients]
+    data = {'message': resp_msg, 'recipient': names[0]}
+    if len(names) > 1:
+        data['recipients'] = names
 
-    # C: local_2c = [sender_token] + non-own power tokens from sublist2
-    # (FUN_00466480 type-filter absorbed; all non-own tokens pass through)
-    # ScheduledPressDispatch extracts these via GetSubList(node+6, ..., 2) to
-    # call SendAllyPressByPower for each power in the list.
-    _seen: set = {sender_power}
-    _target_powers: list = [sender_power]
-    for _pw in sublist2:
-        _idx = _pw & 0xff
-        if _idx != own_power and _idx not in _seen:
-            _seen.add(_idx)
-            _target_powers.append(_idx)
-
-    # Response is directed only at the original sender (first in _target_powers).
-    # Store as a dict so dispatch_scheduled_press / _send_dm can route it.
-    _POWER_FULL = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
-                   "ITALY", "RUSSIA", "TURKEY"]
-    _rcpt = (_POWER_FULL[sender_power]
-             if 0 <= sender_power < len(_POWER_FULL) else None)
-
-    # C: FUN_00419c30(&DAT_00bb65bc, apuStack_7c, (uint*)&puStack_ac)
     state.g_master_order_list.append({
         'scheduled_time': target,
         'press_type':     'SND',
-        'data':           {'message': _resp_msg, 'recipient': _rcpt},
-        'target_powers':  _target_powers,
+        'data':           data,
+        'target_powers':  list(recipients),
     })
 
-    state.g_alliance_msg_tree.add(int(target) + 2500)
+    build_alliance_msg(state, int(target) + 2500)
 
-    _respond_walk_pos_analysis(state, sublist3, sender_power, response_type, own_power)
+    _respond_walk_pos_analysis(state, content, sender_power, response_type, own_power)

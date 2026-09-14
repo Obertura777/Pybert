@@ -34,24 +34,25 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
     """
     Port of FUN_004424e0 = ScheduledPressDispatch.
 
-    Iterates g_master_order_list (DAT_00bb65bc/c0) and sends any enqueued press
-    messages whose scheduled delivery time has elapsed since g_turn_start_time
-    (DAT_00ba2880/84).
+    Walks g_master_order_list (DAT_00bb65bc/c0) and executes every entry whose
+    scheduled elapsed time has been reached, measured from g_turn_start_time
+    (DAT_00ba2880/84) once at entry.
 
     For each due entry:
-      - press_type == 'SND' → call send_fn(data), accumulate target_power into
-        a running power-list, then call SendAllyPressByPower for every power in
-        the cumulative list (C: local_58 accumulator + inner count loop).
-      - press_type == 'THN' → extract first data element (power index) and call
-        ExecuteThennAction (FUN_00439c30).
+      - SND → SendDM(message), then SendAllyPressByPower for every power in
+        that message's recipient list (GetSubList(msg, 2) is assigned to
+        local_58, not appended, so only the current message's recipients).
+      - THN → ExecuteThennAction(first data element = power index).
+    The node is then removed and the scan restarts from the head, so entries
+    appended by the callbacks are seen in the same call.
 
-    After dispatching, removes the entry from the list.
-
-    The C binary restarts its linked-list scan after removing each due entry.
-    Dispatch callbacks can append THN entries, so the Python loop likewise
-    mutates the live list instead of rebuilding it from a stale snapshot.
-
-    Research.md §5271.
+    The server answers every SND with ``YES ( SND ... )``, and Albert's
+    handler for that confirmation (FUN_0045a090) credits Albert's own
+    ``YES ( PRP ... )`` answers.  python-diplomacy sends no confirmation, so
+    each delivered SND is queued here and replayed through
+    ``handle_own_press_delivered`` once the outermost dispatch has finished,
+    as the confirmation would arrive after the send.  ``send_fn`` returning
+    ``False`` means the message was not delivered.
 
     Parameters
     ----------
@@ -64,62 +65,53 @@ def dispatch_scheduled_press(state: InnerGameState, send_fn=None) -> None:
         lambda data: _log.debug("DispatchScheduledPress: SND %r", data)
     )
 
-    # C: __time64(0) - CONCAT44(DAT_00ba2884, DAT_00ba2880)
-    # DAT_00ba2880 is g_turn_start_time, set at the top of
-    # GenerateAndSubmitOrders (bot.py Step 1).
     turn_start = float(getattr(state, 'g_turn_start_time', 0.0))
     elapsed = _time.time() - turn_start
 
-    # C: local_58 — accumulates target-power bytes across all dispatched SND
-    # entries so that SendAllyPressByPower is called for every recipient seen
-    # so far (not just the current entry's recipient).
-    cumulative_snd_powers: list = []
+    depth = int(getattr(state, 'g_press_dispatch_depth', 0))
+    state.g_press_dispatch_depth = depth + 1
+    if getattr(state, 'g_press_delivery_queue', None) is None:
+        state.g_press_delivery_queue = []
+    delivered = state.g_press_delivery_queue
+    try:
+        master = state.g_master_order_list
+        while True:
+            due_index = next(
+                (i for i, candidate in enumerate(master)
+                 if elapsed >= float(candidate.get('scheduled_time', 0.0))),
+                None,
+            )
+            if due_index is None:
+                break
 
-    master = getattr(state, 'g_master_order_list', [])
-    while True:
-        due_index = next(
-            (i for i, candidate in enumerate(master)
-             if elapsed >= float(candidate.get('scheduled_time', 0.0))),
-            None,
-        )
-        if due_index is None:
-            break
+            entry = master.pop(due_index)
 
-        # C removes the node after executing it.  Pop first so callbacks see
-        # the live queue without this entry and any appended work is retained.
-        entry = master.pop(due_index)
+            press_type = entry.get('press_type', '')
+            data       = entry.get('data', [])
 
-        press_type = entry.get('press_type', '')
-        data       = entry.get('data', [])
+            if press_type == 'SND':
+                if _send(data) is not False and send_fn is not None:
+                    delivered.append(data)
 
-        if press_type == 'SND':
-            # C: SendDM(param_1, node+6) — send the press message.
-            _send(data)
+                targets = list(entry.get('target_powers', []))
+                if not targets and entry.get('target_power') is not None:
+                    targets = [entry['target_power']]
+                from .senders import send_ally_press_by_power as _send_ally_press_by_power
+                for pwr in targets:
+                    _send_ally_press_by_power(state, int(pwr))
 
-            # C: GetSubList(node+6, local_38, 2) → all power bytes from position
-            # 2+ in the token sequence (local_2c in RESPOND, local_c8 in deceit).
-            # Deceit path stores 'target_power' (single int, sender only).
-            # Normal path stores 'target_powers' (list: sender + non-own proposal powers).
-            target = entry.get('target_power')
-            if target is not None:
-                cumulative_snd_powers.append(int(target))
-            for _t in entry.get('target_powers', []):
-                _ti = int(_t)
-                if _ti not in cumulative_snd_powers:
-                    cumulative_snd_powers.append(_ti)
+            elif press_type == 'THN':
+                if data:
+                    _execute_then_action(state, int(data[0]), send_fn=_send)
+    finally:
+        state.g_press_dispatch_depth = depth
 
-            # C: for i in 0..len(local_58): SendAllyPressByPower(local_58[i])
-            # Uses the cumulative list (all SND recipients so far).
-            from .senders import send_ally_press_by_power as _send_ally_press_by_power
-            for pwr in cumulative_snd_powers:
-                _send_ally_press_by_power(state, pwr)
-
-        elif press_type == 'THN':
-            # C: GetSubList(node+6, local_28, 1) → first data element
-            # ExecuteThennAction(param_1, *first_arg)
-            if data:
-                _execute_then_action(state, int(data[0]), send_fn=_send)
-        # entry consumed by the pop above
+    if depth == 0:
+        from .inbound.yes_handlers import handle_own_press_delivered
+        while state.g_press_delivery_queue:
+            data = state.g_press_delivery_queue.pop(0)
+            body = data.get('message', '') if isinstance(data, dict) else data
+            handle_own_press_delivered(state, body, send_fn)
 
 
 def _fun_004117d0(state: InnerGameState, param_1: int) -> bool:
@@ -224,7 +216,7 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
       1. power != own                                          (not self)
       2. g_turn_order_hist_lo/Hi[power] == 0                   (PCE not sent this turn)
       3. g_ally_trust_score[own, power] == 0 (both words)      (no current own→power trust)
-      4. g_press_flag == 1  OR  g_ally_trust_score[power, own] == 0  (press mode or no reverse trust)
+      4. g_press_flag == 1  OR  g_ally_trust_score[power, own] == 0  (opening turn or no reverse trust)
       5. g_enemy_flag[power] == 0                             (power not designated enemy)
       6. g_influence_matrix_b[own, power] > 0.0               (positive influence toward power)
       7. g_relation_score[own, power] >= 0                    (not hostile relation)
@@ -257,7 +249,7 @@ def _renegotiate_pce(state: InnerGameState, power: int, send_fn=None) -> bool:
     if int(state.g_ally_trust_score[own, power]) != 0 or int(state.g_ally_trust_score_hi[own, power]) != 0:
         return False
 
-    # Gate 4: press mode OR no reverse trust
+    # Gate 4: opening turn OR no reverse trust
     #          (DAT_00baed68 == '\x01' || (g_ally_trust_score[power,own] both == 0))
     press_mode = (getattr(state, 'g_press_flag', 0) == 1)
     if not press_mode:
@@ -391,12 +383,12 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
 
     press_on = (int(getattr(state, 'g_press_flag', 0)) == 1)
 
-    # Condition A: g_influence_rank_flag[own, power] < 4  AND  press mode on
+    # Condition A: g_influence_rank_flag[own, power] < 4  AND  opening turn
     # C: DAT_006340c0[own*21 + param_1] < 4  &&  DAT_00baed68 == 1
     rank_own_target = int(state.g_influence_rank_flag[own, power])
     cond_a = (rank_own_target < 4) and press_on
 
-    # Condition B: bVar3 AND press on AND DiplomacyStateA[mutual_enemy]==1 AND B==0
+    # Condition B: bVar3 AND opening turn AND DiplomacyStateA[mutual_enemy]==1 AND B==0
     # C: bVar3 && DAT_00baed68==1 && DAT_004d5480[iVar2*2]==1 && DAT_004d5484[iVar2*2]==0
     _dipl_a_arr = getattr(state, 'g_diplomacy_state_a', None)
     _dipl_b_arr = getattr(state, 'g_diplomacy_state_b', None)
@@ -462,106 +454,92 @@ def _execute_aly_vss(state: InnerGameState, power: int, send_fn=None) -> bool:
     return True
 
 
-def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> None:
+def _execute_xdo(state: InnerGameState, power: int, send_fn=None) -> bool:
     """
-    Port of FUN_00433510(this, param_1) — param_1 = sender power index.
+    Port of FUN_00433510 — propose the best XDO to ``power``.
 
-    Consumes the proposal records produced by BuildSupportProposals.  In C
-    those records live in g_ProposalHistoryMap; they are not broadcast-list
-    nodes.  A record is eligible when Albert is the proposed mover, ``power``
-    owns the requested supporting unit, its accumulated priority is positive,
-    and the support order still validates on the current board.
+    Walks the broadcast records (DAT_00bb65ec) for BuildAndSendSUB's own
+    proposal records: type 1, a positive reference key, done, with ``power``
+    among the participants, and content not yet in the sent-XDO set
+    DAT_00bb6df4.  Each is scored against the record its reference key names
+    (the combined N0 record):
 
-    Sends each eligible PRP(XDO) through PROPOSE and records its exact token
-    key in g_xdo_proposal_list to prevent duplicate negotiation.
+      own   = score[own]   - base[own]
+      their = score[power] - base[power]
 
-    Unchecked callees: FUN_00410980, FUN_00419300,
-                       FUN_004109f0, FUN_0040fa80, FUN_0040dfe0,
-                       FUN_0040f470, FUN_00465f60, PROPOSE macro.
-    FUN_00422a90 ported as validate_and_dispatch_order (commit=False).
+    except that when both base scores are -1000000 the raw scores are used.
+    A candidate needs FUN_00422a90 == 0 for ``power``, own > 0, their > -800
+    and own + their above the best so far (starting at -20000).  The winner
+    goes out as ``PRP ( content )`` through PROPOSE and joins DAT_00bb6df4.
+
+    Returns True when a proposal was made.
     """
     import logging as _logging
+    from .parsers import _parse_xdo_body_to_order
+    from .evaluators._common import _pow_idx
     _log = _logging.getLogger(__name__)
     _send = send_fn if send_fn is not None else (
         lambda msg: _log.debug("_execute_xdo: PROPOSE %s", msg)
     )
 
-    own: int = getattr(state, 'albert_power_idx', 0)
-    # g_xdo_proposal_list — exact XDO token keys already submitted.
-    xdo_sent: set = getattr(state, 'g_xdo_proposal_list', set())
-    id_to_prov = getattr(state, '_id_to_prov', {}) or {
-        v: k for k, v in getattr(state, 'prov_to_id', {}).items()
-    }
+    own = int(getattr(state, 'albert_power_idx', 0))
+    sent_xdos = getattr(state, 'g_xdo_proposal_list', None)
+    if sent_xdos is None:
+        sent_xdos = set()
+        state.g_xdo_proposal_list = sent_xdos
 
-    eligible: list[tuple[int, tuple, list]] = []
-    records = list(getattr(state, 'g_xdo_press_proposals', []))
-    records.extend(getattr(state, 'g_proposal_history_map', []) or [])
-    seen_record_keys: set = set()
-    for record in records:
-        if record.get('type') != 'XDO_SUP':
-            continue
-        record_key = record.get('key')
-        if record_key is not None:
-            if record_key in seen_record_keys:
-                continue
-            seen_record_keys.add(record_key)
-        if int(record.get('from_power', -1)) != own:
-            continue
-        if int(record.get('to_power', -1)) != power:
-            continue
-        priority = int(record.get('priority', record.get('score', 0)))
-        if priority <= 0:
-            continue
+    def _score(vector, index) -> int:
+        vector = list(vector or [])
+        return int(vector[index]) if 0 <= index < len(vector) else 0
 
-        supporter = int(record.get('supporter_prov', -1))
-        mover = int(record.get('mover_prov', -1))
-        destination = int(record.get('dest', -1))
-        supporter_unit = state.unit_info.get(supporter)
-        mover_unit = state.unit_info.get(mover)
-        if not supporter_unit or not mover_unit:
+    best = -20000
+    chosen = None
+    for node in getattr(state, 'g_broadcast_list', []):
+        if int(node.get('type_flag', 0)) != 1:
             continue
-        if int(supporter_unit.get('power', -1)) != power:
+        reference = node.get('watermark')
+        if reference is None or int(reference) <= 0:
             continue
-        if int(mover_unit.get('power', -1)) != own:
+        if not node.get('sent', False):
             continue
-        if supporter not in id_to_prov or mover not in id_to_prov or destination not in id_to_prov:
+        participants = {int(p) for p in node.get('participant_powers', set())}
+        if power not in participants:
+            continue
+        content = list(node.get('sublist3', []))
+        if tuple(content) in sent_xdos:
             continue
 
-        supporter_type = 'FLT' if supporter_unit.get('type') == 'F' else 'AMY'
-        mover_type = 'FLT' if mover_unit.get('type') == 'F' else 'AMY'
-        tokens = [
-            'XDO', '(',
-            '(', _PN[power], supporter_type, id_to_prov[supporter], ')',
-            'SUP',
-            '(', _PN[own], mover_type, id_to_prov[mover], ')',
-            'MTO', id_to_prov[destination],
-            ')',
-        ]
-        dedup_key = tuple(tokens)
-        if dedup_key in xdo_sent:
-            continue
-        order_seq = {
-            'type': 'SUP',
-            'unit': f"{'F' if supporter_type == 'FLT' else 'A'} {id_to_prov[supporter]}",
-            'target_unit': f"{'F' if mover_type == 'FLT' else 'A'} {id_to_prov[mover]}",
-            'target_dest': id_to_prov[destination],
-            'target_coast': '',
-        }
-        if validate_and_dispatch_order(
-                state, power, order_seq, commit=False) != 0:
-            continue
-        eligible.append((priority, dedup_key, tokens))
+        base = next(
+            (candidate for candidate in state.g_broadcast_list
+             if int(candidate.get('key', -1)) == int(reference)),
+            None,
+        )
+        vector = node.get('score_vector')
+        base_vector = base.get('score_vector') if base is not None else None
+        if (base is not None
+                and _score(base_vector, own) == -1000000
+                and _score(base_vector, power) == -1000000):
+            own_delta = _score(vector, own)
+            their_delta = _score(vector, power)
+        else:
+            own_delta = _score(vector, own) - _score(base_vector, own)
+            their_delta = _score(vector, power) - _score(base_vector, power)
 
-    # Highest-priority requests go first; the C history map supplies the
-    # accumulated priority field used for this ordering.
-    eligible.sort(key=lambda item: item[0], reverse=True)
+        parsed = _parse_xdo_body_to_order(content)
+        if parsed is None:
+            continue
+        validity = validate_and_dispatch_order(state, power, parsed[1], commit=False)
+        if (validity == 0 and own_delta > 0 and their_delta > -800
+                and best < own_delta + their_delta):
+            best = own_delta + their_delta
+            chosen = content
+
+    if chosen is None:
+        return False
     from .senders import propose as _propose
-    for priority, dedup_key, tokens in eligible:
-        msg = f"PRP ( {' '.join(str(t) for t in tokens)} )"
-        _log.debug("_execute_xdo: PRP(XDO) priority=%d", priority)
-        if _propose(state, msg, [power], send_fn=_send):
-            xdo_sent.add(dedup_key)
-    state.g_xdo_proposal_list = xdo_sent
+    _propose(state, f"PRP ( {' '.join(str(t) for t in chosen)} )", [power], send_fn=_send)
+    sent_xdos.add(tuple(chosen))
+    return True
 
 
 def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> None:
@@ -683,7 +661,7 @@ def _execute_then_action(state: InnerGameState, power: int, send_fn=None) -> Non
         return
 
     # Weak path: own SC count must be exactly 1, and sender trust must be ≥ 0 and ≠ 0.
-    if getattr(state, 'curr_sc_cnt', [0] * 8)[own] != 1:
+    if int(state.sc_count[own]) != 1:
         return
     if thi_so < 0:
         return

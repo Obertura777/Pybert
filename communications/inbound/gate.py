@@ -136,170 +136,193 @@ def legitimacy_gate(
     return aggregate if aggregate is not None else 0
 
 
-def delay_review(state: "InnerGameState", body_tokens: list) -> int:
+def _clause_text(tokens) -> str:
+    return ' '.join(str(t) for t in tokens)
+
+
+def _candidate_clause_tokens(candidate) -> "tuple[list, int]":
+    """(XDO clause tokens without any NOT wrapper, Python polarity) of a node
+    candidate.  Python polarity 0 is ``XDO``, 1 is ``NOT ( XDO ... )``."""
+    tokens = candidate.get('tokens', []) if isinstance(candidate, dict) else candidate
+    tokens = list(tokens or [])
+    negated = bool(tokens) and str(tokens[0]).upper() == 'NOT'
+    if negated:
+        tokens = tokens[1:]
+        if tokens and tokens[0] == '(' and tokens[-1] == ')':
+            tokens = tokens[1:-1]
+    return tokens, int(negated)
+
+
+def _candidate_clause(candidate) -> "tuple[str, int]":
+    tokens, polarity = _candidate_clause_tokens(candidate)
+    return _clause_text(tokens), polarity
+
+
+def _entry_clause_token_sets(entry: dict) -> "tuple[list, list]":
+    """The two XDO clause sets of a broadcast record, in C orientation.
+
+    Record +0x18 (set A) and +0x24 (set B) are what DELAY_REVIEW and CAL_VALUE
+    compare a proposal's plain and negated XDO clauses against, and set A is
+    what ScoreOrderCandidates turns into general orders.  FUN_00431310's
+    first pass files plain XDO clauses in set B and negated ones in set A;
+    its second pass swaps them.  BuildAndSendSUB's own proposal records
+    carry explicit ``clause_set_a`` / ``clause_set_b`` token lists.
     """
-    Port of DELAY_REVIEW — proposal novelty + cheap-scoring gate.
+    if 'clause_set_a' in entry or 'clause_set_b' in entry:
+        return (
+            [list(t) for t in entry.get('clause_set_a', [])],
+            [list(t) for t in entry.get('clause_set_b', [])],
+        )
+    plain: list = []
+    negated: list = []
+    for candidate in entry.get('order_candidates', []) or []:
+        tokens, polarity = _candidate_clause_tokens(candidate)
+        sink = negated if polarity else plain
+        if tokens not in sink:
+            sink.append(tokens)
+    if int(entry.get('registration_pass', 0)) == 1:
+        return negated, plain
+    return plain, negated
 
-    See docs/funcs/DELAY_REVIEW.md for the full spec. Returns 1 if the
-    proposal should be deferred (caller skips EvaluatePress), 0 otherwise.
 
-    C flow (simplified):
-      1. Split body into positive (XDO) and negative (NOT(XDO)) clause sets.
-         AND / ORR / bare XDO / bare NOT(XDO) all reduce to this split.
-      2. If no XDO clauses present → return 0 (don't delay).
-      3. Walk ``DAT_00bb65ec`` looking for a record whose sub-tree A and B
-         contain the positive and negative clauses respectively AND whose
-         count-match fields match. First match → return 0.
-      4. On no match: run the cheap scorer (FUN_00431310 / legitimacy_gate
-         stand-in here). If score == 0, archive a ``+10000``-keyed event
-         on ``g_alliance_msg_tree`` and return 1 (delay). Else return 0.
+def _entry_clause_sets(entry: dict) -> "tuple[set, set]":
+    """``_entry_clause_token_sets`` as sets of clause texts."""
+    set_a, set_b = _entry_clause_token_sets(entry)
+    return {_clause_text(t) for t in set_a}, {_clause_text(t) for t in set_b}
 
-    Python compressions:
-      - Sub-trees A/B are represented by each g_broadcast_list entry's
-        ``order_candidates`` (matching _cal_value's walk). A single-
-        orientation novelty match is sufficient for the catalog walk (step 3).
-      - ``FUN_00431310`` (score-and-register) is partially in Python already
-        (see ``register_received_press``); the DELAY_REVIEW caller only
-        reads the score return, so we invoke ``legitimacy_gate`` directly
-        against the candidate set as the cheap-scoring stand-in.
-      - Code-9/code-10 dual-orientation: ``legitimacy_gate`` is called twice
-        (normal flag assignment and inverted); the max score is taken. Mirrors
-        FUN_00431310's two ``SendAlliancePress`` passes.
-      - ORR-permutation max-score loop: for ORR proposals each extracted XDO
-        alternative is scored independently (both orientations); the max
-        across all alternatives drives the delay verdict.
+
+def _proposal_xdo_clauses(content_tokens: list) -> "tuple[list, list, bool, bool]":
+    """DELAY_REVIEW's clause split of ``PRP ( ... )`` content.
+
+    Returns (plain clauses, negated clauses, is_orr, has_xdo), each clause a
+    flat token list without its NOT wrapper, in first-seen order and
+    de-duplicated (FUN_00419300 inserts into a std::set).
+    """
+    from ..tokens import _c_element_count, _c_sublist, _c_token_at
+
+    body = _c_sublist(content_tokens, 1)
+    first = str(_c_token_at(body, 0)).upper()
+    plain: list = []
+    negated: list = []
+    has_xdo = False
+
+    def _add(clause: list, is_not: bool) -> None:
+        sink = negated if is_not else plain
+        if clause not in sink:
+            sink.append(clause)
+
+    if first in ('AND', 'ORR'):
+        for index in range(1, _c_element_count(body)):
+            clause = _c_sublist(body, index)
+            is_not = str(_c_token_at(clause, 0)).upper() == 'NOT'
+            if is_not:
+                clause = _c_sublist(clause, 1)
+            if str(_c_token_at(clause, 0)).upper() == 'XDO':
+                has_xdo = True
+                _add(clause, is_not)
+        return plain, negated, first == 'ORR', has_xdo
+
+    is_not = first == 'NOT'
+    if is_not:
+        body = _c_sublist(body, 1)
+    if str(_c_token_at(body, 0)).upper() == 'XDO':
+        has_xdo = True
+        _add(body, is_not)
+    return plain, negated, False, has_xdo
+
+
+def delay_review(
+    state: "InnerGameState",
+    content_tokens: list,
+    sender_power: "int | None" = None,
+    recipient_powers: "list[int] | None" = None,
+) -> bool:
+    """
+    Port of DELAY_REVIEW (0x00438e60).
+
+    C arguments: the ``PRP ( ... )`` content, the sender byte and the FRM
+    recipient list.  Returns True when the proposal's review is delayed.
+
+    C flow:
+      1. Strip PRP.  For AND/ORR, collect every child clause that is XDO or
+         NOT ( XDO ); otherwise test the single clause.  No XDO clause →
+         return False without registering anything: every other proposal is
+         answered on the spot by the FRM handler.
+      2. Unless ORR, walk DAT_00bb65ec for a record that is unflagged
+         (+0x00 != 1), has +0x04 == 0, and whose set A / set B hold exactly
+         the plain / negated clauses.  Found → return False (a live record
+         already stands for this proposal; nothing is registered).
+      3. Otherwise register the proposal through FUN_00431310, which returns
+         the FUN_00426140 score.  ORR calls it once per clause of the
+         candidate set, each time with the whole set, flagging only the last
+         second-pass record, and keeps the maximum (seeded -500000).
+      4. Score 0 → log "have delayed its review", archive elapsed + 10000,
+         return True.  Any other score → False.
     """
     import logging as _logging
+    import time as _t
     _log = _logging.getLogger(__name__)
 
-    # ── 1. Clause extraction ──────────────────────────────────────────────
-    positive, negative = _split_xdo_clauses(body_tokens)
-    if not positive and not negative:
-        _log.debug("delay_review: no XDO clauses → 0 (don't delay)")
-        return 0
+    plain, negated, is_orr, has_xdo = _proposal_xdo_clauses(content_tokens)
+    if not has_xdo:
+        return False
 
-    # Detect ORR wrapper for the bVar21 branch.
-    text = ' '.join(str(t) for t in body_tokens).strip()
-    is_orr = text.startswith('ORR')
+    if not is_orr:
+        plain_set = {_clause_text(c) for c in plain}
+        negated_set = {_clause_text(c) for c in negated}
+        for entry in state.g_broadcast_list:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get('sent', False):
+                continue
+            if int(entry.get('type_flag', 0)) != 0:
+                continue
+            set_a, set_b = _entry_clause_sets(entry)
+            if set_a == plain_set and set_b == negated_set:
+                return False
 
-    # ── 2. Catalog walk (novelty check) ───────────────────────────────────
-    pos_set = set(positive)
-    neg_set = set(negative)
-    for entry in state.g_broadcast_list:
-        if not isinstance(entry, dict):
+    # FUN_0041a100 builds the candidate set keyed by clause: plain clauses
+    # (polarity byte 1) first, then negated ones (polarity 0); a clause
+    # already present keeps its first polarity.
+    candidates: list = []
+    seen: set = set()
+    for clause, is_not in [(c, False) for c in plain] + [(c, True) for c in negated]:
+        text = _clause_text(clause)
+        if text in seen:
             continue
-        if is_orr:
-            # C: bVar21=true → continue without per-record match check.
-            # ORR mode skips the novelty match loop and proceeds directly
-            # to the scorer via the fall-through at the sentinel.
-            continue
-        cands = entry.get('order_candidates', [])
-        cand_pos = set()
-        cand_neg = set()
-        for c in cands:
-            t = c.get('tokens') if isinstance(c, dict) else c
-            if t is not None:
-                seq = list(t) if isinstance(t, (list, tuple)) else [t]
-                is_neg = bool(seq) and str(seq[0]).upper() == 'NOT'
-                if is_neg:
-                    seq = seq[1:]
-                    if seq and seq[0] == '(' and seq[-1] == ')':
-                        seq = seq[1:-1]
-                (cand_neg if is_neg else cand_pos).add(
-                    ' '.join(str(x) for x in seq)
-                )
-        # C: require both sub-tree A size == positive count AND
-        # sub-tree B size == negative count AND every clause found.
-        # Python: collapse to subset-containment on the unified candidate
-        # set. Strict-count equality is preserved by also requiring the
-        # candidate set to be no larger than the union of proposed clauses
-        # (a stricter reading: "the record represents exactly this shape").
-        if pos_set != cand_pos:
-            continue
-        if neg_set != cand_neg:
-            continue
-        # Flag gate: record +0x18 != 1 (not marked-skip), +0x1c == 0.
-        # Python stand-in: require the entry's type_flag != 1 (i.e. not
-        # already-processed) and its watermark is None or zero-valued.
-        if entry.get('type_flag', 0) == 1:
-            continue
-        _log.debug("delay_review: novelty match → 0 (don't delay)")
-        return 0
+        seen.add(text)
+        candidates.append((clause, is_not))
 
-    # ── 3. Cheap scorer on novel proposal ─────────────────────────────────
-    # C: FUN_00431310 runs two internal passes (code-9 / code-10) that swap
-    # flag_bit assignments, then returns the max score.  For ORR proposals
-    # DELAY_REVIEW calls FUN_00431310 once per ORR child and takes the max
-    # across alternatives.  Python mirrors both loops via legitimacy_gate.
-    own_power_idx = getattr(state, 'own_power_index', None)
-    if own_power_idx is None:
-        own_power_idx = getattr(state, 'albert_power_idx', 0)
-    own_idx = int(own_power_idx)
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    sender = own_power if sender_power is None else int(sender_power)
+    from_tok = 0x4100 | sender
+    to_toks = [0x4100 | int(p) for p in (recipient_powers or [])]
 
-    def _score_orientation(pos_clauses, neg_clauses, pos_bit, neg_bit):
-        cands = []
-        for clause, flag_bit in (
-            *((c, pos_bit) for c in pos_clauses),
-            *((c, neg_bit) for c in neg_clauses),
-        ):
-            parsed = _parse_xdo_candidates(clause)
-            for cand in parsed:
-                if 'order_seq' not in cand:
-                    continue
-                cands.append({
-                    'order_seq': cand['order_seq'],
-                    'power': cand.get('power', own_idx),
-                    'flag_bit': flag_bit,
-                })
-        return legitimacy_gate(state, own_idx, cands)
+    if is_orr:
+        best = -500000
+        for index in range(len(candidates)):
+            score = register_received_press(
+                state, content_tokens, from_tok, to_toks,
+                flag=1 if index == len(candidates) - 1 else 0,
+                candidates=candidates,
+            )
+            best = max(best, score)
+    else:
+        best = register_received_press(
+            state, content_tokens, from_tok, to_toks,
+            flag=1, candidates=candidates,
+        )
 
-    try:
-        if is_orr:
-            # Each ORR alternative is a candidate; score each independently
-            # in both orientations and take max across all alternatives.
-            scores = []
-            for clause in positive:
-                s9  = _score_orientation([clause], [], 1, 0)
-                s10 = _score_orientation([clause], [], 0, 1)
-                scores.append(max(s9, s10))
-            score = max(scores) if scores else 0
-        else:
-            # Non-ORR: run both orientations over the full clause set.
-            s9  = _score_orientation(positive, negative, 1, 0)  # code-9
-            s10 = _score_orientation(positive, negative, 0, 1)  # code-10
-            score = max(s9, s10)
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        _log.warning("delay_review: cheap scorer raised %s; defaulting to 0", exc)
-        return 0
-
-    _log.debug("delay_review: novel proposal cheap_score=%d orr=%s",
-               score, is_orr)
-
-    # C: `if (score == 0)` → delay + event archive. The strict-equality
-    # check is deliberate — nonzero scores (positive or negative) skip
-    # the delay branch.
-    if score == 0:
-        # Phase-aware REJ: in retreat (RVT) and build (WTA) phases, C's
-        # FRMHandler emits an explicit REJ for proposals it would otherwise
-        # defer, rather than silently dropping them.  Fixed 2026-04-20
-        # (audit finding M3).
-        phase = getattr(state, 'g_current_phase', getattr(state, 'g_season', 'SPR'))
-        if phase in ('RVT', 'WTA', 'AUT', 'WIN'):
-            _log.debug("delay_review: score==0 in %s phase → 2 (explicit REJ)", phase)
-            return 2  # caller interprets 2 as "send REJ, don't delay silently"
-
-        import time as _t
-        # Event key = (now - press_epoch) + 10000; use absolute wall time
-        # plus the +10000 offset (press_epoch isn't tracked in Python;
-        # the offset alone discriminates the event class per the schema
-        # in docs/funcs/DELAY_REVIEW.md).
+    if best == 0:
+        _log.info(
+            "We have received the proposal: but have delayed its review: %s",
+            _clause_text(content_tokens),
+        )
         state.g_alliance_msg_tree.add(
             int(_t.time() - getattr(state, 'g_turn_start_time', 0.0)) + 10000
         )
-        _log.debug("delay_review: score==0 → 1 (delay) + event archived")
-        return 1
-
-    return 0
+        return True
+    return False
 
 
 def register_received_press(
@@ -308,9 +331,16 @@ def register_received_press(
     from_power_tok: int,
     to_power_toks: list,
     flag: int = 0,
-) -> None:
+    candidates: "list | None" = None,
+) -> int:
     """
     Port of RegisterReceivedPress = FUN_00431310.
+
+    Called only by DELAY_REVIEW, which passes the ``PRP ( ... )`` content,
+    the sender, the recipients, its XDO candidate set (``candidates``:
+    ``(clause tokens, negated)`` pairs) and the flag byte for the
+    second-pass record.  Returns the FUN_00426140 score, which DELAY_REVIEW
+    tests against zero.
 
     addr: ``0x00431310``
     C signature (Ghidra): ``undefined * FUN_00431310(undefined1 param_1,
@@ -382,10 +412,21 @@ def register_received_press(
 
     sched_time = int(_time.time())  # C: local_134 = __time64(NULL)
 
-    # Parse order candidates from press content (replaces the BST param_11).
-    # Candidate type_flag is polarity: 0=XDO, 1=NOT-XDO.
-    content_str = ' '.join(str(t) for t in press_content)
-    order_candidates = _parse_xdo_candidates(content_str)
+    # Order candidates (the BST param_11).  Candidate type_flag is polarity:
+    # 0=XDO, 1=NOT-XDO.  DELAY_REVIEW supplies its candidate set; a direct
+    # caller without one gets every XDO clause in the content.
+    if candidates is None:
+        content_str = ' '.join(str(t) for t in press_content)
+        order_candidates = _parse_xdo_candidates(content_str)
+    else:
+        order_candidates = []
+        for clause, negated in candidates:
+            clause_str = ' '.join(str(t) for t in clause)
+            if negated:
+                clause_str = f"NOT ( {clause_str} )"
+            parsed = _parse_xdo_candidates(clause_str)
+            if parsed:
+                order_candidates.append(parsed[0])
 
     # C line 103: local_1fc = FUN_00426140(local_1e8)
     # Returns a non-null pointer (score != 0) or null (score == 0).
@@ -431,9 +472,10 @@ def register_received_press(
     # `sent` flag, and every self-generated record in this port sets `sent` and
     # `history_flag` together.  A proposal whose legitimacy gate passed is
     # therefore enqueued already flagged, and BuildAndSendSUB skips its trial
-    # loop entirely -- the gate has decided.  RESPOND still runs: C's
-    # RECEIVE_PROPOSAL/EvaluatePress/RESPOND block sits outside that guard, as
-    # does `_respond_to_received_press_entry` here.
+    # loop entirely -- the gate has decided.  Its RECEIVE_PROPOSAL/
+    # EvaluatePress/RESPOND block (BuildAndSendSUB.c:491-570) sits inside that
+    # same guard, so a gated proposal is never answered there: DELAY_REVIEW
+    # returns "not delayed" and the FRM handler answers it on the spot.
     gate_passed = gate_score != 0
     history_flag = 1 if gate_passed else 0
     trial_count = (
@@ -471,6 +513,8 @@ def register_received_press(
         'trial_count':      trial_count,   # local_1cc, record +0x08
         'sched_time':       sched_time,
         'watermark':        None,          # local_150 = 0xffffffff
+        'registration_pass': 1,            # plain XDO clauses in set B
+        'flag':             0,             # local_13c, record +0x98
         'history_flag':     history_flag,  # local_1d4[0]
         'from_power_tok':   from_power_tok,
         'target_power':     int(from_power_tok) & 0x7f,
@@ -494,8 +538,10 @@ def register_received_press(
     size_after = len(state.g_broadcast_list)
     entry2: dict = dict(entry1)
     entry2['watermark']        = size_before   # local_150 = local_1f8
+    entry2['registration_pass'] = 2             # plain XDO clauses in set A
     entry2['flag']             = flag           # local_13c = param_12
     entry2['order_candidates'] = list(order_candidates)
+    entry2['participant_powers'] = set(participant_powers)
     send_alliance_press(state, key=size_after, entry_data=entry2)
 
     # C: DAT_00baed60 = puVar4 where puVar4 = DAT_00bb65f4 read during the
@@ -506,3 +552,4 @@ def register_received_press(
         "register_received_press: watermark=%d (size_before=%d)",
         state.g_broadcast_list_watermark, size_before,
     )
+    return int(gate_score)

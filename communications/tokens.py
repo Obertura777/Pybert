@@ -68,15 +68,19 @@ def _token_seq_equal(seq_a, seq_b) -> bool:
 
     C signature: ``bool __thiscall FUN_00465d90(void *this, int *param_1)``
 
-    Returns false when the lengths differ, otherwise compares every ushort in
-    order.  This is the equality companion to ``FUN_00465cf0`` (less-than);
-    ``FUN_00465df0`` immediately negates it to implement inequality.
+    Returns false when either token buffer is null (an empty list) or the
+    lengths differ, otherwise compares every ushort in order.  Two empty lists
+    are therefore *not* equal.  This is the equality companion to
+    ``FUN_00465cf0`` (less-than); ``FUN_00465df0`` immediately negates it to
+    implement inequality.
 
     Called from:
       receive_proposal               — deduplicate proposals against g_pos_analysis_list
-      _respond_walk_pos_analysis     — match proposals for g_deviation_tree inserts
-      _cancel_prior_press            — scan g_master_order_list for THN(<power>) entries
+      respond                        — match proposals for the rejection-set walk
+      ack_matcher                    — match replies against g_pos_analysis_list
     """
+    if not seq_a or not seq_b:
+        return False
     return list(seq_a) == list(seq_b)
 
 
@@ -208,6 +212,71 @@ def _token_seq_less(seq_a, seq_b) -> bool:
     Leaf function — no callees.
     """
     return tuple(seq_a) < tuple(seq_b)
+
+
+def _wire_tokens(text) -> list:
+    """Tokenize DAIDE press text: parentheses are tokens of their own."""
+    import re
+    return re.findall(r'\(|\)|[^\s()]+', str(text or ''))
+
+
+def _c_top_level_items(tokens) -> list:
+    """Split a flat wire token list into its top-level elements.
+
+    A bare token is one element; a balanced ``( ... )`` group, parentheses
+    included, is one element.  This is the element index FUN_00465c70 builds
+    for GetSubList and FUN_00465930.
+    """
+    items: list = []
+    tokens = list(tokens or [])
+    i = 0
+    while i < len(tokens):
+        if tokens[i] != '(':
+            items.append([tokens[i]])
+            i += 1
+            continue
+        depth = 0
+        j = i
+        while j < len(tokens):
+            if tokens[j] == '(':
+                depth += 1
+            elif tokens[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        items.append(tokens[i:j + 1])
+        i = j + 1
+    return items
+
+
+def _c_element_count(tokens) -> int:
+    """FUN_00465930 — number of top-level elements in a token list."""
+    return len(_c_top_level_items(tokens))
+
+
+def _c_sublist(tokens, index: int) -> list:
+    """GetSubList (0x00466060) on a flat wire token list.
+
+    Returns element ``index``: a one-token element as a one-token list, a
+    parenthesised element without its outer parentheses.  An out-of-range
+    index yields the empty list.
+    """
+    items = _c_top_level_items(tokens)
+    if not 0 <= index < len(items):
+        return []
+    item = items[index]
+    if len(item) == 1:
+        return list(item)
+    return list(item[1:-1])
+
+
+def _c_token_at(tokens, index: int):
+    """GetListElement (0x00465900) — the raw token at ``index``, or None."""
+    tokens = list(tokens or [])
+    if 0 <= index < len(tokens):
+        return tokens[index]
+    return None
 
 
 def _wrap_single_token(prefix_token: int, payload_token: int) -> list:

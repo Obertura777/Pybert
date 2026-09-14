@@ -105,6 +105,82 @@ def _entry_participant_powers(state: InnerGameState, entry: dict) -> set:
     }
 
 
+_INTERNAL_COAST_TO_DAIDE = {
+    'NC': 'NCS', 'NE': 'NEC', 'EC': 'ECS', 'SE': 'SEC',
+    'SC': 'SCS', 'SW': 'SWC', 'WC': 'WCS', 'NW': 'NWC',
+}
+
+
+def _unit_spec_tokens(state: InnerGameState, prov: int) -> list | None:
+    """FUN_0045ffa0: ``( POWER AMY|FLT PROVINCE )`` or, for a coasted fleet,
+    ``( POWER FLT ( PROVINCE COAST ) )`` for the unit at ``prov``."""
+    unit = state.unit_info.get(prov)
+    if unit is None:
+        return None
+    id_to_prov = state._id_to_prov or {v: k for k, v in state.prov_to_id.items()}
+    power = int(unit.get('power', 0))
+    power_name = (_DAIDE_POWER_NAMES[power]
+                  if 0 <= power < len(_DAIDE_POWER_NAMES) else 'UNO')
+    unit_type = 'AMY' if unit.get('type', 'A') in ('A', 'AMY') else 'FLT'
+    name = id_to_prov.get(prov, str(prov))
+    coast = _INTERNAL_COAST_TO_DAIDE.get(str(unit.get('coast', '') or '').upper())
+    if coast:
+        return ['(', power_name, unit_type, '(', name, coast, ')', ')']
+    return ['(', power_name, unit_type, name, ')']
+
+
+def _proposal_record_tokens(state: InnerGameState, record: dict) -> list:
+    """The token list of a g_ProposalHistoryMap record (node +0x28).
+
+    BuildSupportProposals stores a bare ``SUB`` for its one-threat handshake
+    and ``XDO ( support )`` otherwise, the support built by FUN_00463690 as
+    SUP HLD when the mover's province is the destination, else SUP MTO.
+    """
+    if record.get('type') != 'XDO_SUP':
+        return ['SUB']
+    supporter = _unit_spec_tokens(state, int(record.get('province', -1)))
+    mover = _unit_spec_tokens(state, int(record.get('src_prov', -1)))
+    if supporter is None or mover is None:
+        return ['SUB']
+    body = supporter + ['SUP'] + mover
+    src = int(record.get('src_prov', -1))
+    dest = int(record.get('dst_prov', -1))
+    if src != dest:
+        id_to_prov = state._id_to_prov or {v: k for k, v in state.prov_to_id.items()}
+        body += ['MTO', id_to_prov.get(dest, str(dest))]
+    return ['XDO', '('] + body + [')']
+
+
+def _support_slot_count(state: InnerGameState, own: int, record: dict) -> int:
+    """How often the requested support appears in Albert's 30 best order sets.
+
+    BuildAndSendSUB.c:820-856 compares every order of every DAT_00bbf690/694
+    slot with the request body; the port compares the order fields.
+    """
+    from ...monte_carlo.trial import _ORDER_SUP_HLD, _ORDER_SUP_MTO
+    supporter = int(record.get('province', -1))
+    mover = int(record.get('src_prov', -1))
+    dest = int(record.get('dst_prov', -1))
+    wanted = _ORDER_SUP_HLD if mover == dest else _ORDER_SUP_MTO
+    count = 0
+    for orders in state.g_current_best_order.get(own, []) or []:
+        for entry in orders or []:
+            if len(entry) < 5:
+                continue
+            if int(entry[0]) != supporter or int(entry[1]) != wanted:
+                continue
+            if int(entry[4]) != mover:
+                continue
+            if wanted == _ORDER_SUP_MTO and int(entry[2]) != dest:
+                continue
+            count += 1
+    return count
+
+
+def _token_list_in(tokens: list, stored: list) -> bool:
+    return any(list(item) == list(tokens) for item in stored or [])
+
+
 def _advance_broadcast_proposal_trials(
         state: InnerGameState,
         entry: dict,
@@ -144,7 +220,7 @@ def _advance_broadcast_proposal_trials(
         # from the previous, rejected node's leftovers.
         if completed == 0 and int(entry.get('key', 0)) != 0:
             try:
-                score_order_candidates_from_broadcast(state)
+                score_order_candidates_from_broadcast(state, entry)
             except (KeyError, IndexError, TypeError, ValueError):
                 logger.exception(
                     "score_order_candidates_from_broadcast raised during"
@@ -350,6 +426,8 @@ class _PressMixin:
         control_body = ''.join(body_str.upper().split())
 
         if control_body == 'NOT(GOF)':
+            # A later NOT(GOF) supersedes a GOF still waiting to be flushed.
+            self._deferred_gof_phase = None
             phase = getattr(self.game, "current_short_phase", "") or ""
             try:
                 if hasattr(self.game, 'wait'):
@@ -544,198 +622,107 @@ class _PressMixin:
                     )
 
 
-    def _press_response_key(self, entry: dict) -> tuple:
-        """Identify duplicate two-pass records for one phase/proposal."""
-        phase = (
-            getattr(self.game, 'current_short_phase', '')
-            or self.current_phase
-            or (getattr(self.state, 'g_year', 0),
-                getattr(self.state, 'g_season', ''))
-        )
-        sender = int(entry.get('from_power_tok', 0)) & 0xff
-        content = repr(entry.get('sublist3', entry.get('press_content', [])))
-        return phase, sender, content
+    def _answer_delayed_proposal(self, entry: dict) -> None:
+        """BuildAndSendSUB.c:491-570 — answer a delayed proposal's record.
 
-
-    def _respond_to_received_press_entry(self, entry: dict) -> bool:
-        """Evaluate and queue one received proposal without regenerating orders."""
-        if not entry.get('received_flag') or entry.get('type_flag', 0) != 0:
-            return False
-
-        response_key = self._press_response_key(entry)
-        if response_key in self._responded_press_keys:
-            return False
-
+        Runs once the second-pass record of a delayed proposal (record +0x98
+        flag byte set, +0x04 zero) has finished its trials: EvaluatePress and
+        RECEIVE_PROPOSAL on the record's recipients and content, then RESPOND
+        with ``FRM ( sender ) ( recipients ) ( content )`` and the record's
+        receipt time, then EvaluateOrderProposalsAndSendGOF.
+        """
         from ...communications import (
             receive_proposal as _receive_proposal,
             respond as _respond,
             evaluate_press as _evaluate_press,
         )
 
-        from_tok = entry.get('from_power_tok', 0)
-        from_idx = from_tok & 0xff
-        proposal_tokens = entry.get(
-            'sublist3', entry.get('press_content', []))
-        response_type = _evaluate_press(self.state, entry)
-        participants = [
+        sender = int(entry.get('from_power_tok', 0)) & 0xff
+        content = entry.get('sublist3', entry.get('press_content', []))
+        recipients = [
             int(tok) & 0x7f
             for tok in entry.get('sublist2', [])
             if isinstance(tok, int)
         ]
+        verdict = _evaluate_press(self.state, entry)
         _receive_proposal(
-            self.state,
-            from_idx,
-            proposal_tokens,
-            participant_powers=participants,
-            send_fn=self._send_dm,
+            self.state, sender, content, participant_powers=recipients,
         )
-        scheduled_time = entry.get('sched_time', 0)
+        received = int(entry.get('sched_time', 0))
         _respond(
             self.state,
-            press_list=entry,
-            response_type=response_type,
-            elapsed_lo=scheduled_time & 0xFFFFFFFF,
-            elapsed_hi=(scheduled_time >> 32) & 0xFFFFFFFF,
+            press_list={
+                'sublist1': [0x4100 | sender],
+                'sublist2': list(entry.get('sublist2', [])),
+                'sublist3': list(content),
+            },
+            response_type=verdict,
+            elapsed_lo=received & 0xFFFFFFFF,
+            elapsed_hi=(received >> 32) & 0xFFFFFFFF,
             send_fn=self._send_dm,
         )
-        # Mark only after RESPOND has successfully queued the answer.  If an
-        # evaluator or response builder raises, the duplicate registration
-        # record remains available for a later retry instead of being silently
-        # suppressed.
-        self._responded_press_keys.add(response_key)
         _evaluate_order_proposals_and_send_gof(self.state, self._send_dm)
-        return True
 
+    def _finish_broadcast_node(self, entry: dict, n_powers: int) -> None:
+        """BuildAndSendSUB.c:381-583 — a node has just reached the trial cap.
 
-    def _respond_to_pending_press_entries(self) -> int:
-        """Answer all newly registered proposals and flush due replies."""
-        responded = sum(
-            self._respond_to_received_press_entry(entry)
-            for entry in list(self.state.g_broadcast_list)
-        )
-        if responded:
-            dispatch_scheduled_press(self.state, self._send_dm)
-            logger.info(
-                "Responded to %d inbound proposal(s) for %s in %s",
-                responded,
-                self.power_name,
-                getattr(self.game, 'current_short_phase', '') or self.current_phase,
-            )
-        return responded
-
-
-    def _build_and_send_sub(self, best_orders: list) -> None:
+        C marks the node done, records Albert's slot-zero order list on it,
+        and fills its per-power score from the candidate records: for each
+        participant power p, the float sum of score * weight over p's records
+        with a positive ranker weight, truncated — or -1000000
+        when that sum is zero on any node but the base SUB node.  It then
+        answers the node when it is a delayed proposal's second-pass record,
+        and schedules a THN for every power when its key is DAT_00baed60.
         """
-        Port of BuildAndSendSUB (FUN_00457890).
+        state = self.state
+        entry['sent'] = True
+        own = int(getattr(state, 'albert_power_idx', 0))
+        slots = state.g_current_best_order.get(own, [])
+        entry['sub_orders'] = list(slots[0]) if slots else []
 
-        In the C bot this is a multi-trial proposal-scoring loop over
-        g_broadcast_list; Monte Carlo (process_turn) plays that role in Python,
-        so only the surrounding press/submission scaffold is ported here.
+        participants = _entry_participant_powers(state, entry)
+        vector = list(entry.get('score_vector') or [0] * n_powers)
+        while len(vector) < n_powers:
+            vector.append(0)
+        for power in range(n_powers):
+            total = np.float32(0.0)
+            for record in state.g_candidate_record_list:
+                if int(record.get('power', -1)) != power:
+                    continue
+                # puVar5[0x16] is the ranker's float32 weight, puVar5[9] the
+                # live score.
+                weight = np.float32(record.get('weight', 0.0))
+                if weight > np.float32(0.0):
+                    total = np.float32(
+                        total + np.float32(int(record.get('score', 0))) * weight
+                    )
+            if power not in participants:
+                continue
+            if int(entry.get('key', 0)) != 0 and total == np.float32(0.0):
+                vector[power] = -1000000
+            else:
+                vector[power] = int(float(total))
+        entry['score_vector'] = vector
 
-        Structure (mirroring FUN_00457890 at each labelled site):
-          1. ScheduledPressDispatch     — pre-loop flush (line 252).
-          2. CheckTimeLimit             — abort if MTL already fired (line 291).
-          3. Candidate ranking/refresh  — RankCandidatesForPower followed by
-                                         UpdateScoreState, before slot zero is read.
-          4. Order submission           — consume refreshed slot zero and call
-                                         game.set_orders (MC already ran).
-          Outer broadcast-list loop (LAB_004579a9, do{}while(true)):
-            per-node CheckTimeLimit (line 207);
-            per-node ScheduledPressDispatch inside inner trial sub-loop (line 342);
-            per-node RECEIVE_PROPOSAL + EvaluatePress + RESPOND for received
-              entries (lines 490–570), EvaluateOrderProposalsAndSendGOF after each;
-            per-node SendAllyPressByPower for own entries (lines 575–582);
-            after all nodes: proposal-history map pass (g_deal_list proxy,
-              lines 648–1211) with time-shortcut (line 654) and restart
-              (goto LAB_004579a9, lines 1204–1211) when new entries added.
-          7. CancelPriorPress           — withdraw stale prior-press token (line 693).
+        if int(entry.get('flag', 0)) == 1 and int(entry.get('type_flag', 0)) == 0:
+            self._answer_delayed_proposal(entry)
+        watermark = int(getattr(state, 'g_broadcast_list_watermark', 0))
+        if (int(entry.get('key', 0)) == watermark
+                and int(state.g_history_counter) > 0):
+            for power_i in range(n_powers):
+                _send_ally_press_by_power(state, power_i)
 
-        FUN_00411740 absorbed: synchronous "all g_broadcast_list entries dispatched?" predicate;
-          only called from AwaitPressAndSendGOF Sleep loop → both absorbed by async model.
-        FUN_00466480 absorbed: alias-safe RAII wrapper — copies param_2, calls FUN_00466330(this, result, copy).
-        FUN_00465aa0 absorbed: in-place parenthesize — wraps token seq as ( toks ) [0x5FFF];
-          used to build convoy-SUP MTO route: (support_pos) MTO convoy_seg [TERM].
-        ScoreOrderCandidates phases 1–5 handled by process_turn (monte_carlo/).
-        ScoreOrderCandidates phase 6 filter ported as apply_press_corroboration_penalty
-          (heuristics/scoring.py); called from _orders.py with has_real_press guard.
-          Proposal sets built by score_order_candidates_from_broadcast (communications/senders.py)
-          from ALL g_broadcast_list entries (sent + received); C trees local_3fc/local_204 → gen_xdo,
-          local_300 → sup_mto, local_108 (inverted) → sup_hld.
-        FUN_00419300 absorbed: MSVC STL RB-tree _Insert — Python dict/set.
-        FUN_00466ed0 absorbed: RAII wrapper (copy this→temp, call FUN_00466e10).
-        FUN_00466e10 absorbed: RAII wrapper (copy param_2→temp, call FUN_00466c40).
-        FUN_00466c40 absorbed: convoy token-seq join (left+[0x4000]+right+[0x4001]+[0x5FFF]);
-          0x4001=DAIDE ')', 0x5FFF=end-sentinel, 0x4000='(' (unconfirmed, adjacent slot).
-          Branch-2 delegates to FUN_00466330 (plain concat: left++right++[0x5FFF]).
-        FUN_00466330 absorbed: plain convoy token-seq concat (no parens); counter=sum of both.
-        FUN_00466f80 absorbed: alias-safe RAII wrapper — copies this, then calls FUN_00466c40(copy, param_1, param_2).
-        FUN_00465930 absorbed: convoy-seq counter accessor — return 0 if seq[3]==0xFFFFFFFF else seq[3].
-        FUN_00410cf0 absorbed: MSVC STL BST _Erase (postorder node dealloc) — Python GC handles this.
-        FUN_00443ed0 = AwaitPressAndSendGOF: ported as async one-shot in step 7b above;
-          Sleep loop superseded; 25s hold-back and g_cancel_press_sent (DAT_00baed47) wired.
-          g_gof_sent reset at turn start (_orders.py step 2); set in _send_gof (gof.py).
-        FUN_00465cf0 absorbed: convoy token-seq lexicographic less-than (BST key comparator) — Python list <.
-        FUN_00465d90 absorbed: convoy token-seq equality — False if lengths differ, else element-wise compare.
-        FUN_00465df0 absorbed: logical NOT of FUN_00465d90 (inequality check).
-        FUN_00422a90 ported as validate_and_dispatch_order (dispatch.py).
-        RECEIVE_PROPOSAL, RESPOND ported in communications/inbound/respond.py.
-        SendAlliancePress ported in communications/senders.py.
-        FUN_00457520 (EvaluateOrderProposalsAndSendGOF) ported in bot/client/gof.py.
+    def _submit_sub_orders(self, best_orders: list) -> None:
+        """SendDM(SUB slot zero) — submit Albert's slot-zero order list.
+
+        C sends the complete order list referenced by slot zero in
+        DAT_00bbf690/694 when it holds at least one order.  Python rebuilds
+        the orders from the candidate snapshot and submits them through
+        python-diplomacy.
         """
         own_power_idx = getattr(self.state, 'albert_power_idx', 0)
-        n_powers = int(getattr(self.state, 'n_powers', 7))
-
-        # ── 1. ScheduledPressDispatch — pre-loop press flush (line 252) ──────
-        dispatch_scheduled_press(self.state, self._send_dm)
-
-        # ── 2. CheckTimeLimit (line 291) — MTL guard ─────────────────────────
-        if check_time_limit(self.state):
-            logger.warning("MTL expired before BuildAndSendSUB — skipping SUB")
-            return
-
-        # send_GOF.c resets these after its ten ProcessTurn passes and before
-        # entering BuildAndSendSUB. They are proposal-round diagnostics, not
-        # movement-phase lifetime accumulators.
-        self.state.g_score_alt = 0
-        self.state.g_score_group_duplicates = 0
-        self.state.g_score_baseline = 0
-        self.state.g_trial_score_a.clear()
-        self.state.g_trial_score_b.clear()
-        self.state.g_trial_score_c.clear()
-        self.state.g_trial_prev_score_alt = 0
-        self.state.g_trial_prev_score_baseline = 0
-
-        # ── 3. First proposal node's complete inner trial loop ─────────
-        # C submits after the first unprocessed broadcast node reaches its
-        # cap. Standalone/no-press Python runs do not materialise the implicit
-        # base SUB node, so use an ephemeral node with the same counter.
-        press_cap = int(getattr(self.state, 'g_press_proposals_cap', 30))
-        _trial_entries = [
-            entry for entry in self.state.g_broadcast_list
-            if not entry.get('sent', False)
-        ]
-        _primary_trial_entry = (
-            _trial_entries[0] if _trial_entries else {'trial_count': 0}
-        )
-        if not _advance_broadcast_proposal_trials(
-            self.state,
-            _primary_trial_entry,
-            press_cap,
-            dispatch_fn=lambda: dispatch_scheduled_press(
-                self.state, self._send_dm),
-        ):
-            logger.warning("MTL expired during BuildAndSendSUB trials — skipping SUB")
-            return
-        if _trial_entries:
-            _primary_trial_entry['sent'] = True
-
-        # C submits the complete order list referenced by slot zero in
-        # DAT_00bbf690/694.  The rank/refresh immediately above populated the
-        # Python equivalent.  Choosing max(candidate.score) here bypasses
-        # RefreshOrderTable's stochastic selection and is not a C path.
         refreshed_slots = self.state.g_current_best_order.get(own_power_idx, [])
         if refreshed_slots:
-            best = None
             order_pairs = refreshed_slots[0]
         else:
             # Defensive fallback for callers that invoke this method without
@@ -749,17 +736,12 @@ class _PressMixin:
                 )
                 order_pairs = best.get('orders', [])
             else:
-                best = None
                 order_pairs = []
 
         self.state.g_submitted_orders = []
-        # Restore g_order_table from the candidate snapshot for our own provinces.
-        # process_turn resets g_order_table per-trial and per-power, so by the
-        # time we read it here it reflects the *last* trial of the *last*
-        # power — not the trial that produced the chosen own-power candidate.
-        # The candidate carries the per-order field snapshot (see
-        # evaluate_order_proposal in monte_carlo.py); rehydrate the relevant
-        # rows before calling _build_order_seq_from_table.
+        # Restore g_order_table from the candidate snapshot for our own
+        # provinces before serialising, since ProcessTurn left the table at
+        # the last trial of the last power.
         _diag_dispatch_ok = 0
         _diag_dispatch_fail = 0
         _diag_seq_none = 0
@@ -794,18 +776,12 @@ class _PressMixin:
 
         formatted = list(getattr(self.state, 'g_submitted_orders', []))
 
-        # Safety net: if MC still produced no usable orders for our units,
-        # default every own unit to a HOLD. process_turn now seeds
-        # g_order_table[prov, _F_ORDER_TYPE] = _ORDER_HLD for every own unit
-        # at trial start (Phase 1b'), so MC normally returns a non-empty
-        # candidate even on a fresh / no-press game. This branch only
-        # triggers if a trial bug or upstream reset clears the table after
-        # seeding — submitting HOLDs is strictly better than nothing
-        # (which would be civil disorder) and keeps the test harness alive.
+        # Safety net: submitting HOLDs is strictly better than civil disorder
+        # if the MC table was cleared after seeding.
         if not formatted:
             try:
-                state = self.game.get_state() if self.game is not None else {}
-                units = list(state.get('units', {}).get(self.power_name, []))
+                game_state = self.game.get_state() if self.game is not None else {}
+                units = list(game_state.get('units', {}).get(self.power_name, []))
             except Exception:
                 units = []
             formatted = [f"{u} H" for u in units]
@@ -821,150 +797,253 @@ class _PressMixin:
             self._validate_orders(formatted)
             self._schedule_set_orders(formatted)
 
-        # ── Outer broadcast-list loop (LAB_004579a9) ─────────────────────────
-        # C: do { } while(true) — iterates g_broadcast_list with a per-node
-        # CheckTimeLimit (line 207), ScheduledPressDispatch inside the inner
-        # trial sub-loop (line 342), per-node proposal processing for received
-        # entries (lines 490–570), per-node SendAllyPressByPower for own
-        # entries (lines 575–582), and a restart (goto LAB_004579a9, lines
-        # 1204–1211) after proposal-history processing when g_history_counter>19.
-        # Python mirrors both the inner trial loop and outer press handling.
-        _processed_ids: set = set()
-        _time_expired = False
-        submitted_provs = {e[0] for e in order_pairs if e}
+    def _insert_proposal_records(self) -> None:
+        """BuildAndSendSUB.c:648-1195 — own XDO proposals as broadcast records.
 
-        from ...communications import (
-            send_alliance_press as _send_alliance_press,
-        )
+        Runs after the base SUB node is submitted when LVL > 19.  C inserts a
+        combined record N0 (content SUB, participants {Albert}, type 1, no
+        reference key), then walks g_ProposalHistoryMap:
 
-        _restart = True
-        while _restart:
-            _restart = False
+          * Albert is the supporter (field 4), trusts the mover (field 6) at
+            >= 3, and the request is not the bare SUB handshake → eligible;
+            ``own_supports`` when the support already appears at least three
+            times in Albert's thirty best order sets.
+          * otherwise Albert is the mover, the request is not SUB, and the
+            supporter trusts Albert at > 2 → eligible.
 
-            for _entry in list(self.state.g_broadcast_list):
-                if id(_entry) in _processed_ids:
-                    continue
+        An eligible request is scored -200000 when the destination's
+        designations (A, B, C) point at a power the supporter trusts at > 2,
+        -300000 when the supporter's agreed-XDO set already holds it, and
+        otherwise by FUN_00422a90 — the order checked as the partner power
+        (the mover when Albert supports).  Each gets a record: content the
+        request, participants {Albert, partner}, set A {request}, type 1,
+        reference key N0; a non-zero score fills the vector and marks it done
+        at the cap.  DAT_00baed60 becomes its key.  A zero score also adds the
+        request to N0's set B and the partner to N0's participants.  N0 with
+        an empty set B is marked done.
+        """
+        from ...communications import send_alliance_press
+        from ...communications.parsers import _parse_xdo_body_to_order
 
-                # C line 207: CheckTimeLimit at each outer-loop iteration
-                if check_time_limit(self.state):
-                    _time_expired = True
-                    break
+        state = self.state
+        own = int(getattr(state, 'albert_power_idx', 0))
+        cap = int(getattr(state, 'g_press_proposals_cap', 30))
+        n_powers = len(state.g_unit_count)
 
-                _processed_ids.add(id(_entry))
+        def trust(a: int, b: int) -> tuple:
+            return (int(state.g_ally_trust_score_hi[a, b]),
+                    int(state.g_ally_trust_score[a, b]))
 
-                # C lines 217–373: each unsent node owns an independent trial
-                # counter and runs the complete score/update/history loop.
-                if not _entry.get('sent', False):
-                    if not _advance_broadcast_proposal_trials(
-                        self.state,
-                        _entry,
-                        press_cap,
-                        dispatch_fn=lambda: dispatch_scheduled_press(
-                            self.state, self._send_dm),
-                    ):
-                        _time_expired = True
-                        break
-                    _entry['sent'] = True
-                    # C BuildAndSendSUB.c:628-645: once the node reaches the
-                    # trial cap the accept branch saves the current best-order
-                    # table into the DAT_00bc0a40/44 snapshot.
-                    self.state.g_best_order_backup = {
-                        power: list(slots) for power, slots
-                        in self.state.g_current_best_order.items()
-                    }
-                    self.state.g_best_order_backup_records = {
-                        power: list(records) for power, records
-                        in self.state.g_current_best_order_records.items()
-                    }
+        def at_least_three(a: int, b: int) -> bool:
+            hi, lo = trust(a, b)
+            return hi > 0 or (hi >= 0 and lo > 2)
 
-                # C lines 490–570: RECEIVE_PROPOSAL + EvaluatePress + RESPOND
-                # Only for received entries (received_flag==1, type_flag==0).
-                if _entry.get('received_flag') and _entry.get('type_flag', 0) == 0:
-                    self._respond_to_received_press_entry(_entry)
+        now = int(time.time())
+        base_key = len(state.g_broadcast_list)
+        base = send_alliance_press(state, key=base_key, entry_data={
+            'sent': False,
+            'type_flag': 1,
+            'trial_count': 0,
+            'sched_time': now,
+            'watermark': None,
+            'history_flag': 0,
+            'from_power_tok': 0x4100 | own,
+            'sublist1': [0x4100 | own],
+            'sublist2': [0x4100 | own],
+            'sublist3': ['SUB'],
+            'clause_set_a': [],
+            'clause_set_b': [],
+            'score_vector': [0] * n_powers,
+            'participant_powers': {own},
+        })
 
-                # C lines 575–582: SendAllyPressByPower for own-entry nodes
-                # Condition: not a received entry AND g_history_counter > 0
-                if not _entry.get('received_flag') and self.state.g_history_counter > 0:
-                    for power_i in range(n_powers):
-                        _send_ally_press_by_power(self.state, power_i)
+        for record in list(getattr(state, 'g_proposal_history_map', []) or []):
+            supporter = int(record.get('power', -1))
+            mover = int(record.get('target_power', -1))
+            tokens = _proposal_record_tokens(state, record)
+            is_sub = tokens == ['SUB']
+            own_supports = False
+            eligible = False
+            if supporter == own:
+                hi, lo = trust(own, mover)
+                if not (hi < 0 or (hi < 1 and lo < 3)) and not is_sub:
+                    eligible = True
+                    if _support_slot_count(state, own, record) >= 3:
+                        own_supports = True
+                    else:
+                        eligible = False
+            if not eligible and not own_supports:
+                if mover == own and not is_sub and at_least_three(supporter, own):
+                    eligible = True
+            if not eligible:
+                continue
 
-            if _time_expired:
-                break
+            dest = int(record.get('dst_prov', -1))
+            des_b = (int(state.g_ally_designation_b[dest]),
+                     int(state.g_ally_designation_b_hi[dest]))
+            des_a = (int(state.g_ally_designation_a[dest]),
+                     int(state.g_ally_designation_a_hi[dest]))
+            des_c = (int(state.g_ally_designation_c[dest]),
+                     int(state.g_ally_designation_c_hi[dest]))
+            trust_c = 0
+            trust_b = 0
+            if des_c[1] >= 0 and des_c[0] != own:
+                trust_c = int(state.g_ally_trust_score[supporter, des_c[0]])
+            if des_b[1] >= 0 and des_b[0] != own:
+                trust_b = int(state.g_ally_trust_score[supporter, des_b[0]])
 
-            # C lines 648–1211: after all nodes done, if g_history_counter > 19,
-            # process proposal-history map (proxied by g_deal_list) then restart
-            # the outer loop (goto LAB_004579a9) to pick up newly added entries.
-            if self.state.g_history_counter > 19:
-                # C line 654: time-shortcut — skip remaining proposal work if
-                # nearly out of time, fall through to AwaitPressAndSendGOF.
-                if check_time_limit(self.state):
-                    break
-                _any_new = False
-                for deal in list(getattr(self.state, 'g_deal_list', [])):
-                    other = deal.get('power', -1)
-                    if other < 0:
-                        continue
-                    trust = int(self.state.g_ally_trust_score[own_power_idx, other])
-                    if trust < 3:
-                        continue
-                    deal_provs = deal.get('province_set', set())
-                    overlap = deal_provs & submitted_provs
-                    if overlap:
-                        own_tok   = _DAIDE_POWER_NAMES[own_power_idx] if 0 <= own_power_idx < len(_DAIDE_POWER_NAMES) else str(own_power_idx)
-                        other_tok = _DAIDE_POWER_NAMES[other]         if 0 <= other         < len(_DAIDE_POWER_NAMES) else str(other)
-                        press_seq = f"PRP ( PCE ( {own_tok} {other_tok} ) )"
-                        _send_alliance_press(
-                            self.state,
-                            key=other,
-                            entry_data={
-                                'power':        other,
-                                'province_set': overlap,
-                                'press_seq':    press_seq,
-                            },
-                        )
-                        _any_new = True
-                        logger.debug(
-                            "Deal match: queued alliance press to power %d "
-                            "(trust=%d, overlap=%s)",
-                            other, trust, overlap,
-                        )
-                # Restart outer loop if alliance press may have enqueued new
-                # broadcast_list entries (C lines 1204–1211 reset list pointers).
-                if _any_new:
-                    _restart = True
-
-        # ── 7. CancelPriorPress — DM send with TokenSeq_Count guard (line 693)
-        cancel_prior_press(self.state, own_power_idx, self._send_dm)
-
-        # ── 7b. Async-adapted AwaitPressAndSendGOF (FUN_00443ed0) ────────────
-        # C: after CancelPriorPress arms DAT_00baed47=1, AwaitPressAndSendGOF
-        # polls (Sleep loop) until elapsed > g_base_wait_time + 25 s, then
-        # sends a bare GOF.  In Python we do a single one-shot check instead
-        # of blocking: only fire if GOF has not already been sent this turn
-        # and the 25-second hold-back has elapsed since turn start.
-        if (getattr(self.state, 'g_cancel_press_sent', 0) == 1
-                and not getattr(self.state, 'g_gof_sent', False)):
-            _turn_start = float(getattr(self.state, 'g_turn_start_time', 0.0))
-            _base_wait  = float(getattr(self.state, 'g_base_wait_time',  0.0))
-            _elapsed    = time.time() - _turn_start
-            if _elapsed > _base_wait + 25.0 or check_time_limit(self.state):
-                logger.debug(
-                    "Fallback GOF: elapsed=%.1fs > hold-back=%.1fs — sending",
-                    _elapsed, _base_wait + 25.0,
-                )
-                _send_gof(self.state, self._send_dm)
+            partner = mover if own_supports else supporter
+            if (des_a[1] < 0 or des_a[0] == own or des_b[0] == own
+                    or int(state.g_ally_trust_score[supporter, des_a[0]]) < 3):
+                if trust_b > 2 or trust_c > 2:
+                    score = -200000
+                elif _token_list_in(tokens,
+                                    state.g_xdo_proposal_by_sender.get(supporter, [])):
+                    score = -300000
+                else:
+                    parsed = _parse_xdo_body_to_order(list(tokens))
+                    if parsed is None:
+                        score = 0
+                    else:
+                        score = int(validate_and_dispatch_order(
+                            state, partner, parsed[1], commit=False))
             else:
-                logger.debug(
-                    "Fallback GOF: %.1fs remaining in hold-back window — skipped",
-                    (_base_wait + 25.0) - _elapsed,
-                )
+                score = -200000
 
-        # ── 8. Final dispatch — flush any THN/SND entries scheduled during
-        # steps 5–7.  In the C binary these fire via the real-time scheduler;
-        # in Python everything is synchronous so we need an explicit final
-        # pass to deliver press that was enqueued after the initial step-1
-        # dispatch.
-        dispatch_scheduled_press(self.state, self._send_dm)
+            node_key = len(state.g_broadcast_list)
+            vector = [score] * n_powers if score != 0 else [0] * n_powers
+            send_alliance_press(state, key=node_key, entry_data={
+                'sent': score != 0,
+                'type_flag': 1,
+                'trial_count': cap if score != 0 else 0,
+                'sched_time': now,
+                'watermark': base_key,
+                'history_flag': 1 if score != 0 else 0,
+                'from_power_tok': 0x4100 | own,
+                'sublist1': [0x4100 | own],
+                'sublist2': [0x4100 | partner],
+                'sublist3': list(tokens),
+                'clause_set_a': [list(tokens)],
+                'clause_set_b': [],
+                'score_vector': vector,
+                'participant_powers': {own, partner},
+            })
+            state.g_broadcast_list_watermark = node_key
+            if score == 0:
+                if tokens not in base['clause_set_b']:
+                    base['clause_set_b'].append(list(tokens))
+                base['participant_powers'].add(partner)
+
+        if not base['clause_set_b']:
+            base['sent'] = True
+            base['trial_count'] = cap
+
+    def _await_press_and_send_gof(self) -> None:
+        """AwaitPressAndSendGOF (0x00443ed0), without its Sleep polling.
+
+        C sends GOF only while DAT_00baed47 records an unanswered NOT(GOF),
+        every broadcast record is done, the time limit has not fired, no press
+        is scheduled, and either no proposal is unresolved or 25 seconds have
+        passed since the last proposal (DAT_00ba2858).  The port checks once.
+        """
+        from ...communications import _fun_004117d0
+        from ...communications.senders import _is_game_active
+
+        state = self.state
+        dispatch_scheduled_press(state, self._send_dm)
+        if int(getattr(state, 'g_cancel_press_sent', 0)) != 1:
+            return
+        if not _is_game_active(state) or check_time_limit(state):
+            return
+        if state.g_master_order_list:
+            return
+        elapsed = time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
+        base_wait = float(getattr(state, 'g_base_wait_time', 0.0))
+        if _fun_004117d0(state, -1) and elapsed <= base_wait + 25.0:
+            # C sleeps and polls here; the client re-checks when the 25 s
+            # grace period after the last proposal has run out.
+            self._schedule_gof_recheck(base_wait + 25.0 - elapsed)
+            return
+        _send_gof(state, self._send_dm)
+
+    def _build_and_send_sub(self, best_orders: list) -> None:
+        """
+        Port of BuildAndSendSUB (FUN_00457890).
+
+        C walks the broadcast records (DAT_00bb65ec) in key order, restarting
+        from the head whenever it inserts proposal records:
+
+          * at every step, the end of the tree or CheckTimeLimit ends the walk
+            in AwaitPressAndSendGOF;
+          * an unfinished record runs its trials (``_advance_broadcast_
+            proposal_trials``), ScheduledPressDispatch after each, and — for
+            the base SUB node once the time limit is within 10 s — a SendDM of
+            the current slot-zero orders;
+          * a record reaching the cap is finished (``_finish_broadcast_node``);
+          * the base SUB node (key 0), once finished and before DAT_00baed6d
+            is set, submits the slot-zero orders, sets DAT_00baed6d, saves
+            DAT_00bbf690/694 into DAT_00bc0a40/44 and, at LVL > 19 unless the
+            time limit is within 15 s, inserts the proposal records and
+            restarts the walk.
+        """
+        state = self.state
+        n_powers = int(getattr(state, 'n_powers', 7))
+        press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
+
+        dispatch_scheduled_press(state, self._send_dm)
+
+        entries = state.g_broadcast_list
+        if not any(int(e.get('key', -1)) == 0 for e in entries):
+            # Callers outside GenerateAndSubmitOrders have no base SUB node.
+            from ._orders import _insert_base_broadcast_node
+            _insert_base_broadcast_node(state)
+
+        def in_final_seconds(margin: int) -> bool:
+            limit = int(getattr(state, 'g_move_time_limit_sec', 0))
+            if limit <= 0:
+                return False
+            elapsed = time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
+            return elapsed > limit - margin
+
+        index = 0
+        while True:
+            if index >= len(entries) or check_time_limit(state):
+                if index < len(entries):
+                    logger.warning("MTL expired during BuildAndSendSUB")
+                self._await_press_and_send_gof()
+                return
+            node = entries[index]
+            if node.get('sent', False):
+                index += 1
+                continue
+
+            def after_trial(node=node) -> None:
+                dispatch_scheduled_press(state, self._send_dm)
+                if int(node.get('key', -1)) == 0 and in_final_seconds(10):
+                    self._submit_sub_orders(best_orders)
+
+            _advance_broadcast_proposal_trials(
+                state, node, press_cap, dispatch_fn=after_trial,
+            )
+            if int(node.get('trial_count', 0)) == press_cap:
+                self._finish_broadcast_node(node, n_powers)
+
+            if (int(node.get('key', -1)) == 0
+                    and int(node.get('trial_count', 0)) == press_cap
+                    and not getattr(state, 'g_baed6d', 0)):
+                self._submit_sub_orders(best_orders)
+                state.g_baed6d = 1
+                state.g_best_order_backup = {
+                    power: list(slots) for power, slots
+                    in state.g_current_best_order.items()
+                }
+                state.g_best_order_backup_records = {
+                    power: list(records) for power, records
+                    in state.g_current_best_order_records.items()
+                }
+                if int(state.g_history_counter) > 19 and not in_final_seconds(15):
+                    self._insert_proposal_records()
+                    index = 0
 
 
     def _submit_draw_vote(self) -> None:

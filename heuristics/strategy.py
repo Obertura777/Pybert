@@ -288,15 +288,14 @@ def post_process_orders(state: InnerGameState) -> None:
     """
     Port of PostProcessOrders (FUN_00411120).
 
-    Updates g_move_history_matrix from the submitted-order history list.
-    Two passes:
-      Pass 1 — decay all entries by 3 (floor 0)
-      Pass 2 — update from submitted-order history:
-                 flag_A=1,flag_B=0 → successful support  (+10, cap 201)
-                 flag_B=1          → bounced src row → zero
-                 flag_C=1          → full conflict → zero row+col
+    Updates g_move_history_matrix [power][src][dst] from the last movement
+    phase's order results (inner+0x248c, decoded by FUN_0045fe30):
 
-    Research.md §2039.
+      Pass 1 — every entry decays by 3 (floor 0).
+      Pass 2 — per result record, in list order:
+        bounced (+0x69) and not dislodged (+0x6a) -> [src][dst] += 10 while < 201
+        moved (+0x6b)                           -> zero row src, row dst, column dst
+        dislodged (+0x6a)                       -> zero row src
     """
     num_powers = 7
     num_provinces = 256
@@ -305,35 +304,30 @@ def post_process_orders(state: InnerGameState) -> None:
     state.g_move_history_matrix -= 3
     np.clip(state.g_move_history_matrix, 0, None, out=state.g_move_history_matrix)
 
-    # Pass 2 — update from order history list
+    # Pass 2 — update from the movement-result list
     for rec in getattr(state, 'g_order_hist_list', []):
-        power    = int(rec.get('power', -1))
+        power = int(rec.get('power', -1))
         src_prov = int(rec.get('src_province', -1))
         dst_prov = int(rec.get('dst_province', -1))
-        flag_a   = int(rec.get('flag_a', 0))   # support order
-        flag_b   = int(rec.get('flag_b', 0))   # mover bounced / support cut
-        flag_c   = int(rec.get('flag_c', 0))   # full conflict / dislodgement
+        if not (0 <= power < num_powers and 0 <= src_prov < num_provinces):
+            continue
+        dst_valid = 0 <= dst_prov < num_provinces
+        bounced = int(rec.get('bounced', 0)) == 1
+        moved = int(rec.get('moved', 0)) == 1
+        dislodged = int(rec.get('dislodged', 0)) == 1
 
-        if not (0 <= power < num_powers): continue
-        if not (0 <= src_prov < num_provinces): continue
-        if not (0 <= dst_prov < num_provinces): continue
-
-        # Check 1 (C++ order): flag_a=1 and flag_b=0 → successful support → +10
-        # C checks `if (val < 0xc9)` (< 201) then adds 10 unconditionally,
-        # allowing values up to 210.  No secondary cap.
-        if flag_a == 1 and flag_b == 0:
+        # C checks `< 0xc9` and then adds 10, so values reach 210.
+        if bounced and not dislodged and dst_valid:
             cur = int(state.g_move_history_matrix[power, src_prov, dst_prov])
             if cur < 201:
                 state.g_move_history_matrix[power, src_prov, dst_prov] = cur + 10
 
-        # Check 2: flag_c=1 → full conflict → zero src row, dst row, dst column (independent if)
-        if flag_c == 1:
+        if moved and dst_valid:
             state.g_move_history_matrix[power, src_prov, :] = 0
             state.g_move_history_matrix[power, dst_prov, :] = 0
             state.g_move_history_matrix[power, :, dst_prov] = 0
 
-        # Check 3: flag_b=1 → unit disrupted at src → zero src row (independent if)
-        if flag_b == 1:
+        if dislodged:
             state.g_move_history_matrix[power, src_prov, :] = 0
 
 

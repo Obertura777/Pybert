@@ -110,7 +110,10 @@ class _LifecycleMixin:
         self._seen_msg_ids: set[tuple] = set()
         self._generation_in_progress = False
         self._deferred_gof_phase: str | None = None
-        self._responded_press_keys: set[tuple] = set()
+        self._gof_recheck_handle = None
+        # EvaluateOrderProposalsAndSendGOF re-runs send_GOF once CAL_MOVE has
+        # applied an agreement.
+        self.state.g_send_gof_callback = self._rerun_send_gof
 
 
     def _marshal_to_network_loop(
@@ -161,7 +164,13 @@ class _LifecycleMixin:
     async def _run_game_update_async(
         self, game_object: Any, expected_phase: str | None = None,
     ) -> None:
-        """Synchronize a phase, then generate orders without blocking I/O."""
+        """Synchronize a phase, then generate orders without blocking I/O.
+
+        Albert's NOW handler generates and submits orders before the window
+        thread gets to any press queued behind it, so messages are drained
+        only after generation.  Both run in a worker so Tornado/asyncio keeps
+        servicing WebSocket pings while Monte Carlo runs.
+        """
         if self._client_event_lock is None:
             self._client_event_lock = asyncio.Lock()
         async with self._client_event_lock:
@@ -176,49 +185,105 @@ class _LifecycleMixin:
 
             self.game = game_object
             self.state.synchronize_from_game(game_object)
-            self._drain_incoming_press(game_object)
 
             if live_phase != 'COMPLETED' and _game_status(game_object) != 'completed':
-                # Monte Carlo regularly takes longer than the server's ping
-                # timeout.  A worker keeps Tornado/asyncio servicing WebSocket
-                # pings, notifications, and request responses in the meantime.
                 self._generation_in_progress = True
                 try:
                     await asyncio.to_thread(self.generate_and_submit_orders)
-
-                    # NetworkGame is updated by its notification callbacks
-                    # while the worker is running.  Pull those messages into
-                    # Albert's state before releasing GOF: parsing them only in
-                    # the separately queued message task is too late because
-                    # BuildAndSendSUB has already returned and the next phase
-                    # synchronization clears g_broadcast_list.
+                    # The framework runs the per-message hook after the NOW
+                    # handler as after any other message.
+                    await asyncio.to_thread(self._after_inbound_message)
                     await asyncio.sleep(0)
-                    self._drain_incoming_press(game_object)
-                    self._respond_to_pending_press_entries()
+                    await asyncio.to_thread(self._drain_incoming_press, game_object)
                 finally:
                     self._generation_in_progress = False
-
-                # _send_gof() runs in the worker.  _send_dm() records that GOF
-                # while generation is active instead of calling no_wait(), so
-                # all press received during the turn gets one response pass
-                # before this power declares itself ready.
-                if self._deferred_gof_phase is not None:
-                    deferred_phase = self._deferred_gof_phase
-                    self._deferred_gof_phase = None
-                    if deferred_phase == _game_phase(game_object):
-                        self._send_dm('GOF')
+                self._flush_deferred_gof(game_object)
 
 
     async def _run_message_async(
         self, sender: str, body: str, msg_id: tuple | None = None,
     ) -> None:
-        """Serialize inbound press, then run its response path immediately."""
+        """Serialize inbound press through the FRM handler and the per-message
+        hook, in a worker: the hook may run BuildAndSendSUB trials or a whole
+        send_GOF pass."""
         if self._client_event_lock is None:
             self._client_event_lock = asyncio.Lock()
         async with self._client_event_lock:
-            if not self._ingest_message_once(sender, body, msg_id):
+            self._generation_in_progress = True
+            try:
+                await asyncio.to_thread(
+                    self._ingest_message_once, sender, body, msg_id)
+            finally:
+                self._generation_in_progress = False
+            self._flush_deferred_gof(self.game)
+
+
+    def _flush_deferred_gof(self, game_object: Any) -> None:
+        """Send a GOF the worker recorded, unless the phase has moved on."""
+        if self._deferred_gof_phase is None:
+            return
+        deferred_phase = self._deferred_gof_phase
+        self._deferred_gof_phase = None
+        if game_object is not None and deferred_phase == _game_phase(game_object):
+            self._send_dm('GOF')
+
+
+    def _after_inbound_message(self) -> None:
+        """FUN_00459280 — Albert's hook after every inbound message.
+
+        BaseBot's message loop calls vtable slot 4 once each message has been
+        handled.  Albert returns when the game is over; otherwise, while a
+        movement phase's BuildAndSendSUB is live (DAT_00baed46), it re-enters
+        BuildAndSendSUB — trialling and answering any record registered since
+        — and in every other case it runs AwaitPressAndSendGOF.
+        """
+        if getattr(self.state, 'g_game_over', False):
+            return
+        if int(getattr(self.state, 'g_baed46', 0)) == 1:
+            self._build_and_send_sub([])
+        else:
+            self._await_press_and_send_gof()
+
+
+    def _schedule_gof_recheck(self, delay: float) -> None:
+        """Re-run AwaitPressAndSendGOF once C's polling loop would have ended."""
+        loop = self._network_loop
+        if loop is None or loop.is_closed():
+            return
+        phase = self.current_phase
+
+        def _queue() -> None:
+            self._gof_recheck_handle = None
+            self._queue_client_task(
+                self._run_gof_recheck_async(phase), "GOF re-check")
+
+        def _arm() -> None:
+            if self._gof_recheck_handle is not None:
+                self._gof_recheck_handle.cancel()
+            self._gof_recheck_handle = loop.call_later(max(delay, 0.0) + 0.5, _queue)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            _arm()
+        else:
+            loop.call_soon_threadsafe(_arm)
+
+
+    async def _run_gof_recheck_async(self, phase: str | None) -> None:
+        if self._client_event_lock is None:
+            self._client_event_lock = asyncio.Lock()
+        async with self._client_event_lock:
+            if self.game is None or (phase and _game_phase(self.game) != phase):
                 return
-            self._respond_to_pending_press_entries()
+            self._generation_in_progress = True
+            try:
+                await asyncio.to_thread(self._await_press_and_send_gof)
+            finally:
+                self._generation_in_progress = False
+            self._flush_deferred_gof(self.game)
 
 
     async def play(self):
@@ -257,6 +322,9 @@ class _LifecycleMixin:
         logger.info(f"Joining game: {target_game_id}")
 
         self.game = await channel.join_game(game_id=target_game_id, power_name=self.power_name)
+        # HLO equivalent: press level, allowed press tokens and the CRT seed
+        # are established before any press or phase is processed.
+        self._initialize_press_session()
 
 
         # ── Register notification callbacks ──────────────────────────────
@@ -425,5 +493,6 @@ class _LifecycleMixin:
 
 
     def on_message_received(self, sender: str, msg: str) -> None:
-        """Triggered when a press message (FRM) arrives."""
-        parse_message(self.state, sender, msg)
+        """Handle one press message (FRM), then the per-message hook."""
+        parse_message(self.state, sender, msg, send_fn=self._send_dm)
+        self._after_inbound_message()

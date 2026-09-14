@@ -16,9 +16,7 @@ from .influence import (
 from .scoring import (
     score_order_candidates_all_powers,
     score_order_candidates_own_power,
-    apply_press_corroboration_penalty,
     score_provinces,
-    _PRESS_DISAGREE_PENALTY,
 )
 from .win import (
     compute_build_delta,

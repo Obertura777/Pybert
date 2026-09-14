@@ -228,7 +228,8 @@ def test_synchronize_matches_coasted_result_to_base_history_record():
     record = state.g_order_hist_list[0]
     assert record["src_province"] == state.prov_to_id["STP"]
     assert record["src_coast"] == "SC"
-    assert record["flag_b"] == 1
+    assert record["bounced"] == 1
+    assert record["moved"] == 0
 
 
 def test_snapshot_and_stabbed_compare_active_units_with_sc_control():

@@ -250,7 +250,7 @@ def _move_analysis(state: InnerGameState) -> None:
     )
 
     # MOVE_ANALYSIS.c:402-403 exits after pressure construction/logging unless
-    # this is the first Fall with the transient press flag clear. The caller
+    # this is the first Fall with the opening-turn pulse clear. The caller
     # normally enforces the same gate, but keeping it inside the routine avoids
     # mutating trust when the helper is invoked directly from another path.
     if not (state.g_deceit_level == 1
@@ -441,7 +441,8 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     """Port of PrepareDrawVoteSet (FUN_0044c9d0).
 
     Builds the friendly-powers set (own power ∪ {p : sc_count[p]>0 AND
-    trust(own,p)>1}), calls ComputeDrawVote, and stores the result in
+    trust(own,p)>1}) and calls ComputeDrawVote (DAT_00baed2b), then applies
+    GenerateAndSubmitOrders' send condition and stores DAT_00baed5d in
     state.g_draw_sent.
 
     C trust condition: Hi >= 0 AND (Hi > 0 OR Lo > 1)
@@ -472,7 +473,7 @@ def _prepare_draw_vote_set(state: InnerGameState) -> None:
     # C (GenerateAndSubmitOrders.c:482): send DRW when any of four flags is set:
     #   DAT_00baed29 | DAT_00baed2a | DAT_00baed2b | DAT_00baed30
     # Mapping:
-    #   DAT_00baed29 — g_draw_flag_baed29   (setter not found in decompiled sources).
+    #   DAT_00baed29 — g_draw_flag_baed29   (GUI draw checkbox only; 0 when headless).
     #   DAT_00baed2a — g_request_draw_flag   (set by CAL_BOARD phase 4a: big lead).
     #   DAT_00baed2b — g_DrawVoteFlag        (result of ComputeDrawVote → draw_vote).
     #   DAT_00baed30 — g_static_map_flag     (set when the map hasn't moved in many turns).

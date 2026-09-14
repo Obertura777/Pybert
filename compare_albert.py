@@ -422,8 +422,9 @@ def main() -> None:
                              "Default 'M' (movement only).")
     parser.add_argument(
         "--seed", type=int, default=1,
-        help="MSVC CRT srand state reset before each run. The recovered source "
-             "contains no srand call, so the CRT default is 1.",
+        help="MSVC CRT srand state reset before each run. Albert seeds the CRT "
+             "only in its HLO handler, which this offline harness never "
+             "reaches, so the default is the CRT's initial state 1.",
     )
     parser.add_argument(
         "--proposal-round-cap", type=int, default=None, metavar="N",

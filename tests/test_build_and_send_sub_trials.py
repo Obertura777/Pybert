@@ -212,20 +212,21 @@ def test_candidate_records_are_rearmed_for_participating_powers_only():
     reset = _senders_mod._reset_participating_candidate_records(state)
     assert reset == 2
 
-    assert participating['base_score'] == 42      # puVar5[9] = puVar5[8]
+    assert participating['score'] == 7            # puVar5[9] = puVar5[8]
+    assert participating['base_score'] == 7
     assert participating['min_rank'] == 10000     # puVar5[10]
     assert participating['max_rank'] == 0         # puVar5[0xb]
     assert participating['running_avg'] == 10000.0  # 0x461c4000
     assert participating['round_count'] == 0      # puVar5[0xd]
-    assert participating['weight'] == 0.0         # puVar5[0x10]/[0x11]
+    assert participating['weight'] == 0.0         # puVar5[0x16]
     assert participating['processed'] == 0        # byte +0x50
     assert participating['pareto_flag'] == 0      # byte +0x51
-    assert participating['output_score'] == 0.0   # puVar5[0x16]
+    assert participating['output_score'] == 0.0   # puVar5[0x71]
     assert participating['trial_scores'] == [0.0] * 30
     assert participating['output_score_history'] == [0.0] * 30
 
     # A power outside the proposal's participant set is untouched.
-    assert bystander['base_score'] == 7
+    assert bystander['score'] == 42
     assert bystander['min_rank'] == 3
     assert bystander['output_score'] == 99.0
 
@@ -250,7 +251,7 @@ def test_round_zero_restores_the_best_order_snapshot_for_non_base_nodes():
         rescored = []
         with (
             patch.object(_press_mod, 'score_order_candidates_from_broadcast',
-                         lambda _s: rescored.append(True)),
+                         lambda _s, _entry=None: rescored.append(True)),
             patch.object(_press_mod, '_rank_candidates_for_power',
                          lambda _s, power, flag=0: None),
             patch.object(_press_mod, '_refresh_order_table',

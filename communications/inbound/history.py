@@ -19,33 +19,33 @@ from ..tokens import (
     _TOK_ALY, _TOK_AND, _TOK_DMZ, _TOK_ORR, _TOK_PCE, _TOK_VSS, _TOK_XDO,
 )
 
-# Base press tokens registered unconditionally (YES..DRW block in C).
-# C: FUN_00466540(&YES,…,&REJ) then FUN_00466480 x6 builds
-#    {YES, REJ, BWX, NOT, DAT_004c6e14, SLO, DRW}.
-# DAT_004c6e14 xrefs (0041b631/0041b750/0041b953/0041bb8f PUSH; 0042c603 MOV word READ):
-#   _eval_single_xdo.c line 186 checks DAT_004c6e14 == first_token, strips sublist[1],
-#   then matches PCE / DMZ inside — the standard PRP(…) unwrap pattern.
-#   DAT_004c6e14 = PRP = 0x4A13 (confirmed from utils/tokens.py "4A13":"PRP").
-#   The lvl>9 block also PUSHes &PRP explicitly — duplicate insert into the ordered set,
-#   which is idempotent.
-_TOK_YES_PRESS = 0x481C   # YES  (utils/tokens.py "481C":"YES")
-_TOK_REJ_PRESS = 0x4814   # REJ  (utils/tokens.py "4814":"REJ")
-_TOK_BWX_PRESS = 0x4A02   # BWX  (utils/tokens.py "4A02":"BWX")
-_TOK_NOT_PRESS = 0x480D   # NOT  (utils/tokens.py "480D":"NOT")
-_TOK_SLO       = 0x4816   # SLO  (utils/tokens.py "4816":"SLO")
-_TOK_DRW       = 0x4801   # DRW  (utils/tokens.py "4801":"DRW")
-_TOK_PRP       = 0x4A13   # PRP = DAT_004c6e14 (utils/tokens.py "4A13":"PRP")
+# DAT_00bb6f0c press-token lists (ParseHSTResponse.c:102-294).  Each block
+# assigns the whole list (AppendList is TokenList::operator=), so the last
+# block whose LVL test passes wins.  DAT_004c6e14 holds 0x4A26, CCL.
+_PRESS_TOKEN_CODES = {
+    'YES': 0x481C, 'REJ': 0x4814, 'BWX': 0x4A02, 'NOT': 0x480D,
+    'CCL': 0x4A26, 'SLO': 0x4816, 'DRW': 0x4801, 'PRP': 0x4A13,
+    'PCE': _TOK_PCE, 'DMZ': _TOK_DMZ, 'ALY': _TOK_ALY, 'VSS': _TOK_VSS,
+    'XDO': _TOK_XDO, 'AND': _TOK_AND, 'ORR': _TOK_ORR,
+}
+_BASE_PRESS_LIST = ('YES', 'REJ', 'BWX', 'NOT', 'CCL', 'SLO', 'DRW')
+_LVL10_PRESS_LIST = _BASE_PRESS_LIST + ('PRP', 'PCE', 'DMZ', 'ALY', 'VSS')
+_LVL20_PRESS_LIST = _LVL10_PRESS_LIST + ('XDO',)
+_LVL30_PRESS_LIST = _LVL20_PRESS_LIST + ('AND', 'ORR')
+# DAT_00baed40 == 1 (minimal press) replaces the list with YES REJ BWX.
+_MINIMAL_PRESS_LIST = ('YES', 'REJ', 'BWX')
 
-# Unconditional base set: always registered regardless of level.
-_BASE_PRESS_TOKENS: frozenset = frozenset({
-    _TOK_YES_PRESS, _TOK_REJ_PRESS, _TOK_BWX_PRESS,
-    _TOK_NOT_PRESS, _TOK_PRP, _TOK_SLO, _TOK_DRW,
-})
 
-# Minimal-press set (DAT_00baed40 == 1): only YES/REJ/BWX + g_history_counter forced to 0.
-_MINIMAL_PRESS_TOKENS: frozenset = frozenset({
-    _TOK_YES_PRESS, _TOK_REJ_PRESS, _TOK_BWX_PRESS,
-})
+def _allowed_press_tokens(level: int, minimal: bool) -> tuple:
+    if minimal:
+        return _MINIMAL_PRESS_LIST
+    if level > 29:
+        return _LVL30_PRESS_LIST
+    if level > 19:
+        return _LVL20_PRESS_LIST
+    if level > 9:
+        return _LVL10_PRESS_LIST
+    return _BASE_PRESS_LIST
 
 
 def process_hst(state: InnerGameState, message: str) -> None:
@@ -72,31 +72,12 @@ def process_hst(state: InnerGameState, message: str) -> None:
     if minimal:
         state.g_history_counter = 0
 
-    # ── Press threshold randomization ────────────────────────────────────────
-    # C line 346: DAT_004c6bd4 = (rand/0x17%50) + (rand/0x17%50)
-    state.g_press_thresh_random = _random.randrange(50) + _random.randrange(50)
-
-    # ── Per-power allowed-press-type maps (DAT_00bb6e10[p*0xc]) ─────────────
-    # C lines 102-294: four AppendList blocks build g_allowed_press_token_list,
-    # then the per-power loop calls RegisterAllowedPressToken for each entry.
-    #
-    # Block 1 (unconditional):  YES REJ BWX NOT PRP SLO DRW
-    # Block 2 (lvl > 9):        + PCE DMZ ALY VSS  (PRP re-inserted — idempotent)
-    # Block 3 (lvl > 19):       + XDO
-    # Block 4 (lvl > 29):       + AND ORR
-    # Minimal override (line 284-294): {YES REJ BWX} only
-    if minimal:
-        allowed: frozenset = _MINIMAL_PRESS_TOKENS
-    else:
-        lvl = state.g_history_counter
-        allowed = set(_BASE_PRESS_TOKENS)
-        if lvl > 9:
-            allowed |= {_TOK_PCE, _TOK_ALY, _TOK_VSS, _TOK_DMZ}
-        if lvl > 19:
-            allowed.add(_TOK_XDO)
-        if lvl > 29:
-            allowed |= {_TOK_AND, _TOK_ORR}
-        allowed = frozenset(allowed)
+    # ── Allowed press tokens (DAT_00bb6f0c) and per-power sets ───────────────
+    # C: the LVL blocks assign DAT_00bb6f0c; the per-power loop then clears
+    # DAT_00bb6e10[p*0xc] and registers every token of that list.
+    allowed_names = _allowed_press_tokens(int(state.g_history_counter), minimal)
+    state.g_allowed_press_token_list = list(allowed_names)
+    allowed = {_PRESS_TOKEN_CODES[name] for name in allowed_names}
 
     num_powers = getattr(state, 'g_num_powers', 7)
     state.g_press_history = {p: set(allowed) for p in range(num_powers)}
@@ -118,10 +99,11 @@ def process_hst(state: InnerGameState, message: str) -> None:
             raw_mtl |= ~0x1fff
         state.g_move_time_limit_sec = raw_mtl
 
-    # ── Turn deadline (SetTurnDeadline) ──────────────────────────────────────
-    # C line 338-339: _Var13 = __time64(0); SetTurnDeadline(_Var13 + uVar11*1000)
-    # uVar11 carries the MTL value after the CONCAT22 update; *1000 converts to ms.
-    # Python: store absolute deadline in epoch-seconds so check_time_limit callers
-    # can compare against time.time().
-    if state.g_move_time_limit_sec > 0:
-        state.g_turn_deadline = _time.time() + state.g_move_time_limit_sec
+    # ── CRT seed (ParseHSTResponse.c:338-339) ────────────────────────────────
+    # The function Ghidra names SetTurnDeadline (0x0047b66b) is the CRT
+    # srand: it stores its argument in __getptd()->_holdrand.  C seeds the
+    # stream with __time64(NULL) + own_power * 1000 and immediately draws
+    # DAT_004c6bd4 = (rand/0x17)%50 + (rand/0x17)%50 from it.
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    _random.seed(int(_time.time()) + own_power * 1000)
+    state.g_press_thresh_random = _random.randrange(50) + _random.randrange(50)

@@ -4,12 +4,10 @@ Split from heuristics.py during the 2026-04 refactor.
 
 - ``score_order_candidates_all_powers`` — ScoreOrderCandidates outer loop
 - ``score_provinces``                   — ScoreProvinces (strategy-wide province scoring)
-- ``apply_press_corroboration_penalty`` — per-candidate penalty based on press corroboration
 - ``score_order_candidates_own_power``  — inner loop specialised for own power
 
 Module-level deps: ``numpy``, ``..state.InnerGameState``,
-``._primitives.evaluate_province_score``.  Owns the module-level constant
-``_PRESS_DISAGREE_PENALTY`` consumed by ``apply_press_corroboration_penalty``.
+``._primitives.evaluate_province_score``.
 """
 
 import numpy as np
@@ -636,7 +634,7 @@ def score_provinces(state: InnerGameState,
                 or (d_c == outer_power and c_hi == 0)
             )
 
-            # Early-game press suppression (C:342-355): with press on and
+            # Opening-turn suppression (C:342-355): on the opening turn with
             # near_end_game < 2.0, slot B's designation trust survives only
             # if outer and the designee trust each other mutually (both > 1).
             if press_flag == 1 and near_end < 2.0 and b_hi >= 0 and 0 <= d_b < num_powers:
@@ -795,9 +793,9 @@ def score_provinces(state: InnerGameState,
         # 550; convoys, exact-set and neutral-SC counts all identical).
         # Applied for fidelity: g_convoy_reach_count was ALWAYS EMPTY
         # before this, and g_enemy_mobility_count only feeds a branch
-        # gated on g_press_flag, which compare_albert disables -- so that
-        # half of the fix is untestable by this harness but live in real
-        # games.
+        # gated on g_press_flag (DAT_00baed68, the opening-turn pulse), which
+        # the 2026-08-24 harness never raised; it is set on each fresh
+        # client's first generation now.
 
         # ScoreProvinces.c:948-950 computes the WIN-only inverse-distance
         # channels after the own-power friendly/enemy reach flags above have
@@ -1400,250 +1398,6 @@ def score_provinces(state: InnerGameState,
         _fb[bfs_power, 9] = phase1_fleet_round9[bfs_power]
 
     _cleanup_sc_designations(state)
-
-
-# ── ScoreOrderCandidates: candidate-vs-press corroboration penalty ───────────
-#
-# Port of Source/ScoreOrderCandidates.c lines 215–630.
-#
-# Before the ProcessTurn loop, C builds 4 per-power sorted-set trees from
-# inbound DAIDE press (param_2 = general XDO list, param_5 = alliance XDO
-# list):
-#   local_3fc — general XDO orders, keyed by proposing power
-#   local_204 — alliance XDO orders, keyed by proposing power
-#   local_300 — SUP-MTO orders, keyed by SUPPORTED unit's power
-#   local_108 — SUP-HLD orders, keyed by SUPPORTED unit's power
-#
-# After ProcessTurn, for each candidate record C checks every tree node
-# (one press order) via subset function FUN_00465d90:
-#   trees 1–3: press_order_province_set ⊆ candidate_unit_province_set?
-#              EVERY node must match → pass
-#   tree 4:    same subset test AND candidate has MTO/CTO → FAIL (inverted)
-# Candidates that fail receive type_flag=1, score=0xff676980 (≈ -2.5e36).
-#
-# The "already on board" gate (puVar8[1] != iVar18) is left implicit:
-# g_board_orders is consulted separately by the MC dispatch path so
-# committed orders are not re-picked regardless.
-
-_PRESS_DISAGREE_PENALTY: float = -2.5e36   # C: 0xff676980 reinterpreted as f32
-
-
-def apply_press_corroboration_penalty(state: InnerGameState) -> int:
-    """
-    Penalise g_candidate_record_list entries whose orders disagree with
-    received-press orders for the same province/unit-power.  Returns the
-    number of candidates penalised.
-
-    Mirrors Source/ScoreOrderCandidates.c lines 215–630.
-
-    The C code builds 4 per-power RB-trees from inbound press before the
-    ProcessTurn loop, then for each candidate record checks all 4 trees:
-
-      Tree 1 (local_3fc)  general XDO press, keyed by proposing power.
-      Tree 2 (local_204)  alliance XDO press, keyed by proposing power.
-      Tree 3 (local_300)  SUP-MTO press, keyed by SUPPORTED unit's power.
-      Tree 4 (local_108)  SUP-HLD press, keyed by SUPPORTED unit's power.
-
-    For each tree node (one press order), the C subset-function
-    FUN_00465d90 asks: press_order_province_set ⊆ candidate_unit_province_set?
-    A candidate passes trees 1–3 if EVERY tree node is matched by at least
-    one candidate unit's province set.  Tree 4 is inverted: the candidate
-    FAILS if any SUP-HLD tree node is matched by a candidate unit that is
-    also a move (MTO/CTO), because the support would be wasted.
-
-    A candidate that fails any check receives type_flag=1, score=-2.5e36.
-    """
-    received_general: dict = getattr(state, 'g_general_orders', {}) or {}
-    received_alliance: dict = getattr(state, 'g_alliance_orders', {}) or {}
-    candidates: list = getattr(state, 'g_candidate_record_list', []) or []
-    if not candidates or (not received_general and not received_alliance):
-        return 0
-
-    prov_to_id: dict = getattr(state, 'prov_to_id', {}) or {}
-
-    def _name_to_id(s):
-        if isinstance(s, int):
-            return s
-        if not isinstance(s, str):
-            return None
-        if len(s) >= 3 and s[1] == ' ':
-            s = s[2:]
-        return prov_to_id.get(s)
-
-    def _parse_press_order(seq: dict):
-        """Return (prov_set, category, extra).
-
-        category is 'xdo', 'sup_mto', or 'sup_hld'.
-        extra for sup_mto: (supported_unit_prov_id, dest_prov_id)
-        extra for sup_hld: supported_unit_prov_id
-        extra for xdo:     None
-        """
-        prov_set = set()
-        for k in ('source', 'unit_prov', 'province', 'unit'):
-            pid = _name_to_id(seq.get(k))
-            if pid is not None:
-                prov_set.add(pid)
-        for k in ('dest', 'target', 'target_unit', 'target_dest',
-                  'convoy_leg0', 'convoy_leg1', 'convoy_leg2'):
-            pid = _name_to_id(seq.get(k))
-            if pid is not None:
-                prov_set.add(pid)
-
-        sup_unit_raw = seq.get('target_unit') or seq.get('target')
-        if sup_unit_raw:
-            sup_unit_id = _name_to_id(sup_unit_raw)
-            dest_raw = seq.get('target_dest')
-            if dest_raw:
-                return prov_set, 'sup_mto', (sup_unit_id, _name_to_id(dest_raw))
-            return prov_set, 'sup_hld', sup_unit_id
-        return prov_set, 'xdo', None
-
-    # Tree 1 (general XDO) and Tree 2 (alliance XDO):
-    #   gen_xdo[power]   = [frozenset of province IDs per press order]
-    #   ally_xdo[power]  = [frozenset of province IDs per press order]
-    # Tree 3 (SUP-MTO) and Tree 4 (SUP-HLD):
-    #   sup_mto[sup_power] = [(prov_set, dest_id)]
-    #   sup_hld[sup_power] = [prov_set]
-    gen_xdo:  dict = {}
-    ally_xdo: dict = {}
-    sup_mto:  dict = {}
-    sup_hld:  dict = {}
-
-    def _bucket(d, key):
-        return d.setdefault(key, [])
-
-    def _ingest(order_map: dict, xdo_tree: dict) -> None:
-        for power_idx, order_list in order_map.items():
-            p = int(power_idx)
-            for entry in order_list or []:
-                if not isinstance(entry, dict):
-                    continue
-                seq = entry.get('order_seq', entry)
-                if not isinstance(seq, dict):
-                    continue
-                prov_set, cat, extra = _parse_press_order(seq)
-                if not prov_set:
-                    continue
-                fs = frozenset(prov_set)
-                if cat == 'xdo':
-                    _bucket(xdo_tree, p).append(fs)
-                elif cat == 'sup_mto':
-                    sup_unit_id, dest_id = extra
-                    if sup_unit_id is not None:
-                        sp = (state.get_unit_power(sup_unit_id)
-                              if hasattr(state, 'get_unit_power') else -1)
-                        if sp >= 0:
-                            _bucket(sup_mto, sp).append((fs, dest_id))
-                elif cat == 'sup_hld':
-                    sup_unit_id = extra
-                    if sup_unit_id is not None:
-                        sp = (state.get_unit_power(sup_unit_id)
-                              if hasattr(state, 'get_unit_power') else -1)
-                        if sp >= 0:
-                            _bucket(sup_hld, sp).append(fs)
-
-    _ingest(received_general, gen_xdo)
-    _ingest(received_alliance, ally_xdo)
-
-    if not gen_xdo and not ally_xdo and not sup_mto and not sup_hld:
-        return 0
-
-    _MTO_CTO = {'MTO', 'CTO', 2, 3}
-
-    penalised = 0
-
-    for record in candidates:
-        if record.get('type_flag', 0) == 1:
-            continue
-        power_idx = record.get('power')
-        if power_idx is None:
-            continue
-        p = int(power_idx)
-
-        # Skip if no press trees touch this power.
-        if (p not in gen_xdo and p not in ally_xdo
-                and p not in sup_mto and p not in sup_hld):
-            continue
-
-        # Build per-unit province sets from the candidate's order list.
-        # Each order is (prov, order_type, dest, dest_coast, secondary).
-        unit_prov_sets: list = []   # one frozenset per unit order
-        aggregate_provs: set = set()
-        has_mto_cto = False
-
-        for o in record.get('orders') or []:
-            try:
-                prov = int(o[0]) if not isinstance(o, int) else int(o)
-                otype = o[1] if len(o) > 1 else None
-                dest = int(o[2]) if len(o) > 2 and o[2] else None
-            except (TypeError, IndexError, ValueError):
-                continue
-            us = {prov}
-            if dest:
-                us.add(dest)
-            unit_prov_sets.append(frozenset(us))
-            aggregate_provs |= us
-            if otype in _MTO_CTO:
-                has_mto_cto = True
-
-        pass_flag = True
-
-        # Tree 1: general XDO — every press order's province set must be ⊆
-        # at least one candidate unit's province set (C local_3fc check).
-        for press_ps in gen_xdo.get(p, []):
-            if not any(press_ps <= us for us in unit_prov_sets):
-                pass_flag = False
-                break
-
-        # Tree 2: alliance XDO — same logic (C local_204 check).
-        if pass_flag:
-            for press_ps in ally_xdo.get(p, []):
-                if not any(press_ps <= us for us in unit_prov_sets):
-                    pass_flag = False
-                    break
-
-        # Tree 3: SUP-MTO — press announced a support-move for one of this
-        # power's units.  Candidate must have some unit whose aggregate
-        # province set covers the press provinces AND a unit moving
-        # (MTO/CTO) to the press-announced destination (C local_300 check).
-        if pass_flag:
-            for press_ps, press_dest in sup_mto.get(p, []):
-                if press_ps <= aggregate_provs:
-                    if not has_mto_cto:
-                        pass_flag = False
-                        break
-                    # Secondary destination match: at least one MTO/CTO unit
-                    # in the candidate moves to the press-announced dest.
-                    dest_matched = False
-                    for o in record.get('orders') or []:
-                        try:
-                            otype = o[1] if len(o) > 1 else None
-                            dest = int(o[2]) if len(o) > 2 and o[2] else None
-                        except (TypeError, IndexError, ValueError):
-                            continue
-                        if otype in _MTO_CTO and dest == press_dest:
-                            dest_matched = True
-                            break
-                    if not dest_matched:
-                        pass_flag = False
-                        break
-
-        # Tree 4: SUP-HLD — press announced a support-hold for one of this
-        # power's units.  If any candidate unit is moving (MTO/CTO) AND the
-        # press provinces are covered by the aggregate, the announced support
-        # is contradicted → CLEAR pass flag (C local_108 inverted check).
-        if pass_flag:
-            for press_ps in sup_hld.get(p, []):
-                if press_ps <= aggregate_provs and has_mto_cto:
-                    pass_flag = False
-                    break
-
-        if not pass_flag:
-            record['type_flag'] = 1
-            record['score'] = _PRESS_DISAGREE_PENALTY
-            penalised += 1
-
-    return penalised
 
 
 # ── ScoreOrderCandidates_OwnPower ─────────────────────────────────────────────

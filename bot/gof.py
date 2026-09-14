@@ -133,41 +133,17 @@ def _build_gof_seq(state: 'InnerGameState') -> list:
 
 def _send_gof(state: 'InnerGameState', send_dm) -> None:
     """
-    Port of FUN_0045aa40 = send_GOF.
+    The GOF send at the end of AwaitPressAndSendGOF (0x00443ed0).
 
-    Builds the GOF (Go Order Final) DAIDE token sequence from the inner
-    gamestate (FUN_00464460 = _build_gof_seq) to check whether any orders
-    exist (TokenSeq_Count > 1).  If so, sends a plain ``GOF`` signal via
-    SendDM to indicate "I'm done negotiating, proceed".
-
-    In DAIDE, GOF is a standalone readiness signal — orders are submitted
-    separately via the game API (set_orders / SUB).  The C original
-    passes the full order-list through SendDM, but the server only reads
-    the GOF token; the trailing order tokens are ignored on the wire.
-
-    C flow:
-      local_2c  = FUN_00465870()          // init temp list
-      ppvVar1   = FUN_00464460(gamestate, local_1c)  // build GOF seq
-      AppendList(local_2c, ppvVar1)
-      FreeList(local_1c)
-      if TokenSeq_Count(local_2c) > 1:
-          puVar3 = FUN_00464460(gamestate, local_1c)  // rebuild for send
-          SendDM(this, puVar3)
-          FreeList(local_1c)
-      FreeList(local_2c)
+    C sends ``GOF`` and clears DAT_00baed47 (``g_cancel_press_sent``), the
+    flag CancelPriorPress sets when it withdraws readiness with NOT(GOF), so
+    the next NOT(GOF) and GOF pair can follow.  In python-diplomacy the GOF
+    token is ``game.no_wait()``.  (The order SUB itself is FUN_0045aa40,
+    which the client submits through ``set_orders``.)
     """
-    if getattr(state, 'g_gof_sent', False):
-        logger.debug("_send_gof: skipped — GOF already sent this turn")
-        return
-    # FUN_0045aa40 (this function) only sends the GOF+orders DAIDE message when
-    # orders exist (TokenSeq_Count > 1).  But FUN_00443ed0 (AwaitPressAndSendGOF)
-    # is ALWAYS called in C at LAB_004574e6 in send_GOF.c — including the no-units
-    # path and WIN with delta==0.  In Python, send_dm('GOF') = game.no_wait(), the
-    # readiness signal that must always fire regardless of whether there are orders.
-    _build_gof_seq(state)                    # FUN_00464460 (order check — unused in Python)
-    send_dm('GOF')                           # FUN_00443ed0 equivalent — always signal ready
+    _build_gof_seq(state)
+    send_dm('GOF')
     state.g_gof_sent = True
-    # Disarm the fallback-GOF guard (DAT_00baed47 = 0 in AwaitPressAndSendGOF)
     state.g_cancel_press_sent = 0
 
 
@@ -176,99 +152,82 @@ def _send_gof(state: 'InnerGameState', send_dm) -> None:
 def _evaluate_order_proposals_and_send_gof(
     state: 'InnerGameState',
     send_dm,
+    send_gof_fn=None,
 ) -> None:
     """
     Port of FUN_00457520 = EvaluateOrderProposalsAndSendGOF.
 
-    Iterates g_own_proposal_map (Python: state.g_pos_analysis_list) looking for
-    entries whose participants have all affirmatively acknowledged the proposal.
-    For each newly-satisfied entry it runs CAL_MOVE on every associated press
-    entry; if any CAL_MOVE returns truthy the GOF commit path fires
-    (NormalizeInfluenceMatrix + send_GOF), otherwise ScheduledPressDispatch is
-    called.
+    Walks g_pos_analysis_list (DAT_00bb65c8) for unprocessed proposals every
+    participant has answered, and applies the ones nobody rejected.
 
-    C layout (undefined4* offsets from BST node puVar5):
-      +8        board_satisfied byte (0 = pending, 1 = done; outer gate)
-      +0xc/0xd  participant-power map (map/head)
-      +0xf/0x10 affirmative-power map (map/head)
-      [0x14]    type_flag (0 = external/received proposal)
-      +0x15/16  press-entry sub-list (used for CAL_MOVE inner loop)
+    C node layout (undefined4* offsets from the list node):
+      +8   (node+0x20)  processed byte
+      +0xc (node+0x30)  participant set
+      +0xf (node+0x3c)  responded set — every power that answered
+      +0x12(node+0x48)  rejection set; [0x14] (node+0x50) is its size
+      +0x15(node+0x54)  clause list; [0x16] its head
 
-    Readiness rule (C lines 59–101): for every key in the participant map,
-    GameBoard_GetPowerRec probes the affirmative map. If any lookup returns
-    its head sentinel, bVar3 becomes false. The record is actionable only
-    when every participant is present in the affirmative map.
+    C flow per unprocessed node:
+      * every participant found in the responded set → set the processed
+        byte (a rejected proposal is retired too);
+      * rejection set empty → clear DAT_00bb65e0 and copy the participant set
+        into it (RegisterProposalOrders), then for each clause call
+        CAL_MOVE(clause, copy of the responded set); CAL_MOVE == 1 → bVar4.
+    Finally bVar4 → NormalizeInfluenceMatrix + send_GOF (the whole order
+    generation pass, re-run with the applied agreements); otherwise
+    ScheduledPressDispatch.
+
+    ``send_gof_fn`` (or ``state.g_send_gof_callback``) is that send_GOF pass;
+    without one the GOF readiness signal is sent instead.
     """
     from ..communications import dispatch_scheduled_press, cal_move
     from ..heuristics import normalize_influence_matrix
 
     bVar4 = False
     for entry in getattr(state, 'g_pos_analysis_list', []):
-        # C: if (*(char*)(puVar5 + 8) == '\0') — skip already-satisfied entries
         if (entry.get('board_satisfied', False)
                 or entry.get('processed', False)
                 or entry.get('processed_flag', 0) != 0):
             continue
 
-        # C starts bVar3 true and clears it when any participant lookup in the
-        # +0xf affirmative map returns that map's head (the not-found result).
         participants = set(entry.get('participant_powers', set()))
-        affirmative = set(entry.get('role_b_set', set()))
-        bVar3 = participants.issubset(affirmative)
+        responded = set(entry.get('role_b_set', set()))
+        if not participants.issubset(responded):
+            continue
 
-        if bVar3:
-            # C: *(undefined1*)(puVar5 + 8) = 1
-            entry['board_satisfied'] = True
-            entry['processed'] = True
-            entry['processed_flag'] = 1
+        entry['board_satisfied'] = True
+        entry['processed'] = True
+        entry['processed_flag'] = 1
 
-            # C: if (puVar5[0x14] == 0) — external/received proposal
-            if entry.get('type_flag', 0) == 0:
-                # C: clear DAT_00bb65e4 (pending-GOF linked list) — no Python
-                # equivalent; the C list is a singly-linked structure that is
-                # rebuilt each time.  Skip.
+        if entry.get('role_c_set'):
+            continue
 
-                # C: SerializeOrders + RegisterProposalOrders(DAT_00bb65e0,
-                #    puVar5+0xc) — clears the staging set then deep-copies the
-                #    proposal's XDO sub-tree into it so the downstream
-                #    GameBoard_GetPowerRec lookups (and CAL_MOVE) see the
-                #    proposed orders as the "current" set.
-                #
-                # Cross-domain note: DAT_00bb65e0 is the same global the DMZ
-                # handler uses (state.g_dmz_order_list).  C accepts the collision
-                # — both writers clear-and-rewrite — and the DMZ handler
-                # refreshes the list on its next call.  Faithful port keeps the
-                # same semantics.
-                try:
-                    if not hasattr(state, 'g_dmz_order_list') or state.g_dmz_order_list is None:
-                        state.g_dmz_order_list = []
-                    state.g_dmz_order_list.clear()
-                    state.g_dmz_order_list.extend(
-                        {'owner_power': int(power)} for power in participants
-                    )
-                except Exception:
-                    logger.exception(
-                        "RegisterProposalOrders staging copy raised; continuing"
-                        " with empty g_dmz_order_list"
-                    )
+        # SerializeOrders + RegisterProposalOrders(DAT_00bb65e0, node+0x30).
+        # DAT_00bb65e0 is the same global the DMZ handler uses
+        # (state.g_dmz_order_list); both writers clear and rewrite it.
+        if not hasattr(state, 'g_dmz_order_list') or state.g_dmz_order_list is None:
+            state.g_dmz_order_list = []
+        state.g_dmz_order_list.clear()
+        state.g_dmz_order_list.extend(
+            {'owner_power': int(power)} for power in sorted(participants)
+        )
 
-                # ── Inner press-entry loop (node+0x15/0x16 sub-list) ──────────
-                # C: FUN_00405090(&stack0xffffff68, (int)(puVar5 + 0xf))
-                #       → copies outer proposal's press_entries list into
-                #         in_stack_00000018 so XDO() can iterate candidates.
-                #    FUN_00465f60(auStack_a8, inner+0xc)
-                #    cVar7 = CAL_MOVE(param_1); if cVar7==1 → bVar4 = true
-                press_entries = entry.get('press_entries', [])
-                for pe in press_entries:
-                    # FUN_00405090: expose outer candidate list to _handle_xdo
-                    state.g_xdo_candidate_list = press_entries
-                    tokens = pe.get('tokens', []) if isinstance(pe, dict) else list(pe)
-                    if cal_move(state, tokens):
-                        bVar4 = True
+        for pe in list(entry.get('press_entries', [])):
+            # FUN_00405090 copies the responded set; XDO()/NOT_XDO() read it
+            # as in_stack_00000018, one std::set<int> key per power.
+            state.g_xdo_candidate_list = [
+                {'power': int(power)} for power in sorted(responded)
+            ]
+            tokens = pe.get('tokens', []) if isinstance(pe, dict) else list(pe)
+            if cal_move(state, tokens):
+                bVar4 = True
 
-    # C: if (bVar4) NormalizeInfluenceMatrix + send_GOF; else ScheduledPressDispatch
     if bVar4:
         normalize_influence_matrix(state)
-        _send_gof(state, send_dm)
+        callback = send_gof_fn or getattr(state, 'g_send_gof_callback', None)
+        if callback is not None:
+            callback()
+        elif send_dm is not None:
+            _send_gof(state, send_dm)
     else:
         dispatch_scheduled_press(state, send_dm)

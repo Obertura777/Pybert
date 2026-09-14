@@ -34,9 +34,12 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     """
     Port of EvaluatePress = FUN_0042fc40.
 
-    Evaluates an AND / ORR / single-XDO press proposal and returns
-    YES (0x481C) or REJ (0x4814).  The result is passed directly to
-    RESPOND as param_2.
+    Evaluates the body of a ``PRP ( ... )`` proposal — AND / ORR / single
+    clause — and returns YES (0x481C), REJ (0x4814) or, for a single clause
+    ``_eval_single_xdo`` does not recognise, HUH (0x4806).  The result is
+    passed directly to RESPOND as param_2.
+
+    ``entry['sublist3']`` is the full message content including PRP.
 
     C flow (decompiled.txt FUN_0042fc40):
       - Clears DAT_00bb65d8 scratch list at entry.
@@ -66,11 +69,11 @@ def evaluate_press(state: "InnerGameState", entry: dict) -> int:
     # tree at the start of every EvaluatePress call.
     state.g_accepted_proposals.clear()
 
-    press = entry.get('sublist3', entry.get('press_content', []))
-    order_cands = entry.get('order_candidates', [])
-
-    if not press and not order_cands:
-        return _REJ
+    # C: AppendList(&content, GetSubList(&content, 1)) — the argument is the
+    # ``PRP ( ... )`` message content; evaluation works on its body.
+    from ..tokens import _c_sublist
+    content = entry.get('sublist3', entry.get('press_content', []))
+    press = _c_sublist(content, 1)
 
     # Extract from_power index for sub-evaluator calls.
     _from_tok = entry.get('from_power_tok', 0)

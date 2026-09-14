@@ -1,30 +1,22 @@
 """YES dispatcher sub-handlers — NME, OBS, IAM, NOT, GOF, TME, DRW, SND.
 
-Ported during the 2026-04 handler port.
+BaseBot's YESDispatcher (0x0045db40) calls a virtual per variant; Albert's
+vtable (0x004afc74) resolves them as follows:
+  * YES ( NME ... )  +0x98 [38] FUN_0045b720 — empty
+  * YES ( OBS ... )  +0x9c [39] FUN_0045b720 — empty
+  * YES ( IAM ... )  +0xa0 [40] FUN_0045b730 — bot+0x3c = 1, send MAP
+  * YES ( NOT ... )  FUN_0045b070: GOF +0xb4 [45], DRW +0xb8 [46],
+                     SUB +0xbc [47] FUN_0045b720, other +0xd0 [52]
+                     FUN_0040d180 — all empty
+  * YES ( GOF ... )  +0xa4 [41] FUN_0045b720 — empty
+  * YES ( TME ... )  +0xa8 [42] FUN_0045b720 — empty (DAT_00624ef4 is
+                     written only by ParseHSTResponse)
+  * YES ( DRW ... )  +0xac [43] FUN_0045b720 — empty
+  * YES ( SND ... )  FUN_0045d210, then +0xb0 [44] FUN_0045a090
+  * YES ( ... )      +0xcc [51] FUN_0040d180 — empty
 
-The YES dispatcher (YESDispatcher.c) routes YES variants to:
-  * YES ( NME ... )  → handle_yes_nme   — vtable +0x98
-  * YES ( OBS ... )  → handle_yes_obs   — vtable +0x9c
-  * YES ( IAM ... )  → handle_yes_iam   — vtable +0xa0
-  * YES ( NOT ... )  → handle_yes_not   — FUN_0045b070
-  * YES ( GOF ... )  → handle_yes_gof   — vtable +0xa4
-  * YES ( TME ... )  → handle_yes_tme   — vtable +0xa8
-  * YES ( DRW ... )  → handle_yes_drw   — vtable +0xac
-  * YES ( SND ... )  → handle_yes_snd   — FUN_0045d210
-  * YES ( ... )      → handle_yes_unknown — vtable +0xcc
-
-No C source exists for any of these. Implementations are derived from
-DAIDE protocol specification and the C dispatcher's structural patterns.
-
-DAIDE protocol semantics:
-  YES (NME (name)(version))  — Server accepts our NME (name) handshake.
-  YES (OBS)                  — Server accepts our observer registration.
-  YES (IAM (power)(passcode)) — Server accepts our reconnect identity.
-  YES (NOT (GOF))            — Server accepts our NOT(GOF) (cancel go-flag).
-  YES (GOF)                  — Server accepts our GOF (go-flag).
-  YES (TME (seconds))        — Server grants our time-extension request.
-  YES (DRW)                  — Server accepts our draw proposal.
-  YES (SND (...))            — Server confirms delivery of our SND press.
+The handlers below therefore only log, except SND.  python-diplomacy sends
+none of these acknowledgements and the client does not wire this dispatcher.
 """
 
 import logging as _logging
@@ -104,9 +96,8 @@ def handle_yes_not(state: InnerGameState, full_message: str, inner_group: str) -
       YES(NOT(DRW)) — server accepts withdrawal of our draw proposal.
       YES(NOT(TME(n))) — server accepts withdrawal of our time request.
 
-    For NOT(GOF): the C binary likely clears the "GOF sent" flag so that
-    the press-scheduling loop knows it needs to re-send GOF after submitting
-    revised orders.
+    Albert's slots for NOT(GOF), NOT(DRW), NOT(SUB) and any other NOT body
+    are empty, so the acknowledgement changes no state.
     """
     # Parse the inner NOT body to determine what was NOT'd
     not_groups = _extract_top_paren_groups(inner_group)
@@ -120,14 +111,11 @@ def handle_yes_not(state: InnerGameState, full_message: str, inner_group: str) -
     variant = not_body_tokens[0].upper() if not_body_tokens else 'UNKNOWN'
 
     if variant == 'GOF':
-        # YES(NOT(GOF)) — go-flag cancellation accepted
-        # Clear any GOF-sent tracking so press scheduling re-evaluates
-        state.g_gof_sent = False
         _log.info("handle_yes_not: NOT(GOF) accepted — go-flag cancelled")
 
     elif variant == 'DRW':
-        # YES(NOT(DRW)) — draw withdrawal accepted
-        state.g_draw_sent = 0
+        # DAT_00baed5d (g_draw_sent) is written only by FUN_0040de30 and
+        # GenerateAndSubmitOrders, never by this acknowledgement.
         _log.info("handle_yes_not: NOT(DRW) accepted — draw proposal withdrawn")
 
     elif variant == 'TME':
@@ -143,13 +131,8 @@ def handle_yes_gof(state: InnerGameState, full_message: str, inner_group: str) -
 
     Port of vtable slot +0xa4.
 
-    C behaviour (inferred): the server has acknowledged that Albert is
-    ready for adjudication. Sets a "GOF acknowledged" flag. The next
-    server message will typically be the adjudication results (ORD, SCO,
-    or a new NOW for the next phase).
+    Albert's slot is empty: the acknowledgement changes no state.
     """
-    # Mark GOF as acknowledged
-    state.g_gof_sent = True
     _log.info("handle_yes_gof: GOF accepted — ready for adjudication")
 
 
@@ -159,35 +142,10 @@ def handle_yes_tme(state: InnerGameState, full_message: str, inner_group: str) -
 
     Port of vtable slot +0xa8.
 
-    C behaviour: DAT_00624ef4 += granted_secs (14-bit DAIDE token & 0x3fff).
-    Python extension: also extends g_turn_deadline by the same amount, mirroring
-    the SetTurnDeadline call that ParseHSTResponse makes on initial HLO processing.
+    Albert's slot is empty: DAT_00624ef4, the move time limit, is written
+    only by ParseHSTResponse, so a granted extension changes no state.
     """
-    # Extract the granted seconds
-    tme_groups = _extract_top_paren_groups(inner_group)
-    if tme_groups:
-        secs_str = tme_groups[0].strip()
-    else:
-        tokens = inner_group.split()
-        secs_str = ''
-        for t in tokens:
-            t_clean = t.strip('()')
-            if t_clean.isdigit():
-                secs_str = t_clean
-                break
-
-    if secs_str.isdigit():
-        granted_secs = int(secs_str)
-        old_limit = getattr(state, 'g_move_time_limit_sec', 0)
-        state.g_move_time_limit_sec = old_limit + granted_secs
-        # Mirror SetTurnDeadline: extend the absolute epoch deadline.
-        # C YES_TME_Handler only updates DAT_00624ef4; SetTurnDeadline is the
-        # Python-port addition that keeps g_turn_deadline in sync.
-        state.g_turn_deadline = getattr(state, 'g_turn_deadline', 0.0) + granted_secs
-        _log.info("handle_yes_tme: time extension granted: +%d sec (new limit=%d, deadline=%.0f)",
-                  granted_secs, state.g_move_time_limit_sec, state.g_turn_deadline)
-    else:
-        _log.info("handle_yes_tme: TME accepted (seconds=%r)", secs_str)
+    _log.info("handle_yes_tme: TME accepted (%s)", inner_group[:80])
 
 
 def handle_yes_drw(state: InnerGameState, full_message: str, inner_group: str) -> None:
@@ -196,50 +154,63 @@ def handle_yes_drw(state: InnerGameState, full_message: str, inner_group: str) -
 
     Port of vtable slot +0xac.
 
-    C behaviour (inferred): the server has accepted the draw vote. This
-    does NOT mean the game is drawn — it means our vote was registered.
-    The actual DRW game-end comes as a bare top-level DRW message
-    (handled by inbound_daide_dispatcher → g_game_over = True).
+    Albert's slot is empty: the acknowledgement changes no state.  The
+    game-end signal is the bare top-level DRW message.
     """
     _log.info("handle_yes_drw: draw proposal accepted (vote registered)")
-    # The draw vote was accepted; g_draw_sent stays at 1 since our vote
-    # is still active. The game-end signal comes separately.
+
+
+def handle_own_press_delivered(state: InnerGameState, press_body, send_fn=None) -> None:
+    """
+    Port of FUN_0045a090 — Albert's hook for a delivered SND.
+
+    BaseBot's YES ( SND ... ) handler (FUN_0045d210) drops the message from
+    its pending list and calls this vtable override (+0xb0) with it.  When
+    the delivered press is ``YES ( PRP ... )`` — Albert's own acceptance —
+    Albert inserts itself into the responded set (node+0x3c) of every
+    g_pos_analysis_list node whose token list equals the accepted proposal
+    and whose participant set contains Albert (the processed byte is not
+    consulted), then runs EvaluateOrderProposalsAndSendGOF.  Any other press
+    changes nothing.
+
+    ``press_body`` is the SND's press message, as wire text or tokens.
+    """
+    from ..tokens import _c_sublist, _c_token_at, _token_seq_equal, _wire_tokens
+
+    tokens = _wire_tokens(press_body) if isinstance(press_body, str) else list(press_body)
+    if str(_c_token_at(tokens, 0)).upper() != 'YES':
+        return
+    proposal = _c_sublist(tokens, 1)
+    if str(_c_token_at(proposal, 0)).upper() != 'PRP':
+        return
+
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    for entry in getattr(state, 'g_pos_analysis_list', []):
+        if not _token_seq_equal(entry.get('tokens', []), proposal):
+            continue
+        if own_power not in set(entry.get('participant_powers', set())):
+            continue
+        entry.setdefault('role_b_set', set()).add(own_power)
+
+    from ...bot.gof import _evaluate_order_proposals_and_send_gof
+    _evaluate_order_proposals_and_send_gof(state, send_fn)
 
 
 def handle_yes_snd(state: InnerGameState, full_message: str, inner_group: str) -> None:
     """
-    Handle YES ( SND ( power ) ( power... ) ( content... ) ) — server
-    confirms delivery of our outbound press.
+    Handle YES ( SND ( turn ) ( powers ) ( press ) ) — the server confirms
+    delivery of our outbound press.
 
-    Port of FUN_0045d210.
-
-    C behaviour (inferred from YESDispatcher.c:88-93):
-    FUN_0045d210(this, pvVar1, puVar4) receives the SND sub-list, which
-    echoes the SND we originally sent. The confirmation means the server
-    has forwarded our press to the target power(s).
-
-    The C binary likely:
-      1. Marks the corresponding entry in g_master_order_list as delivered.
-      2. Optionally timestamps the delivery for turn-score tracking.
-
-    In Python, the master order list entries are consumed by the dispatch
-    loop and removed; the YES(SND) confirmation is informational.
+    Port of FUN_0045d210: BaseBot removes the matching pending message, then
+    Albert's override FUN_0045a090 (``handle_own_press_delivered``) inspects
+    the press, the SND's element 3.
     """
+    from ..tokens import _c_sublist, _wire_tokens
+
     _log.debug("handle_yes_snd: SND delivery confirmed (%s)", inner_group[:100])
-    # Mark any pending master-order-list entries matching this SND as delivered.
-    # Walk g_master_order_list and flag matching entries.
-    for entry in getattr(state, 'g_master_order_list', []):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get('press_type') == 'SND' and not entry.get('delivered'):
-            # Simple heuristic: mark the oldest undelivered SND as delivered.
-            # A more precise match would compare target powers and content,
-            # but the C binary uses identity-based matching which we can't
-            # replicate without the exact token list comparison.
-            entry['delivered'] = True
-            _log.debug("handle_yes_snd: marked entry as delivered: %r",
-                       entry.get('data', [])[:5])
-            break
+    # C: GetSubList(GetSubList(msg, 1), 3) — Albert's SND always carries the
+    # turn, so element 3 is the press.
+    handle_own_press_delivered(state, _c_sublist(_wire_tokens(inner_group), 3))
 
 
 def handle_yes_unknown(state: InnerGameState, full_message: str, variant_group: str) -> None:
@@ -248,8 +219,7 @@ def handle_yes_unknown(state: InnerGameState, full_message: str, variant_group: 
 
     Port of vtable slot +0xcc.
 
-    C behaviour (inferred): logs the unexpected YES variant. This covers
-    any YES response that doesn't match the known variants above.
+    Albert's slot (FUN_0040d180) is empty; the port logs the variant.
     """
     _log.warning("handle_yes_unknown: unhandled YES variant: %r (message=%r)",
                  variant_group[:80], full_message[:120])

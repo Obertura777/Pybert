@@ -44,6 +44,7 @@ from ..moves import (
 
 from ._flags import (
     _F_ORDER_TYPE, _F_SECONDARY, _F_DEST_PROV, _F_DEST_COAST,
+    _F_CONVOY_DEPTH, _F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2,
     _F_CONVOY_LO, _F_CONVOY_HI,
     _F_SELECTED_SCORE_LO, _F_SELECTED_SCORE_HI,
     _F_INCOMING_MOVE, _F_SUP_CHAIN_CONFLICT,
@@ -58,6 +59,8 @@ from .evaluation import (
     restore_order_entry,
 )
 from ..moves._constants import _unit_location_token
+from .adjudicator import Unit as _AdjudicatorUnit
+from .adjudicator import adjudicate_movement as _adjudicate_movement
 
 
 def _live_unit_adjacencies(
@@ -2511,6 +2514,92 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
 
 # ── UpdateScoreState ──────────────────────────────────────────────────────────
 
+def _variant_base(state: InnerGameState) -> dict[int, int]:
+    """Coast-variant province id -> the base id Albert keys units by."""
+    lookup = state.__dict__.get('_variant_base_lookup')
+    variants = getattr(state, 'coast_variants', {})
+    if lookup is None or lookup[0] is not variants:
+        table = {
+            int(variant): int(base)
+            for base, coasts in variants.items()
+            for variant in coasts
+        }
+        lookup = (variants, table)
+        state.__dict__['_variant_base_lookup'] = lookup
+    return lookup[1]
+
+
+def _staged_unit_order(entry, base_of: dict[int, int]) -> tuple:
+    """One staged order as the inner+0x2450 fields FUN_0040b4b0 reads.
+
+    Returns (order, dest +0x24, other +0x2c, other_dest +0x30, route +0x34).
+    SUP_HLD keeps the supported unit in _F_DEST_PROV; SUP_MTO and CVY keep the
+    supported/convoyed unit in _F_SECONDARY and its destination in
+    _F_DEST_PROV; CTO carries its fleet legs in the preserved table row.
+    """
+    def base(value) -> int:
+        value = int(value)
+        return base_of.get(value, value)
+
+    order_type = int(entry[1]) if len(entry) > 1 else 0
+    dest = int(entry[2]) if len(entry) > 2 else -1
+    secondary = int(entry[4]) if len(entry) > 4 else -1
+    if order_type == _ORDER_MTO:
+        return _ORDER_MTO, base(dest), -1, -1, ()
+    if order_type == _ORDER_SUP_HLD:
+        return _ORDER_SUP_HLD, -1, base(dest), -1, ()
+    if order_type in (_ORDER_SUP_MTO, _ORDER_CVY):
+        return order_type, -1, base(secondary), base(dest), ()
+    if order_type == _ORDER_CTO:
+        row = entry[5] if len(entry) > 5 and isinstance(entry[5], (list, tuple)) else ()
+        depth = int(row[_F_CONVOY_DEPTH]) if len(row) > _F_CONVOY_DEPTH else 0
+        legs = tuple(
+            base(row[field])
+            for field in (_F_CONVOY_LEG0, _F_CONVOY_LEG1, _F_CONVOY_LEG2)[:max(depth, 0)]
+            if field < len(row)
+        )
+        return _ORDER_CTO, base(dest), -1, -1, legs
+    return _ORDER_HLD, -1, -1, -1, ()
+
+
+def _adjudicate_staged_orders(
+    state: InnerGameState,
+    staged: dict[int, tuple],
+    unit_signature: tuple,
+    base_of: dict[int, int],
+) -> dict[int, tuple]:
+    """Stage one order set into the unit table and run FUN_0040b560.
+
+    Returns province -> (moved, bounced, dislodged, dislodged_by, dest).  The
+    result depends only on the unit table and the staged orders, so it is
+    memoised per phase; identical selected-slot/candidate unions recur across
+    every proposal-trial round.
+    """
+    orders = {
+        int(prov): _staged_unit_order(entry, base_of)
+        for prov, entry in staged.items()
+    }
+    key = (unit_signature, tuple(sorted(orders.items())))
+    cache = state.__dict__.setdefault('_adjudication_cache', {})
+    result = cache.get(key)
+    if result is not None:
+        return result
+    units = {}
+    for prov, unit_power in unit_signature:
+        order, dest, other, other_dest, route = orders.get(
+            prov, (_ORDER_HLD, -1, -1, -1, ()))
+        units[prov] = _AdjudicatorUnit(
+            prov, unit_power, order, dest, other, other_dest, route)
+    _adjudicate_movement(units)
+    result = {
+        prov: (unit.moved, unit.bounced, unit.dislodged, unit.dislodged_by,
+               unit.dest)
+        for prov, unit in units.items()
+    }
+    cache[key] = result
+    return result
+
+
 def _build_alliance_candidate_batches(
     state: InnerGameState,
     power: int,
@@ -2521,13 +2610,16 @@ def _build_alliance_candidate_batches(
     water_provs: set,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray]:
-    """Build UpdateAllyOrderScore's candidate-varying inputs in batches.
+    """UpdateAllyOrderScore.c:214-1034 for every candidate of ``power``.
 
-    The scalar C loop materializes one staging order table per candidate and
-    selected-slot group.  Candidate own-unit sources and selected ally-unit
-    sources are disjoint, so Python can form the same unions with a leading
-    candidate axis, then propagate pressure/key contributions per unit across
-    all candidates at once.
+    For each score group C stages the representative slot's selected orders
+    for every other power with units, then the candidate's own orders, and
+    adjudicates the whole board (FUN_0040b560).  The result bytes pick each
+    unit's token key: a unit that moved (+0x6b) weights its destination, a
+    dislodged unit (+0x6a) spreads adjacency pressure and later weights its
+    best retreat, every other unit weights its own province, and a bounced
+    move (+0x69) still presses its target.  C:896-1034 then propagates the
+    accumulated DAT_00baed7c records into the MC pressure tables.
     """
     candidate_count = len(candidate_records)
     shape = (candidate_count, num_powers, num_provinces)
@@ -2535,182 +2627,128 @@ def _build_alliance_candidate_batches(
     key_weight_flt = np.zeros(shape, dtype=np.int32)
     mc_pressure = np.zeros(shape, dtype=np.int32)
     mc_fleet_pressure = np.zeros(shape, dtype=np.int32)
+    final_order_type = np.zeros((candidate_count, num_provinces), dtype=np.int16)
+    final_order_dest = np.zeros_like(final_order_type)
 
-    candidate_type = np.zeros(
-        (candidate_count, num_provinces), dtype=np.int16
+    base_of = _variant_base(state)
+    units = {
+        base_of.get(int(prov), int(prov)): unit
+        for prov, unit in sorted(state.unit_info.items())
+    }
+    unit_signature = tuple(
+        (prov, int(unit.get('power', -1))) for prov, unit in sorted(units.items())
     )
-    candidate_dest = np.zeros_like(candidate_type)
+    adjacency_cache: dict[int, list[int]] = {}
+
+    def adjacencies(prov: int) -> list[int]:
+        cached = adjacency_cache.get(prov)
+        if cached is None:
+            cached = _live_unit_adjacencies(state, prov, units[prov])
+            adjacency_cache[prov] = cached
+        return cached
+
     for index, candidate in enumerate(candidate_records):
-        for entry in candidate.get('orders', []):
-            if not isinstance(entry, (list, tuple)) or len(entry) < 3:
-                continue
-            province = int(entry[0])
-            if not 0 <= province < num_provinces:
-                continue
-            candidate_type[index, province] = int(entry[1])
-            candidate_dest[index, province] = int(entry[2])
-
-    all_indices = np.arange(candidate_count, dtype=np.intp)
-    final_order_type = candidate_type.copy()
-    final_order_dest = candidate_dest.copy()
-    support_types = (_ORDER_SUP_HLD, _ORDER_SUP_MTO, _ORDER_CVY)
-
-    for _slot_score, slot, group_weight in ordered_slot_groups:
-        ally_type = np.zeros(num_provinces, dtype=np.int16)
-        ally_dest = np.zeros(num_provinces, dtype=np.int16)
-        for ally_power in range(num_powers):
-            if ally_power == power or int(state.sc_count[ally_power]) <= 0:
-                continue
-            slot_list = state.g_current_best_order.get(ally_power, [])
-            if slot >= len(slot_list):
-                continue
-            for entry in slot_list[slot]:
-                if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+        own_orders = [
+            entry for entry in candidate.get('orders', [])
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2
+        ]
+        record_army = key_weight[index]
+        record_fleet = key_weight_flt[index]
+        staged = {}
+        for _slot_score, slot, group_weight in ordered_slot_groups:
+            staged = {}
+            for ally_power in range(num_powers):
+                if ally_power == power or int(state.g_unit_count[ally_power]) <= 0:
                     continue
-                province = int(entry[0])
-                order_type = int(entry[1])
-                if (not 0 <= province < num_provinces
-                        or order_type <= 0 or ally_type[province] != 0):
+                slot_list = state.g_current_best_order.get(ally_power, [])
+                if slot >= len(slot_list):
                     continue
-                ally_type[province] = order_type
-                ally_dest[province] = int(entry[2])
+                for entry in slot_list[slot]:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        staged[int(entry[0])] = entry
+            for entry in own_orders:
+                staged[int(entry[0])] = entry
+            flags = _adjudicate_staged_orders(state, staged, unit_signature, base_of)
 
-        ally_sources = ally_type != 0
-        order_type = candidate_type.copy()
-        order_dest = candidate_dest.copy()
-        order_type[:, ally_sources] = ally_type[ally_sources]
-        order_dest[:, ally_sources] = ally_dest[ally_sources]
-        final_order_type = order_type
-        final_order_dest = order_dest
+            province_pressure = collections.defaultdict(int)   # apiStack_a40
+            retreat_pressure = collections.defaultdict(int)    # apiStack_640
 
-        pressure_own = np.zeros(
-            (candidate_count, num_provinces), dtype=np.int16
-        )
-        pressure_adj = np.zeros_like(pressure_own)
-        fleet_expansion: dict[int, np.ndarray] = {}
+            def add(unit_power: int, prov: int, unit_type: str) -> None:
+                if 0 <= unit_power < num_powers and 0 <= prov < num_provinces:
+                    table = record_fleet if unit_type in ('F', 'FLT') else record_army
+                    table[unit_power, prov] += group_weight
 
-        # Phase (f): staging order table -> own/adjacent pressure.
-        for province, unit in state.unit_info.items():
-            province = int(province)
-            if not 0 <= province < num_provinces:
-                continue
-            types = order_type[:, province]
-            active = types != 0
-            if not np.any(active):
-                continue
-            committed = np.isin(types, support_types)
-            committed_indices = all_indices[committed]
-            committed_dest = order_dest[committed, province].astype(
-                np.intp, copy=False
-            )
-            valid = (
-                (committed_dest >= 0) & (committed_dest < num_provinces)
-            )
-            if np.any(valid):
-                np.add.at(
-                    pressure_own,
-                    (committed_indices[valid], committed_dest[valid]),
-                    1,
-                )
+            # UpdateAllyOrderScore.c:605-785, unit-table order.
+            for prov, unit_power in unit_signature:
+                moved, bounced, dislodged, _by, dest = flags[prov]
+                unit_type = units[prov].get('type', 'A')
+                if moved:
+                    add(unit_power, dest, unit_type)
+                    province_pressure[dest] += group_weight
+                elif dislodged:
+                    last = -1
+                    for adjacent in adjacencies(prov):
+                        adjacent_base = base_of.get(adjacent, adjacent)
+                        if adjacent_base != last:
+                            retreat_pressure[adjacent_base] += group_weight
+                            last = adjacent_base
+                else:
+                    add(unit_power, prov, unit_type)
+                    province_pressure[prov] += group_weight
+                if bounced:
+                    province_pressure[dest] += group_weight
 
-            ordinary = active & ~committed
-            if unit.get('type', 'A') in ('F', 'FLT'):
-                for adjacent in _live_unit_adjacencies(
-                    state, province, unit,
-                ):
-                    adjacent = int(adjacent)
-                    if 0 <= adjacent < num_provinces:
-                        pressure_adj[ordinary, adjacent] += 1
-            else:
-                pressure_own[ordinary, province] += 1
-
-        # Phase (f2): first viable generated destination for each fleet.
-        for province, unit in state.unit_info.items():
-            province = int(province)
-            if (unit.get('type', 'A') not in ('F', 'FLT')
-                    or not 0 <= province < num_provinces):
-                continue
-            active = order_type[:, province] != 0
-            expansion = np.full(candidate_count, -1, dtype=np.int16)
-            for adjacent in _live_unit_adjacencies(
-                state, province, unit,
-            ):
-                adjacent = int(adjacent)
-                if adjacent == 0 or not 0 <= adjacent < num_provinces:
+            # UpdateAllyOrderScore.c:786-893: each dislodged unit weights the
+            # first maximum-score retreat (BuildOrderSpec keeps equal scores in
+            # insertion order) that is unoccupied, not doubly pressed and not
+            # the attacker's origin.
+            for prov, unit_power in unit_signature:
+                _moved, _bounced, dislodged, dislodged_by, _dest = flags[prov]
+                if not dislodged:
                     continue
-                choose = (
-                    active & (expansion < 0)
-                    & (pressure_own[:, adjacent] == 0)
-                    & (pressure_adj[:, adjacent] < 2)
-                )
-                expansion[choose] = adjacent
-            fleet_expansion[province] = expansion
+                unit_type = units[prov].get('type', 'A')
+                best = None
+                for adjacent in adjacencies(prov):
+                    adjacent_base = base_of.get(adjacent, adjacent)
+                    if (province_pressure[adjacent_base] != 0
+                            or retreat_pressure[adjacent_base] >= 2
+                            or adjacent_base == dislodged_by):
+                        continue
+                    score = int(state.fss(unit_power, adjacent, unit_type))
+                    if best is None or score > best[0]:
+                        best = (score, adjacent_base)
+                if best is not None:
+                    add(unit_power, best[1], unit_type)
 
-        # Phases (g/g2): derive sparse token keys and propagate each key's
-        # weighted province/adjacency contribution.  Per-unit additions are
-        # equivalent to C's grouped map additions because all values are ints.
-        for province, unit in state.unit_info.items():
-            province = int(province)
-            unit_power = int(unit.get('power', -1))
-            if (not 0 <= province < num_provinces
-                    or not 0 <= unit_power < num_powers
-                    or int(state.sc_count[unit_power]) <= 0):
-                continue
-            types = order_type[:, province]
-            active = types != 0
-            if not np.any(active):
-                continue
-            unit_type = unit.get('type', 'A')
-            committed = np.isin(types, support_types)
-            keys = np.full(candidate_count, -1, dtype=np.int16)
-            keys[committed] = order_dest[committed, province]
-            if unit_type in ('F', 'FLT'):
-                ordinary = active & ~committed
-                expansion = fleet_expansion.get(province)
-                if expansion is not None:
-                    keys[ordinary] = expansion[ordinary]
-                key_table = key_weight_flt
-                adjacency_table = state.fleet_adj_matrix
-            else:
-                keys[active & ~committed] = province
-                key_table = key_weight
-                adjacency_table = state.adj_matrix
+        for prov, entry in staged.items():
+            if 0 <= prov < num_provinces:
+                final_order_type[index, prov] = int(entry[1])
+                final_order_dest[index, prov] = int(entry[2]) if len(entry) > 2 else 0
 
-            valid_key = active & (keys >= 0) & (keys < num_provinces)
-            if not np.any(valid_key):
-                continue
-            valid_indices = all_indices[valid_key]
-            valid_keys = keys[valid_key].astype(np.intp, copy=False)
-            np.add.at(
-                key_table,
-                (valid_indices, unit_power, valid_keys),
-                group_weight,
-            )
-            np.add.at(
-                mc_pressure,
-                (valid_indices, unit_power, valid_keys),
-                group_weight,
-            )
-
-            for key in np.unique(valid_keys):
-                key = int(key)
-                key_indices = all_indices[valid_key & (keys == key)]
-                controller = int(state.g_sc_owner[key])
+        # C:896-1034 — every positive record weight presses its own province
+        # and its type-filtered adjacency; an SC controlled by a different or
+        # neutral power sends the adjacency to the secondary fleet table.
+        for key_type, table in (('A', record_army), ('F', record_fleet)):
+            powers_idx, provinces_idx = np.nonzero(table > 0)
+            for unit_power, prov in zip(powers_idx.tolist(), provinces_idx.tolist()):
+                weight = int(table[unit_power, prov])
+                mc_pressure[index, unit_power, prov] += weight
                 target = (
                     mc_fleet_pressure
-                    if key in state.sc_provinces and controller != unit_power
+                    if prov in state.sc_provinces
+                    and int(state.g_sc_owner[prov]) != unit_power
                     else mc_pressure
                 )
-                adjacencies = adjacency_table.get(key, [])
-                if unit_type not in ('F', 'FLT'):
-                    adjacencies = [
-                        adjacent for adjacent in adjacencies
+                if key_type == 'F':
+                    adjacent_list = state.fleet_adj_matrix.get(prov, [])
+                else:
+                    adjacent_list = [
+                        adjacent for adjacent in state.adj_matrix.get(prov, [])
                         if adjacent not in water_provs
                     ]
-                for adjacent in sorted(set(adjacencies)):
-                    adjacent = int(adjacent)
+                for adjacent in sorted(set(adjacent_list)):
                     if 0 <= adjacent < num_provinces:
-                        target[key_indices, unit_power, adjacent] += group_weight
+                        target[index, unit_power, adjacent] += weight
 
     if candidate_count:
         state.g_key_weight[:] = key_weight[-1]
@@ -2730,6 +2768,7 @@ def _build_alliance_candidate_batches(
         final_order_type,
         final_order_dest,
     )
+
 
 def _update_ally_order_score(state: InnerGameState, power: int) -> None:
     """
@@ -2924,254 +2963,24 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
         _rank_candidates_for_power(state, power, flag=1)
         return
 
-    batch_key_weight = np.empty(
-        (candidate_count, num_powers, num_provinces), dtype=np.int32
+    state.g_score_alt += local_b08 * candidate_count
+    state.g_score_group_duplicates += duplicate_group_count * candidate_count
+    (
+        batch_key_weight,
+        batch_key_weight_flt,
+        batch_mc_pressure,
+        batch_mc_fleet_pressure,
+        batch_order_type,
+        batch_order_dest,
+    ) = _build_alliance_candidate_batches(
+        state,
+        power,
+        candidate_records,
+        ordered_slot_groups,
+        num_powers,
+        num_provinces,
+        water_provs,
     )
-    batch_key_weight_flt = np.empty_like(batch_key_weight)
-    batch_mc_pressure = np.empty_like(batch_key_weight)
-    batch_mc_fleet_pressure = np.empty_like(batch_key_weight)
-    batch_order_type = np.empty(
-        (candidate_count, num_provinces), dtype=np.int16
-    )
-    batch_order_dest = np.empty_like(batch_order_type)
-
-    for batch_index, c in enumerate(candidate_records):
-
-        # ── Phase (b): clear MC pressure arrays ──────────────────────────────
-        # C: lines 150–200 — clear g_baed7c record[0x1a+p] and DAT_00b9a980/b95580
-        state.g_mc_province_pressure.fill(0)
-        state.g_mc_fleet_pressure.fill(0)
-        state.g_key_weight.fill(0)
-        state.g_key_weight_flt.fill(0)
-
-        # Clear staging area for this candidate.
-        # C: the staging OrderedSet (+0x2450) is rebuilt empty for each candidate.
-        state.g_order_table[:, _F_ORDER_TYPE] = 0.0
-        state.g_order_table[:, _F_DEST_PROV] = 0.0
-        state.g_order_table[:, _F_DEST_COAST] = 0.0
-        state.g_order_table[:, _F_SECONDARY] = 0.0
-
-        # UpdateAllyOrderScore.c:265/282. The first accumulator counts every
-        # selected slot examined for every candidate; the second counts only
-        # duplicates collapsed into an existing score-key group.
-        state.g_score_alt += local_b08
-        state.g_score_group_duplicates += duplicate_group_count
-
-        for _slot_score, r, group_weight in ordered_slot_groups:
-            # Per-group delta records.  DAT_00baed7c retains the cumulative
-            # candidate weights, while the global pressure arrays receive this
-            # group's contribution exactly once.
-            group_key_weight: dict[tuple[int, int], int] = {}
-            group_key_weight_flt: dict[tuple[int, int], int] = {}
-
-            def _add_record_weight(unit_power: int, province: int,
-                                   unit_type: str) -> None:
-                if not (0 <= unit_power < num_powers
-                        and 0 <= province < num_provinces):
-                    return
-                state.add_key_weight(
-                    unit_power, province, group_weight, unit_type
-                )
-                table = (group_key_weight_flt
-                         if unit_type in ('F', 'FLT')
-                         else group_key_weight)
-                key = (unit_power, province)
-                table[key] = table.get(key, 0) + group_weight
-            # ── Phase (e): ally orders for slot r (FindOrInsert) ─────────────
-            # C: lines 293–462 — for each ally_power with sc_count > 0, walk
-            # g_bbf694[ally*30+r].order_list, insert each entry via FindOrInsert.
-            # Ally orders go first; own orders cannot overwrite them.
-            for ally_power in range(num_powers):
-                if ally_power == power or int(state.sc_count[ally_power]) <= 0:
-                    continue
-                slot_list = state.g_current_best_order.get(ally_power, [])
-                if r >= len(slot_list):
-                    continue
-                slot_orders = slot_list[r]
-                if not isinstance(slot_orders, (list, tuple)):
-                    continue
-                # Each DAT_00bbf690/694 slot points to one complete candidate
-                # record and its full order list.  The previous port treated a
-                # slot as one unit order, losing the rest of the ally's set.
-                for ao in slot_orders:
-                    if not isinstance(ao, (list, tuple)) or len(ao) < 2:
-                        continue
-                    ap, aot = int(ao[0]), int(ao[1])
-                    if ap < 0 or ap >= num_provinces or aot <= 0:
-                        continue
-                    if int(state.g_order_table[ap, _F_ORDER_TYPE]) != 0:
-                        continue
-                    restore_order_entry(state.g_order_table, ao)
-
-            # ── Phase (d): own orders for slot r (FindOrInsert) ──────────────
-            # C: lines 464–604 — walk candidate's own order list, insert via
-            # OrderedSet_FindOrInsert.  Own orders cannot overwrite ally entries.
-            for order_entry in c.get('orders', []):
-                if not isinstance(order_entry, (list, tuple)) or len(order_entry) < 2:
-                    continue
-                prov = int(order_entry[0])
-                if prov < 0 or prov >= num_provinces:
-                    continue
-                if int(state.g_order_table[prov, _F_ORDER_TYPE]) != 0:
-                    continue
-                # Candidate snapshots use the same semantic five-field layout
-                # for every order type: source, type, destination, coast,
-                # secondary unit.  Reuse the canonical reconstruction so SUP
-                # destinations are neither overwritten by the secondary field
-                # nor silently left at province zero.
-                restore_order_entry(state.g_order_table, order_entry)
-
-            # ── Phase (f): pressure arrays from staging ───────────────────────
-            # C: lines 607–785 — three flag branches per staging node:
-            #   flag 0x6b (committed support/convoy): pressure_own[staging.dest_prov]
-            #   flag 0x6a (fleet MTO):                pressure_adj[each fleet adj] (dedup)
-            #   else (non-fleet ordered unit):         pressure_own[unit.prov]
-            # Both arrays feed the fleet-expansion gate in Phase (f2).
-            pressure_own.fill(0)  # apiStack_a40
-            pressure_adj.fill(0)  # apiStack_640
-
-            for prov, unit in state.unit_info.items():
-                order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
-                if order_type == 0:
-                    continue
-                utype = unit.get('type', 'A')
-
-                if order_type in (_ORDER_SUP_HLD, _ORDER_SUP_MTO, _ORDER_CVY):
-                    # flag 0x6b: committed order — marks staging.dest_prov
-                    dest = int(state.g_order_table[prov, _F_DEST_PROV])
-                    if 0 <= dest < num_provinces:
-                        pressure_own[dest] += 1
-                elif utype in ('F', 'FLT'):
-                    # flag 0x6a: FLEET — adjacency pressure (deduplicated).
-                    #
-                    # 2026-08-27: the `and order_type == _ORDER_MTO` half of
-                    # this test was dropped.  Record flag +0x6a is not written
-                    # in any recovered source, so its meaning is inferred from
-                    # its readers.  PostProcessOrders.c:62-84 bumps
-                    # g_MoveHistoryMatrix[power][src][dst] on
-                    # `+0x69 == 1 && +0x6a == 0` and clears the whole [src] row
-                    # on `+0x6a == 1` (:114-125).  Reading +0x6a as "this unit
-                    # is a FLEET" makes both consistent — armies accumulate
-                    # move history, fleets do not.  Reading it as "fleet AND
-                    # MTO" does not: a moving fleet would then never record a
-                    # move and would erase its own history instead.
-                    #
-                    # The narrow reading also made this function structurally
-                    # blind to holding fleets: they fell through to the
-                    # own-province branch below and claimed their own key,
-                    # while moving fleets got an adjacency key or none at all.
-                    # Measured on F1901M FRANCE, that asymmetry was worth
-                    # ~11,900 alliance points in favour of `F MAO H` over every
-                    # `F MAO - x` — against a spread of ~1,200 between the
-                    # destinations themselves, so the fleet never moved.
-                    last_seen = -1
-                    for adj in _live_unit_adjacencies(state, prov, unit):
-                        if adj != last_seen and adj < num_provinces:
-                            pressure_adj[adj] += 1
-                            last_seen = adj
-                else:
-                    # else: non-fleet ordered unit — marks own province as occupied
-                    pressure_own[prov] += 1
-
-            # ── Phase (f2): fleet expansion pass ─────────────────────────────
-            # C: lines 802–877 — for each +0x6a unit (a FLEET, whatever its
-            # order — see Phase (f)), check fleet adjacencies.
-            # A unit earns ally-record credit (Phase g) only if ≥1 adjacent province
-            # satisfies all three gates:
-            #   pressure_own[adj] == 0   (not occupied / targeted by another order)
-            #   pressure_adj[adj] < 2    (fewer than 2 fleets already adjacent)
-            #   adj != 0                 (C: adj != staging+0x60, zero-initialised)
-            fleet_expansion_dest: dict[int, int] = {}
-
-            for prov, unit in state.unit_info.items():
-                # Any ordered fleet takes C's +0x6a path (see Phase (f)).
-                if int(state.g_order_table[prov, _F_ORDER_TYPE]) == 0:
-                    continue
-                if unit.get('type', 'A') not in ('F', 'FLT'):
-                    continue
-                for adj in _live_unit_adjacencies(state, prov, unit):
-                    if adj == 0:
-                        continue
-                    if pressure_own[adj] != 0:
-                        continue
-                    if pressure_adj[adj] >= 2:
-                        continue
-                    fleet_expansion_dest[prov] = adj
-                    break
-
-            # ── Phase (g): write DAT_00baed7c key weights ───────────────────
-            # UpdateAllyOrderScore.c:628/724/883 selects a token key, then
-            # adds the score-group multiplicity (node field 4) to that key's
-            # record[unit.power + 0x15].  Ally-record weight is 0 for:
-            #   • unordered units (flag never set in Phase f)
-            #   • fleet MTO units with no expansion opportunity (Phase f2 absent)
-            for prov, unit in state.unit_info.items():
-                unit_power = unit.get('power', -1)
-                if unit_power < 0 or int(state.sc_count[unit_power]) <= 0:
-                    continue
-                order_type = int(state.g_order_table[prov, _F_ORDER_TYPE])
-                if order_type == 0:
-                    continue
-                utype = unit.get('type', 'A')
-                if order_type in (_ORDER_SUP_HLD, _ORDER_SUP_MTO, _ORDER_CVY):
-                    # flag 0x6b: key at staging+0x24 (destination key).
-                    dest = int(state.g_order_table[prov, _F_DEST_PROV])
-                    _add_record_weight(unit_power, dest, utype)
-                    continue
-
-                # flag 0x6a: the first viable generated fleet order spec
-                # supplies its destination key at UpdateAllyOrderScore.c:883.
-                if utype in ('F', 'FLT'):
-                    dest = fleet_expansion_dest.get(prov)
-                    if dest is None:
-                        continue
-                    _add_record_weight(unit_power, dest, 'F')
-                    continue
-
-                # Default ordered-unit branch: source unit key.
-                _add_record_weight(unit_power, prov, utype)
-
-            # ── Phase (g2): records → MC pressure arrays ────────────────────
-            # C:896-1034. Every positive key weight contributes at its own
-            # province, then across type-filtered adjacency. On an SC controlled
-            # by a different/neutral power, adjacency goes to the secondary
-            # fleet-pressure table; otherwise it stays in province pressure.
-            for key_type, sparse_weights in (
-                    ('A', group_key_weight), ('F', group_key_weight_flt)):
-                # The dense implementation walked power then province in
-                # ascending order.  Sorting sparse keys retains that order,
-                # although all writes are commutative integer additions.
-                for (unit_power, prov), weight in sorted(
-                        sparse_weights.items()):
-                    state.g_mc_province_pressure[unit_power, prov] += weight
-
-                    use_fleet_pressure = (
-                        int(prov) in state.sc_provinces
-                        and int(state.g_sc_owner[int(prov)]) != unit_power
-                    )
-
-                    if key_type == 'F':
-                        adj_list = state.fleet_adj_matrix.get(int(prov), [])
-                    else:
-                        adj_list = [
-                            adj for adj in state.adj_matrix.get(int(prov), [])
-                            if adj not in water_provs
-                        ]
-                    target = (state.g_mc_fleet_pressure
-                              if use_fleet_pressure
-                              else state.g_mc_province_pressure)
-                    for adj in sorted(set(adj_list)):
-                        target[unit_power, adj] += weight
-
-        # Snapshot only the candidate-varying evaluator inputs.  C calls the
-        # scalar evaluator here; the Python batch below preserves this record
-        # order while evaluating the fixed board dimensions in one NumPy pass.
-        batch_key_weight[batch_index] = state.g_key_weight
-        batch_key_weight_flt[batch_index] = state.g_key_weight_flt
-        batch_mc_pressure[batch_index] = state.g_mc_province_pressure
-        batch_mc_fleet_pressure[batch_index] = state.g_mc_fleet_pressure
-        batch_order_type[batch_index] = state.g_order_table[:, _F_ORDER_TYPE]
-        batch_order_dest[batch_index] = state.g_order_table[:, _F_DEST_PROV]
 
     # ── Phase (h): EvaluateAllianceScore — once per candidate ────────────────
     # A single-record scalar fallback retains the focused-test/diagnostic API;
@@ -3366,7 +3175,7 @@ def _refresh_order_table(state: InnerGameState, power: int) -> None:
         if war_mode == 1 and own_power != power:
             if selection_weight < 50:
                 return False
-        # Gate 2: SC count < 4 AND press off → reject if score < 50
+        # Gate 2: SC count < 4 AND not the opening turn → reject if score < 50
         if sc_cnt < 4 and press_flag == 0:
             if selection_weight < 50:
                 return False

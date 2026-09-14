@@ -168,20 +168,21 @@ def test_single_evaluator_reconstructs_wire_sublists():
     ) == 0x481C
 
 
-def test_sub_not_xdo_arm_is_dead_and_answers_huh():
-    """_eval_single_xdo.c:238-243 never descends into the SUB/PRP NOT payload.
+def test_ccl_not_xdo_arm_is_dead_and_answers_huh():
+    """_eval_single_xdo.c:238-243 never descends into the CCL NOT payload.
 
-    The top-level NOT arm (line 131) runs GetSubList(input, 1) before
-    re-testing element 0, so `NOT (XDO ...)` reaches CAL_VALUE.  The SUB/PRP
-    arm only calls AppendList(local_48, input) and then re-reads element 0 of
-    the same list, which is still NOT -- so `XDO != *psVar4` always holds and
-    control jumps to LAB_0042c5e4 (HUH).  Albert therefore scores a bare
-    `NOT (XDO ...)` but HUHs the identical clause wrapped in PRP.
+    DAT_004c6e14 holds 0x4A26, CCL.  The top-level NOT arm (line 131) runs
+    GetSubList(input, 1) before re-testing element 0, so `NOT (XDO ...)`
+    reaches CAL_VALUE.  The CCL arm only calls AppendList(local_48, input)
+    and then re-reads element 0 of the same list, which is still NOT -- so
+    `XDO != *psVar4` always holds and control jumps to LAB_0042c5e4 (HUH).
+    Albert therefore scores a bare `NOT (XDO ...)` but HUHs the identical
+    clause wrapped in CCL.
     """
     state = InnerGameState()
     state.albert_power_idx = 2  # FRA
 
-    wrapped = ['PRP', '(', 'NOT', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON',
+    wrapped = ['CCL', '(', 'NOT', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON',
                ')', 'HLD', ')', ')', ')']
     assert _evals_mod._eval_single_xdo(state, wrapped, from_power=1) == 0x4806
 
@@ -190,10 +191,15 @@ def test_sub_not_xdo_arm_is_dead_and_answers_huh():
             ')']
     assert _evals_mod._eval_single_xdo(state, bare, from_power=1) != 0x4806
 
-    # SUB XDO remains the unconditional REJ of _eval_sub_xdo (FUN_0040d450).
-    sub_xdo = ['PRP', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON', ')', 'HLD',
+    # CCL XDO remains the unconditional REJ of _eval_sub_xdo (FUN_0040d450).
+    ccl_xdo = ['CCL', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON', ')', 'HLD',
                ')', ')']
-    assert _evals_mod._eval_single_xdo(state, sub_xdo, from_power=1) == 0x4814
+    assert _evals_mod._eval_single_xdo(state, ccl_xdo, from_power=1) == 0x4814
+
+    # A nested PRP is not the CCL arm: nothing matches and Albert HUHs it.
+    nested_prp = ['PRP', '(', 'XDO', '(', '(', 'ENG', 'AMY', 'LON', ')',
+                  'HLD', ')', ')']
+    assert _evals_mod._eval_single_xdo(state, nested_prp, from_power=1) == 0x4806
 
 
 def test_xdo_parser_preserves_not_wrapper_for_negative_clause_catalog():
@@ -249,12 +255,14 @@ def test_evaluate_press_clears_prior_accepts_and_uses_and_sublists():
     state.g_relation_score[:] = 0
     state.g_accepted_proposals[:] = [['stale']]
 
+    # The argument is the message content; EvaluatePress strips PRP itself.
     verdict = _press_mod.evaluate_press(state, {
         'from_power_tok': 0x4101,
         'sublist3': [
-            'AND',
+            'PRP', '(', 'AND',
             '(', 'PCE', '(', 'ENG', 'FRA', ')', ')',
             '(', 'SLO', '(', 'FRA', ')', ')',
+            ')',
         ],
     })
 
@@ -510,89 +518,99 @@ def test_execute_aly_vss_allows_changed_mutual_enemy():
     assert state.g_aly_proposal_history == {(2, 3, 5), (2, 3, 6)}
 
 
-def test_execute_xdo_consumes_support_history_and_validates_recipient_power():
+_XDO_KIE = ['XDO', '(', '(', 'GER', 'AMY', 'KIE', ')', 'SUP',
+            '(', 'FRA', 'AMY', 'BUR', ')', 'MTO', 'MUN', ')']
+_XDO_HOL = ['XDO', '(', '(', 'GER', 'AMY', 'HOL', ')', 'SUP',
+            '(', 'FRA', 'AMY', 'BEL', ')', 'MTO', 'RUH', ')']
+
+
+def _proposal_records_state():
+    """N0 (key 1) and two own XDO proposal records referencing it — the
+    records BuildAndSendSUB.c:648-1195 inserts for FUN_00433510."""
     state = InnerGameState()
     state.albert_power_idx = 2  # FRA
-    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
-    state.unit_info = {
-        10: {'power': 3, 'type': 'A'},
-        11: {'power': 2, 'type': 'A'},
-    }
-    state.g_xdo_press_proposals[:] = [{
-        'type': 'XDO_SUP', 'priority': 4,
-        'from_power': 2, 'to_power': 3,
-        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
-    }]
-    sent = []
+    base = {'key': 1, 'type_flag': 1, 'sent': True, 'watermark': None,
+            'participant_powers': {2, 3}, 'sublist3': ['SUB'],
+            'score_vector': [0, 0, 1000, 500, 0, 0, 0]}
+    kie = {'key': 2, 'type_flag': 1, 'sent': True, 'watermark': 1,
+           'participant_powers': {2, 3}, 'sublist3': list(_XDO_KIE),
+           'score_vector': [0, 0, 1300, 400, 0, 0, 0]}
+    hol = {'key': 3, 'type_flag': 1, 'sent': True, 'watermark': 1,
+           'participant_powers': {2, 3}, 'sublist3': list(_XDO_HOL),
+           'score_vector': [0, 0, 1200, 900, 0, 0, 0]}
+    state.g_broadcast_list[:] = [base, kie, hol]
+    return state, base, kie, hol
 
+
+def test_execute_xdo_proposes_the_record_with_the_best_combined_delta():
+    """FUN_00433510: own = score - base > 0, their > -800, maximise the sum."""
+    state, _base, _kie, _hol = _proposal_records_state()
+    sent = []
     with patch.object(
             _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
     ) as validate:
-        _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+        assert _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
 
-    validate.assert_called_once_with(
-        state,
-        3,
-        {
-            'type': 'SUP', 'unit': 'A KIE',
-            'target_unit': 'A BUR', 'target_dest': 'MUN',
-            'target_coast': '',
-        },
-        commit=False,
-    )
+    # KIE: own +300, their -100 -> 200; HOL: own +200, their +400 -> 600.
+    assert validate.call_args_list[0].args[1] == 3
     assert sent == [{
-        'message': (
-            'PRP ( XDO ( ( GER AMY KIE ) SUP '
-            '( FRA AMY BUR ) MTO MUN ) )'
-        ),
+        'message': 'PRP ( ' + ' '.join(_XDO_HOL) + ' )',
         'recipient': 'GERMANY',
     }]
-    assert state.g_pos_analysis_list[0]['participant_powers'] == {2, 3}
+    assert tuple(_XDO_HOL) in state.g_xdo_proposal_list
 
-
-def test_execute_xdo_rejects_other_movers_and_wrong_recipient():
-    state = InnerGameState()
-    state.albert_power_idx = 2
-    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
-    state.unit_info = {
-        10: {'power': 3, 'type': 'A'},
-        11: {'power': 0, 'type': 'A'},
-    }
-    state.g_xdo_press_proposals[:] = [{
-        'type': 'XDO_SUP', 'priority': 4,
-        'from_power': 0, 'to_power': 3,
-        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
-    }]
-    sent = []
-    _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
-    assert sent == []
-
-    state.g_xdo_press_proposals[0]['from_power'] = 2
+    # The chosen content is not proposed twice.
+    sent.clear()
     with patch.object(
             _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
-    ) as validate:
-        _scheduling_mod._execute_xdo(state, 1, send_fn=sent.append)
-    validate.assert_not_called()
+    ):
+        _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+    assert sent[0]['message'] == 'PRP ( ' + ' '.join(_XDO_KIE) + ' )'
+
+
+def test_execute_xdo_filters_participants_deltas_and_validity():
+    state, base, kie, hol = _proposal_records_state()
+    sent = []
+    # Not a participant.
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ):
+        assert not _scheduling_mod._execute_xdo(state, 4, send_fn=sent.append)
+    # Their delta at -800 or below, own delta not positive, invalid order.
+    kie['score_vector'] = [0, 0, 1300, -300, 0, 0, 0]
+    hol['score_vector'] = [0, 0, 1000, 900, 0, 0, 0]
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ):
+        assert not _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+    kie['score_vector'] = [0, 0, 1300, 400, 0, 0, 0]
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=-1,
+    ):
+        assert not _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
     assert sent == []
 
 
-def test_then_action_reaches_generated_xdo_for_strong_trust_pair():
-    state = InnerGameState()
-    state.albert_power_idx = 2
+def test_execute_xdo_uses_raw_scores_against_an_unscored_base():
+    """Both base scores -1000000 → own/their are the record's own scores."""
+    state, base, kie, hol = _proposal_records_state()
+    base['score_vector'] = [0, 0, -1000000, -1000000, 0, 0, 0]
+    kie['score_vector'] = [0, 0, 50, -700, 0, 0, 0]
+    hol['score_vector'] = [0, 0, -5, 900, 0, 0, 0]
+    sent = []
+    with patch.object(
+            _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
+    ):
+        assert _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
+    assert sent[0]['message'] == 'PRP ( ' + ' '.join(_XDO_KIE) + ' )'
+
+
+def test_then_action_reaches_the_xdo_selection_for_strong_trust_pair():
+    state, _base, _kie, _hol = _proposal_records_state()
     state.g_history_counter = 20
     state.g_press_history = {3: {_scheduling_mod._TOK_XDO}}
     state.g_ally_trust_score[2, 3] = 3
     state.g_ally_trust_score[3, 2] = 3
-    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
-    state.unit_info = {
-        10: {'power': 3, 'type': 'A'},
-        11: {'power': 2, 'type': 'A'},
-    }
-    state.g_xdo_press_proposals[:] = [{
-        'type': 'XDO_SUP', 'priority': 4,
-        'from_power': 2, 'to_power': 3,
-        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
-    }]
     sent = []
 
     with patch.object(
@@ -601,45 +619,34 @@ def test_then_action_reaches_generated_xdo_for_strong_trust_pair():
         _scheduling_mod._execute_then_action(state, 3, send_fn=sent.append)
 
     assert sent == [{
-        'message': (
-            'PRP ( XDO ( ( GER AMY KIE ) SUP '
-            '( FRA AMY BUR ) MTO MUN ) )'
-        ),
+        'message': 'PRP ( ' + ' '.join(_XDO_HOL) + ' )',
         'recipient': 'GERMANY',
     }]
 
 
-def test_execute_xdo_survives_staging_clear_via_persistent_history():
-    state = InnerGameState()
-    state.albert_power_idx = 2
-    state._id_to_prov = {10: 'KIE', 11: 'BUR', 12: 'MUN'}
-    state.unit_info = {
-        10: {'power': 3, 'type': 'A'},
-        11: {'power': 2, 'type': 'A'},
-    }
-    state.g_xdo_press_proposals.clear()
-    state.g_proposal_history_map = [{
-        'key': 10011012,
-        'type': 'XDO_SUP', 'score': 4,
-        'from_power': 2, 'to_power': 3,
-        'supporter_prov': 10, 'mover_prov': 11, 'dest': 12,
-    }]
+def test_then_action_one_centre_path_reads_the_supply_centre_count():
+    """ExecuteThennAction's weak path tests curr_sc_cnt[own] == 1."""
+    state, _base, _kie, _hol = _proposal_records_state()
+    state.g_history_counter = 20
+    state.g_press_history = {3: {_scheduling_mod._TOK_XDO}}
+    state.g_press_flag = 1  # DAT_00baed68 lets the low-trust sender through
+    state.g_ally_trust_score[3, 2] = 1
+    state.sc_count[2] = 1
     sent = []
-
     with patch.object(
             _scheduling_mod, 'validate_and_dispatch_order', return_value=0,
     ):
-        _scheduling_mod._execute_xdo(state, 3, send_fn=sent.append)
-
-    assert sent[0]['recipient'] == 'GERMANY'
-    assert sent[0]['message'].startswith('PRP ( XDO')
+        _scheduling_mod._execute_then_action(state, 3, send_fn=sent.append)
+    # PROPOSE's CancelPriorPress sends NOT ( GOF ) first: Albert owns a centre.
+    assert sent[0] == 'NOT ( GOF )'
+    assert [m['recipient'] for m in sent[1:]] == ['GERMANY']
 
 
 def test_propose_dmz_decodes_c_flags_and_tracks_the_proposal():
     state = InnerGameState()
     state.albert_power_idx = 2  # FRA
     state._id_to_prov = {10: 'BUR', 11: 'MUN'}
-    state.g_dmz_aggressiveness = 0
+    state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     state.g_order_list[:] = [
         {
             'power': 3, 'province': 10, 'score': 2, 'done': False,
@@ -768,7 +775,7 @@ def test_propose_dmz_first_pass_requires_flag3_clear():
         state = InnerGameState()
         state.albert_power_idx = 2
         state._id_to_prov = {10: 'BUR', 11: 'MUN'}
-        state.g_dmz_aggressiveness = 0
+        state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
         state.g_order_list[:] = [
             {'power': 3, 'province': p, 'score': 2, 'done': False,
              'flag1': True, 'flag2': True, 'flag3': flag3}
@@ -793,7 +800,7 @@ def test_propose_dmz_tracks_proposals_in_the_active_dmz_list():
     state = InnerGameState()
     state.albert_power_idx = 2
     state._id_to_prov = {10: 'BUR', 11: 'MUN'}
-    state.g_dmz_aggressiveness = 0
+    state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     state.g_order_list[:] = [
         {'power': 3, 'province': p, 'score': 2, 'done': False,
          'flag1': True, 'flag2': True, 'flag3': False}
@@ -809,7 +816,7 @@ def test_propose_dmz_tracks_proposals_in_the_active_dmz_list():
     state2 = InnerGameState()
     state2.albert_power_idx = 2
     state2._id_to_prov = {10: 'BUR', 11: 'MUN'}
-    state2.g_dmz_aggressiveness = 0
+    state2.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     state2.g_active_dmz_list = [{'power': 3, 'province': 10, 'count': 1}]
     state2.g_order_list[:] = [
         {'power': 3, 'province': p, 'score': 2, 'done': False,
@@ -833,7 +840,7 @@ def test_propose_dmz_aborts_when_the_send_count_is_already_capped():
     state = InnerGameState()
     state.albert_power_idx = 2
     state._id_to_prov = {10: 'BUR', 11: 'MUN'}
-    state.g_dmz_aggressiveness = 0
+    state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     state.g_active_dmz_list = [{'power': 3, 'province': 10, 'count': 2}]
     state.g_order_list[:] = [
         {'power': 3, 'province': 10, 'score': 2, 'done': False,
@@ -853,7 +860,7 @@ def test_propose_dmz_marking_loop_covers_every_matching_order_entry():
     state = InnerGameState()
     state.albert_power_idx = 2
     state._id_to_prov = {10: 'BUR', 11: 'MUN'}
-    state.g_dmz_aggressiveness = 0
+    state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     duplicate = {'power': 3, 'province': 10, 'score': 1, 'done': False,
                  'flag1': False, 'flag2': False, 'flag3': False}
     state.g_order_list[:] = [
@@ -872,7 +879,7 @@ def test_propose_dmz_excludes_existing_counter_designation():
     state = InnerGameState()
     state.albert_power_idx = 2
     state._id_to_prov = {10: 'BUR'}
-    state.g_dmz_aggressiveness = 0
+    state.g_press_thresh_random = 16  # DMZ threshold 16/4 - 4 = 0
     state.g_ally_counter_list = {3: [{'dest_prov': 10}]}
     state.g_order_list[:] = [{
         'ally_power': 3, 'province': 10, 'score': 2, 'done': False,

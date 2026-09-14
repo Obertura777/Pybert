@@ -5,17 +5,20 @@ Split from communications/inbound.py during the 2026-04 refactor.
 Holds the two routers that take a raw inbound message, peel off the FRM
 envelope, classify it, and dispatch to the right handler / gate:
 
-  * ``process_frm_message`` — classifies the FRM payload (ACK, HUH, TRY,
-    or fresh proposal) and dispatches into ``.ack`` and ``.gate``.
+  * ``process_frm_message`` — port of Albert's FRM handler (FUN_0045a2f0):
+    proposals, replies (YES/REJ/BWX), HUH, TRY and everything else.
   * ``parse_message``       — top-level inbound entrypoint: routes HST
     to ``.history`` and FRM to ``process_frm_message``.
 
-Cross-module deps: handlers in ``.history``, ``.ack``, ``.gate`` and
-``...state.InnerGameState``.
+Cross-module deps: handlers in ``.history``, ``.ack``, ``.gate``,
+``.respond`` and ``...state.InnerGameState``.
 """
 
+import time as _time
+
 from ...state import InnerGameState
-from ..parsers import _extract_top_paren_groups, _split_top_level_groups
+from ..parsers import _extract_top_paren_groups
+from ..tokens import _c_sublist, _c_token_at, _wire_tokens
 from .history import process_hst
 from .ack import (
     ack_matcher,
@@ -25,143 +28,148 @@ from .ack import (
     _ACK_TOK_REJ,
     _ACK_TOK_BWX,
 )
-from .gate import delay_review, register_received_press
-from ..senders import _prepare_ally_press_entry
+from .gate import delay_review
+from .respond import receive_proposal, respond, send_huh_and_try
+
+_POWER_NAMES = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
+# 3-letter DAIDE codes, index-aligned with _POWER_NAMES.
+_DAIDE_NAMES = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
+
+_REPLY_TOKENS = {
+    'YES': _ACK_TOK_YES,
+    'REJ': _ACK_TOK_REJ,
+    'BWX': _ACK_TOK_BWX,
+}
 
 
-def process_frm_message(state: InnerGameState, sender: str, sub_message: str):
+def _evaluate_press(state, content_tokens, sender_id, recipients) -> int:
+    from ..evaluators import evaluate_press
+    return evaluate_press(state, {
+        'from_power_tok': 0x4100 | sender_id,
+        'sublist2': [0x4100 | p for p in recipients],
+        'sublist3': list(content_tokens),
+    })
+
+
+def process_frm_message(
+    state: InnerGameState,
+    sender: str,
+    sub_message: str,
+    send_fn=None,
+):
     """
-    Port of process_frm and FRIENDLY logic (FUN_0042dc40).
-    Updates g_ally_matrix and sets relation tracking arrays by unpacking FRM envelopes.
-    Also calls register_received_press (FUN_00431310) for incoming XDO/PRP proposals.
+    Port of Albert's FRM handler (FUN_0045a2f0).
 
-    The ``sender`` arrives from python-diplomacy as a full DipNet name
-    ("FRANCE") but power tokens *inside* the DAIDE press body use 3-letter
-    codes ("FRA").  Keep two index-aligned tables so sender-validation and
-    body-token parsing each consult the right form.  Fixed 2026-04-18
-    (AUDIT_moves_and_messages.md #3b — discovered during #3 verification).
+    ``FRM ( sender ) ( recipients ) ( content )``.  ``sender`` arrives from
+    python-diplomacy as a full power name ("FRANCE"); an empty sender is taken
+    from the envelope.  Power tokens inside the envelope and body are 3-letter
+    DAIDE codes.
+
+    C flow:
+      * now = __time64 (the answer's time base); CancelPriorPress.
+      * The early deadline test (content PRP *and* YES) is unreachable.
+      * ``content[0] == PRP`` and g_HistoryCounter > 0:
+          DELAY_REVIEW(content) — registers novel XDO proposals.
+          not delayed → EvaluatePress, RECEIVE_PROPOSAL, RESPOND(verdict, now);
+          delayed     → RESPOND(REJ, now) unless the season is SPR or FAL.
+      * otherwise, by ``content[0]``:
+          YES/REJ/BWX → reply = content's first sub-list;
+              FUN_0042c970(reply, sender, token).  Nothing matched and the
+              token is YES → EvaluatePress(reply); if YES, RECEIVE_PROPOSAL
+              (reply, sender, recipients) and FUN_0042c970(reply, own, YES).
+          HUH → HUH(content's first sub-list, sender).
+          TRY → TRY(content's first sub-list, sender).
+          anything else, including a PRP while g_HistoryCounter <= 0 →
+              FUN_0040d4d0: ``HUH ( ERR content )`` + ``TRY ( ... )``.
+      * EvaluateOrderProposalsAndSendGOF, on every path.
     """
-    power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
-    # 3-letter DAIDE codes, same order as power_names (index-aligned).
-    # Matches bot._shared._DAIDE_POWER_NAMES; duplicated here to avoid
-    # cross-package import from communications → bot.
-    daide_names = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
-
-    sender_upper = sender.upper()
-    if sender_upper not in power_names:
-        return
-
-    sender_id = power_names.index(sender_upper)
-
-    # ── Parse the FRM envelope once: FRM ( from ) ( to... ) ( content... ) ──
-    # C FRMHandler peels the envelope, then dispatches on the *first token*
-    # of the content group. Token-level dispatch (vs substring match on the
-    # whole wire string) is essential: a REJ body echoes the original PRP
-    # verbatim, so substring probes for 'YES (' / 'PRP (' / 'XDO' etc. would
-    # spuriously fire on nested occurrences and double-process the message.
-    # Fixed 2026-04-18 (AUDIT_moves_and_messages.md #4).
     groups = _extract_top_paren_groups(sub_message)
     if len(groups) >= 3:
-        to_str = groups[1]
-        content_str = groups[2]
+        from_str, to_str, content_str = groups[0], groups[1], groups[2]
     elif len(groups) >= 2:
-        to_str = groups[0]   # FRM keyword stripped; fallback
-        content_str = groups[1]
+        from_str, to_str, content_str = '', groups[0], groups[1]
     else:
-        to_str = ''
+        from_str, to_str = '', ''
         content_str = groups[0] if groups else sub_message
 
-    content_tokens = content_str.split()
-    top_tok = content_tokens[0] if content_tokens else ''
-    # First balanced paren group after top_tok is the body argument.
-    rest_items = (
-        _split_top_level_groups(content_tokens[1:])
-        if len(content_tokens) > 1 else []
-    )
-    top_body = rest_items[0] if rest_items and isinstance(rest_items[0], list) else []
+    sender_upper = (sender or '').upper()
+    if sender_upper in _POWER_NAMES:
+        sender_id = _POWER_NAMES.index(sender_upper)
+    else:
+        envelope = from_str.upper().split()
+        if not envelope or envelope[0] not in _DAIDE_NAMES:
+            return
+        sender_id = _DAIDE_NAMES.index(envelope[0])
 
-    # ── PRP: fresh press proposal → register for BuildAndSendSUB processing ──
-    # C: FUN_00431310 called only when the top-level body token is PRP.
-    # A REJ/YES echoing our own PRP must NOT re-register it as incoming.
-    if top_tok == 'PRP':
-        # Build to-power token list — body tokens are 3-letter DAIDE codes.
-        to_power_toks = [
-            daide_names.index(p) | 0x4100
-            for p in to_str.upper().split()
-            if p in daide_names
-        ]
-        from_power_tok = sender_id | 0x4100
-        # Press content is the inner tokens of the PRP group.
-        press_tokens = top_body
+    recipients = [
+        _DAIDE_NAMES.index(p)
+        for p in to_str.upper().split()
+        if p in _DAIDE_NAMES
+    ]
+    content = _wire_tokens(content_str)
+    first = str(_c_token_at(content, 0)).upper()
+    now = int(_time.time())
+    own_power = int(getattr(state, 'albert_power_idx', 0))
 
-        # C FRMHandler (PRP branch): `if (!DELAY_REVIEW(body)) { EvaluatePress(...) }`.
-        # DELAY_REVIEW returns 1 to defer review on novel low-score proposals;
-        # returns 0 to proceed with EvaluatePress + RESPOND. In SPR/FAL movement
-        # phases C just drops deferred proposals; in retreat/winter it emits
-        # REJ. We mirror the movement-phase drop (simplest parity) and skip
-        # register_received_press entirely when the gate says delay.
-        delay_result = delay_review(state, press_tokens)
-        if delay_result == 2:
-            # Phase-aware REJ: retreat/build phases emit explicit REJ rather
-            # than silently dropping.  Fixed 2026-04-20 (audit finding M3).
-            import logging as _logging
-            _logging.getLogger(__name__).debug(
-                "process_frm_message: DELAY_REVIEW=2 → sending REJ for press_tokens=%r",
-                press_tokens,
+    from ..senders import cancel_prior_press
+    cancel_prior_press(state, own_power, send_fn)
+
+    if first == 'PRP' and int(getattr(state, 'g_history_counter', 0)) > 0:
+        if not delay_review(state, content, sender_id, recipients):
+            verdict = _evaluate_press(state, content, sender_id, recipients)
+            receive_proposal(
+                state, sender_id, content,
+                participant_powers=recipients, send_fn=send_fn,
             )
-            from ..senders import send_alliance_press
-            rej_entry = {
-                'type': 'REJ',
-                'from_power_tok': sender_id | 0x4100,
-                'sublist3': list(press_tokens),
-            }
-            send_alliance_press(state, key=len(state.g_broadcast_list), entry_data=rej_entry)
-        elif delay_result == 1:
-            import logging as _logging
-            _logging.getLogger(__name__).debug(
-                "process_frm_message: DELAY_REVIEW=1 → dropping press_tokens=%r",
-                press_tokens,
-            )
-        else:
-            register_received_press(
+            respond(
                 state,
-                press_content=press_tokens,
-                from_power_tok=from_power_tok,
-                to_power_toks=to_power_toks,
+                {
+                    'sublist1': [0x4100 | sender_id],
+                    'sublist2': [0x4100 | p for p in recipients],
+                    'sublist3': content,
+                },
+                verdict,
+                elapsed_lo=now & 0xFFFFFFFF,
+                elapsed_hi=(now >> 32) & 0xFFFFFFFF,
+                send_fn=send_fn,
             )
+        elif getattr(state, 'g_season', '') not in ('SPR', 'FAL'):
+            respond(
+                state,
+                {
+                    'sublist1': [0x4100 | sender_id],
+                    'sublist2': [0x4100 | p for p in recipients],
+                    'sublist3': content,
+                },
+                _ACK_TOK_REJ,
+                elapsed_lo=now & 0xFFFFFFFF,
+                elapsed_hi=(now >> 32) & 0xFFFFFFFF,
+                send_fn=send_fn,
+            )
+    elif first in _REPLY_TOKENS:
+        reply_tok = _REPLY_TOKENS[first]
+        reply = _c_sublist(content, 1)
+        matched = ack_matcher(state, sender_id, reply_tok, reply)
+        if not matched and reply_tok == _ACK_TOK_YES:
+            verdict = _evaluate_press(state, reply, sender_id, recipients)
+            if verdict == _ACK_TOK_YES:
+                receive_proposal(
+                    state, sender_id, reply,
+                    participant_powers=recipients, send_fn=send_fn,
+                )
+                ack_matcher(state, own_power, _ACK_TOK_YES, reply)
+    elif first == 'HUH':
+        huh_err_strip_replay(state, sender_id, _c_sublist(content, 1))
+    elif first == 'TRY':
+        process_try(state, sender_id, _c_sublist(content, 1))
+    else:
+        send_huh_and_try(state, sender_id, content, send_fn)
 
-    # ── YES / REJ / BWX inbound: ack against our pending proposal (FUN_0042c970) ──
-    # C: FRMHandler body_tok ∈ {YES, REJ, BWX} → ack_matcher over DAT_00bb65c8.
-    elif top_tok in ('YES', 'REJ', 'BWX'):
-        ack_tok_map = {
-            'YES': _ACK_TOK_YES,
-            'REJ': _ACK_TOK_REJ,
-            'BWX': _ACK_TOK_BWX,
-        }
-        matched = ack_matcher(state, sender_id, ack_tok_map[top_tok],
-                              proposal_tokens=top_body if top_body else None)
-        # C RECEIVE_PROPOSAL:227 — FUN_00418db0(sender) fires only in the
-        # acceptance branch (acStack_102=='\0'), which maps to YES + matched.
-        # Cancels any pending THN(<sender>) entries from g_master_order_list.
-        if top_tok == 'YES' and matched:
-            _prepare_ally_press_entry(state, sender_id)
+    from ...bot.gof import _evaluate_order_proposals_and_send_gof
+    _evaluate_order_proposals_and_send_gof(state, send_fn)
 
-    # ── HUH inbound: peer ERR-strip replay salvage (FUN_0042cd70) ──────────
-    # C: FRMHandler body_tok == HUH → huh_err_strip_replay, which strips
-    # ERR tokens from the echoed body and replays the remainder through the
-    # ack-matcher.
-    elif top_tok == 'HUH':
-        if top_body:
-            huh_err_strip_replay(state, sender_id, top_body)
 
-    # ── TRY inbound: sender declares their stance tokens toward us (FUN_0041c0f0) ──
-    # C: replaces DAT_00bb6e10[sender*0xc] with body tokens; no reply. Consumed
-    # by HOSTILITY.c for stance-based scoring.
-    elif top_tok == 'TRY':
-        if top_body:
-            process_try(state, sender_id, top_body)
-
-def parse_message(state: InnerGameState, sender: str, message: str):
+def parse_message(state: InnerGameState, sender: str, message: str, send_fn=None):
     """
     Main communication ingest port (FUN_0045f1f0).
     Hooks into bot.py's message receiver.
@@ -169,29 +177,29 @@ def parse_message(state: InnerGameState, sender: str, message: str):
     Dispatches on the first top-level token, mirroring C
     InboundDAIDEDispatcher (Source/communications/InboundDAIDEDispatcher.c).
     Most DipNet-level tokens (HLO/MAP/MDF/NOW/ORD/SCO/CCD/OUT) are handled
-    by python-diplomacy above this call site. What remained dropped before
-    Fix #5 (AUDIT_moves_and_messages.md #5) was the game-end pair DRW/SLO
-    and the peer-handshake replies NOT/REJ/YES/HUH when they arrive at the
-    top level (rather than wrapped in an FRM envelope from another power).
+    by python-diplomacy above this call site.  What remains here is HST, the
+    FRM press envelope, the game-end pair DRW/SLO, and bare peer press, which
+    python-diplomacy delivers without an FRM envelope.
+
+    ``send_fn`` receives outbound press and readiness controls produced while
+    the message is processed.
     """
-    # Tokenize first word — DAIDE messages are whitespace-delimited after
-    # the optional leading envelope.
     stripped = message.lstrip().lstrip('(').lstrip()
     first = stripped.split(None, 1)[0] if stripped else ''
 
-    if first == 'HST' or 'HST' in message and 'FRM' not in message:
+    if first == 'HST':
         # HST is DipNet history, not a DAIDE envelope — route it up front.
         process_hst(state, message)
         return
-    if first == 'FRM' or 'FRM' in message:
-        process_frm_message(state, sender, message)
+    if first == 'FRM':
+        process_frm_message(state, sender, message, send_fn=send_fn)
         return
 
     # ── Bare top-level game-end signals ────────────────────────────────
     # C: DRW/SLO both set `*(int *)((int)this + 8) + 0x2449 = 1` before
     # invoking the per-token vtable slot. That byte is what Python calls
     # state.g_game_over; bot/client/_orders.py:125 reads it as the main-
-    # loop exit guard. Setting it here is the minimum viable port.
+    # loop exit guard.
     if first in ('DRW', 'SLO'):
         import logging as _logging
         _logging.getLogger(__name__).info(
@@ -200,44 +208,29 @@ def parse_message(state: InnerGameState, sender: str, message: str):
         state.g_game_over = True
         return
 
-    # ── Bare peer press messages (python-diplomacy strips the FRM envelope) ────
+    # ── Bare peer press (python-diplomacy strips the FRM envelope) ─────────
     # In the C binary, inter-bot press is wrapped in FRM (from)(to)(content).
     # python-diplomacy delivers only the content body as the message string;
-    # sender/recipient are in the Message metadata.  Synthesize the FRM
-    # envelope from that metadata so process_frm_message can dispatch normally.
-    #
-    # PRP: inbound proposal — register for EvaluatePress + RESPOND.
-    # YES/REJ/BWX/HUH: peer ack to one of our outbound proposals — run
-    #   through ack_matcher just as the FRM path does.
-    # NOT: bare NOT at top level is also sometimes a peer signal.
-    if first in ('PRP', 'YES', 'REJ', 'BWX', 'HUH', 'NOT'):
-        import logging as _logging
-        _log_pm = _logging.getLogger(__name__)
-        _power_names = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY",
-                        "ITALY", "RUSSIA", "TURKEY"]
-        _daide_names = ["AUS", "ENG", "FRA", "GER", "ITA", "RUS", "TUR"]
-        sender_upper = sender.upper()
-        if sender_upper not in _power_names:
-            _log_pm.debug(
-                "parse_message: bare %s from unknown sender %r — dropping",
-                first, sender,
-            )
-            return
-        sender_daide = _daide_names[_power_names.index(sender_upper)]
-        own_idx = getattr(state, 'albert_power_idx', 0)
-        own_daide = _daide_names[own_idx] if 0 <= own_idx < len(_daide_names) else 'UNO'
-        frm_msg = f"FRM ( {sender_daide} ) ( {own_daide} ) ( {message} )"
+    # sender/recipient are in the Message metadata.  A python-diplomacy
+    # message has exactly one recipient, so the synthesised envelope names
+    # Albert alone.
+    import logging as _logging
+    _log_pm = _logging.getLogger(__name__)
+    sender_upper = sender.upper()
+    if sender_upper not in _POWER_NAMES:
         _log_pm.debug(
-            "parse_message: bare %s from %s — synthesised FRM envelope",
-            first, sender_daide,
+            "parse_message: bare %s from unknown sender %r — dropping",
+            first, sender,
         )
-        process_frm_message(state, sender, frm_msg)
         return
-
-    # Unknown / unhandled top-level token. Keep it debug-level so noise
-    # doesn't drown out real warnings, but still leave a trail.
-    if first:
-        import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "parse_message: no handler for top-level token %r; dropping", first,
-        )
+    if not first:
+        return
+    sender_daide = _DAIDE_NAMES[_POWER_NAMES.index(sender_upper)]
+    own_idx = getattr(state, 'albert_power_idx', 0)
+    own_daide = _DAIDE_NAMES[own_idx] if 0 <= own_idx < len(_DAIDE_NAMES) else 'UNO'
+    frm_msg = f"FRM ( {sender_daide} ) ( {own_daide} ) ( {message} )"
+    _log_pm.debug(
+        "parse_message: bare %s from %s — synthesised FRM envelope",
+        first, sender_daide,
+    )
+    process_frm_message(state, sender, frm_msg, send_fn=send_fn)

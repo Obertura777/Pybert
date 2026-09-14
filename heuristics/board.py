@@ -410,7 +410,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
       - g_ally_pref_ranking / g_influence_rank_flag (influence ranking)
       - g_enemy_flag      (designated enemies for this turn)
       - g_leading_flag / g_other_power_lead_flag / g_near_victory_power
-      - g_request_draw_flag / g_static_map_flag
+      - g_request_draw_flag
       - g_one_sc_from_win
     """
     num_powers = 7
@@ -639,8 +639,9 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
             state.g_request_draw_flag = 1
         elif local_fc >= 60 and lead_pct > own_pct + 25.0:
             state.g_request_draw_flag = 1
-    if state.g_static_map_flag:
-        state.g_request_draw_flag = 1
+    # 0x428c7f: a static map (DAT_00baed30) only logs "We are requesting a
+    # DRAW; because the map is static" here.  It does not write DAT_00baed2a;
+    # GenerateAndSubmitOrders tests DAT_00baed30 itself for the DRW.
 
     # ── Phase 4b: near-victory enemy designation (local_fc > 0x3b = 59) ──────
     # Decompile lines 878-1090

@@ -107,6 +107,8 @@ from .inbound import (
     receive_proposal,
     _respond_walk_pos_analysis,
     respond,
+    send_huh_and_try,
+    handle_own_press_delivered,
     _ACK_TOK_YES,
     _ACK_TOK_REJ,
     _ACK_TOK_BWX,

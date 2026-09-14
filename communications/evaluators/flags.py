@@ -130,7 +130,7 @@ def compute_order_dip_flags(state: InnerGameState) -> None:
             if _exact_enemy(state, occ, num_powers):
                 flag2 = False
 
-            # Press-on block (lines 148–164).
+            # Opening-turn block (lines 148–164; DAT_00baed68).
             if press_on:
                 # Ordering power controls adjacent SC → skip remaining checks for
                 # this adj province (goto LAB_004116fa in C).

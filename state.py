@@ -7,6 +7,67 @@ logger = logging.getLogger(__name__)
 
 _POWER_NAMES_STATE = ["AUSTRIA", "ENGLAND", "FRANCE", "GERMANY", "ITALY", "RUSSIA", "TURKEY"]
 
+# DipNet coast suffix -> DAIDE coast token (NCS..NWC).
+_COAST_TOKEN_ORDER = {
+    'NC': 0x4600, 'NE': 0x4602, 'EC': 0x4604, 'SE': 0x4606,
+    'SC': 0x4608, 'SW': 0x460A, 'WC': 0x460C, 'NW': 0x460E,
+}
+
+
+def _albert_province_order(locs) -> list:
+    """Order map locations the way Albert indexes provinces.
+
+    ParseNOWUnit (0x462d05) keys a unit by ``(byte)province_token`` and every
+    province table is indexed the same way, so Albert's province index is the
+    DAIDE token's low byte (BOH=0x00 ... STP=0x4A on the standard map).  Its
+    ordered sets key a coast as (province, coast token), so each bicoastal
+    base is followed by its coasts in token order.  Locations without a
+    DAIDE province token keep their map order after the tokenised ones.
+    """
+    from .utils.tokens import DAIDE2HEX, DIPNET2DAIDE_LOC
+
+    def key(item):
+        position, name = item
+        base, _, coast = name.partition('/')
+        daide = DIPNET2DAIDE_LOC.get(base.upper(), base.upper())
+        token = DAIDE2HEX.get(daide)
+        value = int(token, 16) if token is not None else -1
+        if 0x50 <= (value >> 8) <= 0x57:
+            index = value & 0xFF
+        else:
+            index = 0x100 + position
+        return (index, 1 if coast else 0,
+                _COAST_TOKEN_ORDER.get(coast.upper(), 0xFFFF), position)
+
+    return [name for _, name in sorted(enumerate(locs), key=key)]
+
+
+def _order_result_flags(order_type: int, results) -> dict:
+    """Decode one order's adjudication result the way FUN_0045fe30 does.
+
+    The server reports SUC unless the order failed (BNC/CUT/DSR/NSO) and adds
+    RET for a dislodged unit.  FUN_0045fe30 turns those tokens into the node
+    bytes Albert reads: +0x6b ``moved`` (SUC on MTO/CTO/RTO only), +0x69
+    ``bounced`` (BNC), +0x68 ``cut`` (CUT), +0x66 ``disrupted`` (DSR),
+    +0x67/+0x65/+0x64 ``void`` (NSO on SUP/CVY/CTO) and +0x6a ``dislodged``
+    (RET).
+    """
+    names = set()
+    for result in results:
+        name = str(result).lower()
+        if ':' in name:
+            name = name.split(':', 1)[1]
+        names.add(name.strip())
+    failed = names & {'bounce', 'cut', 'disrupted', 'void', 'no convoy'}
+    return {
+        'moved': 1 if not failed and order_type in (2, 6, 7) else 0,
+        'bounced': 1 if 'bounce' in names else 0,
+        'cut': 1 if 'cut' in names else 0,
+        'disrupted': 1 if 'disrupted' in names else 0,
+        'void': 1 if names & {'void', 'no convoy'} and order_type in (3, 4, 5, 6) else 0,
+        'dislodged': 1 if 'dislodged' in names else 0,
+    }
+
 
 def _parse_retreat_order(order_str: str, power: int, prov_to_id: dict) -> dict | None:
     """Parse a DAIDE-style retreat order string into a g_retreat_list record.
@@ -65,7 +126,7 @@ def _parse_movement_order(order_str: str, power: int, prov_to_id: dict) -> dict 
         'src_coast': src_coast,
         'order_type': 1,  # HLD default
         'dst_province': -1, 'sup_src': -1, 'sup_dst': -1, 'endgame_flag': 0,
-        'flag_a': 0, 'flag_b': 0, 'flag_c': 0,
+        **_order_result_flags(1, ()),
     }
 
     if len(parts) == 2 or (len(parts) == 3 and parts[2].upper() == 'H'):
@@ -108,8 +169,6 @@ def _parse_movement_order(order_str: str, power: int, prov_to_id: dict) -> dict 
                         rec['order_type'] = 3  # SUP-HLD
                         # dst_province = sup_src: matrix[power, supporter, sup_src] += 10 on success
                         rec['dst_province'] = rec['sup_src']
-            # flag_a marks this as a support order; flag_b/c filled later from result_history
-            rec['flag_a'] = 1
             return rec
         if action == 'C':
             # CVY: "F NTH C A LON - HOL"
@@ -175,7 +234,6 @@ class InnerGameState:
     g_one_shot_press: "Any"
     g_pending_orders_A: "Any"
     g_pending_orders_B: "Any"
-    g_trust_counter: "Any"
     g_turn_start_time: "Any"
     g_xdo_candidate_list: "Any"
 
@@ -487,8 +545,15 @@ class InnerGameState:
         # this+0x2480 — waive count for WIN phase; cleared by ResetPerTrialState.
         self.g_waive_count: int = 0
 
-        # DAT_00baed68 — press-mode flag; 1 = ComputePress runs this turn, 0 = off
+        # DAT_00baed68 — opening-turn pulse, historically named the press flag.
+        # Its only writers are GenerateAndSubmitOrders.c:125-131 (0x0045953f-
+        # 0x0045955e): clear it, then set it once from DAT_004c6bdc.  It is 1
+        # during the first GenerateAndSubmitOrders call and 0 afterwards, in
+        # press and no-press games alike.
         self.g_press_flag: int = 0
+        # DAT_004c6bdc — initialised to 1 in .data; cleared by that first call
+        # and never set again.
+        self.g_opening_turn_pending: int = 1
 
         # DAT_004d2e10/14 — g_ally_designation_a: lo/hi int32 pair per province.
         # Lo = power booked as ally-A; hi = guard word (-1 = unset, >= 0 = valid).
@@ -623,6 +688,10 @@ class InnerGameState:
         # at least {'type': str}.  Cleared by _destroy_candidate_tree (FUN_00410cf0)
         # at the start of each ScoreOrderCandidates pass.
         self.g_general_orders: dict = {}
+        # DAT_00bb65f8[pow*0xc] — XDOs agreed this turn, as parsed orders:
+        # XDO() inserts them and ProcessTurn dispatches them first for Albert
+        # and trusted powers.  GenerateAndSubmitOrders clears them each turn.
+        self.g_alliance_orders: dict = {}
 
         # DAT_00bb65b4/b8 — cached std::set iterator (g_last_mto_insert).
         # Stores (order type, order destination) from the unit occupying the
@@ -708,12 +777,25 @@ class InnerGameState:
         self.g_leading_flag: int = 0
         # DAT_0062480c — index of power close to solo victory
         self.g_near_victory_power: int = -1
-        # DAT_00baed29 — draw flag; setter not found in decompiled sources (no-op default)
+        # DAT_00baed29 — the dialog's draw checkbox: WM_COMMAND/BN_CLICKED on
+        # control 1001 (message map 0x004af760) runs code Ghidra left
+        # undisassembled (0x0040bf00 -> 0x0040e8c0), which stores the check
+        # state here and sends DRW or NOT ( DRW ).  Headless play leaves it 0.
         self.g_draw_flag_baed29: int = 0
         # DAT_00baed2a — 1 = send DRW proposal this turn
         self.g_request_draw_flag: int = 0
-        # DAT_00baed30 — 1 = map static for many turns → request draw
+        # DAT_00baed30 — 1 = map static for many turns → request draw.
+        # Written only by Albert's SCO hook FUN_0040e700 (see
+        # _apply_sco_hook); read by GenerateAndSubmitOrders' DRW decision.
         self.g_static_map_flag: int = 0
+        # DAT_00baed2c — consecutive identical-SCO counter (FUN_0040e700).
+        self.g_sco_repeat_count: int = 0
+        # DAT_00bbf4a8 — previous SCO message; None is the empty token list,
+        # which FUN_00465d90 never reports equal.
+        self.g_prev_sco_message = None
+        # Phase whose SCO has already been applied; the server sends one SCO
+        # per processed phase, while the client may re-synchronise a phase.
+        self._sco_hook_phase = None
         # DAT_00baed6b — 1 = own power exactly 1 SC from winning
         self.g_one_sc_from_win: int = 0
         # DAT_00633f18[pow*5+rank] — top-N preferred alliance targets (1-indexed)
@@ -822,8 +904,10 @@ class InnerGameState:
         # Last ADM (admin) message from server.
         self.g_adm_message: str = ''
 
-        # DAT_00baed2b — result of PrepareDrawVoteSet / ComputeDrawVote.
-        # 1 = propose DRW this turn; 0 = do not.
+        # DAT_00baed5d — 1 after GenerateAndSubmitOrders sends DRW, 0 after it
+        # sends NOT ( DRW ) (C:483-505), in movement phases only; _eval_drw
+        # reads it.  The send condition ORs DAT_00baed29/2a/30 with DAT_00baed2b,
+        # PrepareDrawVoteSet's ComputeDrawVote result, which nothing else reads.
         self.g_draw_sent: int = 0
 
         # Current board SC counts and targets, refreshed from game ownership.
@@ -870,8 +954,10 @@ class InnerGameState:
         # container, so ProposeDMZ's send-count tracking never interacted with
         # the DMZ acceptance path.)
         self.g_active_dmz_list: list = []
-        # DAT_004c6bd4 / 4 − 4 — randomized DMZ aggressiveness ∈ [−4, 20]
-        self.g_dmz_aggressiveness: int = 0
+        # DAT_004c6bd4 — press threshold, .data default 50; the HLO handler
+        # redraws it as (rand/23)%50 + (rand/23)%50.  RESPOND's deceit test
+        # adds it raw; ProposeDMZ uses it as DAT_004c6bd4/4 − 4.
+        self.g_press_thresh_random: int = 50
         # Press proposal candidate slate built by ApplyInfluenceScores / ProposeDMZ
         # Each entry: {'flag1': bool, 'flag2': bool, 'flag3': bool, 'province': int,
         #              'ally_power': int, 'score': int, 'done': bool}
@@ -1043,8 +1129,19 @@ class InnerGameState:
         # Populated by process_hst from g_allowed_press_token_list thresholds.
         # Key = raw DAIDE ushort token int (PCE=0x4A10, ALY=0x4A00, etc.).
         self.g_press_history: dict = {}  # {power_int: set[int]}
+        # DAT_00bb6f0c — ordered press-token names the HLO handler builds from
+        # LVL; FUN_0040d4d0 sends them back as ``TRY ( ... )``.
+        self.g_allowed_press_token_list: list = []
 
         # ── DispatchScheduledPress globals ───────────────────────────────────
+        # Nesting depth of dispatch_scheduled_press, and the SND messages
+        # delivered during it whose YES ( SND ... ) confirmation
+        # (FUN_0045a090) is replayed when the outermost dispatch returns.
+        self.g_press_dispatch_depth: int = 0
+        self.g_press_delivery_queue: list = []
+        # send_GOF re-run installed by the client; EvaluateOrderProposalsAndSendGOF
+        # calls it after CAL_MOVE applies an agreement.
+        self.g_send_gof_callback = None
         # DAT_00bb65c0 — master scheduled press list
         # Each entry: {'scheduled_time': float, 'press_type': str,
         #              'data': list, 'sent': bool}
@@ -1058,12 +1155,17 @@ class InnerGameState:
         self.g_processing_active: int = 0
         # DAT_00ba2860:ba2864 — elapsed time recorded by FUN_00443ed0 at GOF send
         self.g_elapsed_press_time: float = 0.0
+        # DAT_00baed34 — retreats/removals/builds committed this send_GOF pass
+        # (send_GOF's pre-SUB pause draws one rand() when it is positive).
+        self.g_order_commit_count: int = 0
         # DAT_00baed32 — 0 = randomised delay; non-zero = send immediately at elapsed
         self.g_press_instant: int = 0
         # DAT_00624ef4 — move time limit in seconds; 0 = no deadline
         self.g_move_time_limit_sec: int = 0
-        # SetTurnDeadline target — absolute epoch-seconds. process_hst seeds it
-        # for the current phase; GenerateAndSubmitOrders rearms it every turn.
+        # Absolute epoch-seconds deadline standing in for the network thread's
+        # expiry flag that CheckTimeLimit reads; GenerateAndSubmitOrders arms
+        # it every turn from g_move_time_limit_sec.  (The function Ghidra names
+        # SetTurnDeadline is the CRT srand — see process_hst.)
         self.g_turn_deadline: float = 0.0
 
         # ── CancelPriorPress globals ─────────────────────────────────────────
@@ -1261,7 +1363,10 @@ class InnerGameState:
         power_to_id = {p: i for i, p in enumerate(power_names)}
         
         if not self.prov_to_id:
-            for prov in game.map.locs:
+            # Province ids follow Albert's DAIDE-token province index, not the
+            # diplomacy library's alphabetical `locs` order: ascending-id
+            # iteration below stands in for C's ordered-set walks.
+            for prov in _albert_province_order(game.map.locs):
                 if prov not in self.prov_to_id:
                     self.prov_to_id[prov] = len(self.prov_to_id)
             # Add uppercase aliases for lowercase parent provinces
@@ -1446,6 +1551,9 @@ class InnerGameState:
                     self.home_centers[p_id] = prov_ids
 
         # Reset turn specific structures
+        # UpdateAllyOrderScore memoises adjudications of staged order sets for
+        # the current unit table only.
+        self.__dict__.pop('_adjudication_cache', None)
         self.g_sc_ownership.fill(0)
         self.g_board_sc_ownership.fill(0)
         self.g_sc_owner.fill(-1)
@@ -1469,15 +1577,35 @@ class InnerGameState:
         # drains the new phase's queued messages, so current-turn press is
         # registered after this clear while prior-phase nodes are discarded.
         self.g_broadcast_list.clear()
+        # GenerateAndSubmitOrders.c:67-118 also empties the scheduled-press
+        # multimap (DAT_00bb65bc), the alliance-event log (DAT_00bbf638, whose
+        # head g_PressQueue it resets), the proposal base time DAT_00ba2858,
+        # the BuildAndSendSUB-in-progress flag DAT_00baed46, the sent-XDO set
+        # DAT_00bb6df4 and the XDO destination set DAT_00bb713c.
+        self.g_master_order_list.clear()
+        self.g_alliance_msg_tree.clear()
+        self.g_base_wait_time = 0.0
+        self.g_baed46 = 0
+        self.g_xdo_proposal_list = set()
+        self.g_xdo_global_dest_map = {}
+        # :159-236, per power: the RESPOND score and deceit flag, the PCE
+        # proposal flag DAT_004d53d8, and the trees XDO()/NOT_XDO() fill —
+        # DAT_00bb65f8 (agreed XDOs, ProcessTurn's first pass), DAT_00bb66f8,
+        # DAT_00bb6bf8, DAT_00bb69f8 and DAT_00bb6af8.
+        self.g_turn_score.fill(0)
+        self.g_power_active_turn.fill(0)
+        self.g_turn_order_hist_lo.fill(0)
+        self.g_turn_order_hist_hi.fill(0)
+        self.g_alliance_orders = {}
+        self.g_xdo_proposal_by_sender = {}
+        self.g_not_xdo_list_by_sender = {}
+        self.g_xdo_dest_by_sender = {}
+        self.g_xdo_order_move_by_power = {}
+        self.g_xdo_order_hold_by_power = {}
 
         # ── Do not clear here: these lifetimes end elsewhere or persist. ──
         # Wiping them during synchronization would break commitment semantics
         # or erase state before its source-faithful consumer runs.
-        #
-        # g_alliance_msg_tree   (DAT_00bbf638) — set of alliance-event keys
-        #     used by BuildAllianceMsg/CheckAndInsertAllianceTreeEntry as a
-        #     dedup so the same alliance event isn't re-broadcast. Inserts
-        #     happen in CAL_BOARD/CAL_VALUE/FRIENDLY/GOF; no clear anywhere.
         #
         # g_accepted_proposals (DAT_00bb65d4) — tokens we've agreed to. Sole
         #     C write: CAL_VALUE.c:174 (FUN_00419300 = set_insert). Never
@@ -1489,9 +1617,9 @@ class InnerGameState:
         #     send_GOF clears it immediately before its ten ProcessTurn rounds,
         #     then BuildSupportProposals repopulates it within those rounds.
         #
-        # g_broadcast_list_watermark IS per-call (register_received_press
-        # snapshots and rewinds it) — safe to clamp here for newcomers.
-        self.g_broadcast_list_watermark = 0
+        # g_broadcast_list_watermark (DAT_00baed60) is not reset: only
+        # FUN_00431310 and BuildAndSendSUB's proposal block write it, so it
+        # keeps the key of the latest registration across turns.
 
         # Parse Ownership
         for power_name, centers in game.get_centers().items():
@@ -1544,6 +1672,16 @@ class InnerGameState:
             if power_name in power_to_id:
                 self.sc_count[power_to_id[power_name]] = len(centers)
 
+        if hasattr(game, 'get_current_phase'):
+            _sco_phase = game.get_current_phase()
+        elif hasattr(game, 'get_phase'):
+            _sco_phase = game.get_phase()
+        else:
+            _sco_phase = None
+        if _sco_phase is None or _sco_phase != self._sco_hook_phase:
+            self._sco_hook_phase = _sco_phase
+            self._apply_sco_hook(game.get_centers())
+
         # Seed NearEndGameFactor with the same formula cal_board uses
         # (max over all powers of (sc[k] - win_threshold + 9), floor 1.0).
         # cal_board() recomputes this properly when it runs; this seed
@@ -1579,94 +1717,100 @@ class InnerGameState:
             else:
                 self.g_season = 'SPR'
 
-        # Populate g_retreat_list and g_order_hist_list from game order history.
-        # g_retreat_list  = most-recent completed retreat phase (R suffix) orders.
-        # g_order_hist_list = most-recent completed movement phase (M suffix) orders.
-        # Both are cleared and repopulated each synchronize call (Python timing
-        # differs from C++ ORD-handler timing; we read history instead).
+        # Populate g_order_hist_list / g_retreat_list from the game history.
+        # FUN_00463000 (MapAndUnits ORD handler) stores SPR/FAL results at
+        # inner+0x248c and SUM/AUT results at +0x2498, and clears both lists
+        # when an ORD for a new movement season arrives.  At order time the
+        # movement list therefore holds the last movement phase and the
+        # retreat list only a retreat phase played after it.
         order_history = getattr(game, 'order_history', None)
         if order_history is not None and self.prov_to_id:
             self.g_retreat_list = []
             self.g_order_hist_list = []
-            last_retreat_key  = None
-            last_movement_key = None
-            for ph_key in reversed(list(order_history.keys())):
-                ph_str = str(ph_key)
-                if last_retreat_key is None and ph_str.endswith('R'):
+            phase_keys = list(order_history.keys())
+            last_movement_index = -1
+            for index, ph_key in enumerate(phase_keys):
+                if str(ph_key).endswith('M'):
+                    last_movement_index = index
+            last_movement_key = (phase_keys[last_movement_index]
+                                 if last_movement_index >= 0 else None)
+            last_retreat_key = None
+            for ph_key in phase_keys[last_movement_index + 1:]:
+                if str(ph_key).endswith('R'):
                     last_retreat_key = ph_key
-                if last_movement_key is None and ph_str.endswith('M'):
-                    last_movement_key = ph_key
-                if last_retreat_key is not None and last_movement_key is not None:
-                    break
+
+            raw_rh = getattr(game, 'result_history', None)
+
+            def _phase_results(phase_key) -> dict:
+                """(unit type, base province id) -> result list for a phase."""
+                try:
+                    phase_results = dict(raw_rh.get(phase_key, {})) if raw_rh is not None else {}
+                except Exception:
+                    phase_results = {}
+                lookup: dict = {}
+                for unit_str, results in phase_results.items():
+                    parts = str(unit_str).strip().split()
+                    if len(parts) < 2:
+                        continue
+                    u_type = 0 if parts[0].upper().lstrip('*') == 'A' else 1
+                    # Records store the base province id, so match a coasted
+                    # result such as ``F STP/SC`` on its base province.
+                    prov_str = parts[1]
+                    prov_id = self.prov_to_id.get(
+                        prov_str.split('/')[0],
+                        self.prov_to_id.get(prov_str, -1),
+                    )
+                    if prov_id >= 0:
+                        lookup[(u_type, prov_id)] = list(results)
+                return lookup
+
+            def _load(phase_key, parser, target) -> None:
+                phase_orders = order_history[phase_key]
+                if not isinstance(phase_orders, dict):
+                    return
+                results = _phase_results(phase_key)
+                for pwr_name, orders_list in phase_orders.items():
+                    p_id = power_to_id.get(pwr_name, -1)
+                    if p_id < 0 or not orders_list:
+                        continue
+                    for ord_str in orders_list:
+                        rec = parser(ord_str, p_id, self.prov_to_id)
+                        if rec is None:
+                            continue
+                        rec.update(_order_result_flags(
+                            int(rec.get('order_type', 0)),
+                            results.get((int(rec.get('unit_type', 0)),
+                                         int(rec.get('src_province', -1))), ()),
+                        ))
+                        target.append(rec)
 
             if last_retreat_key is not None:
-                retreat_phase_orders = order_history[last_retreat_key]
-                if isinstance(retreat_phase_orders, dict):
-                    for pwr_name, orders_list in retreat_phase_orders.items():
-                        p_id = power_to_id.get(pwr_name, -1)
-                        if p_id < 0 or not orders_list:
-                            continue
-                        for ord_str in orders_list:
-                            rec = _parse_retreat_order(ord_str, p_id, self.prov_to_id)
-                            if rec is not None:
-                                self.g_retreat_list.append(rec)
-
+                _load(last_retreat_key, _parse_retreat_order, self.g_retreat_list)
             if last_movement_key is not None:
-                movement_phase_orders = order_history[last_movement_key]
-                if isinstance(movement_phase_orders, dict):
-                    for pwr_name, orders_list in movement_phase_orders.items():
-                        p_id = power_to_id.get(pwr_name, -1)
-                        if p_id < 0 or not orders_list:
-                            continue
-                        for ord_str in orders_list:
-                            rec = _parse_movement_order(ord_str, p_id, self.prov_to_id)
-                            if rec is not None:
-                                self.g_order_hist_list.append(rec)
+                _load(last_movement_key, _parse_movement_order, self.g_order_hist_list)
 
-                # Cross-reference result_history to set flag_b / flag_c on each record.
-                # result_history[phase] is keyed by unit string ("A PAR", "F NTH", ...).
-                # BOUNCE or CUT → flag_b=1; DISLODGED → flag_c=1.
-                result_phase = {}
-                raw_rh = getattr(game, 'result_history', None)
-                if raw_rh is not None:
-                    try:
-                        result_phase = dict(raw_rh.get(last_movement_key, {}))
-                    except Exception:
-                        result_phase = {}
-                if result_phase:
-                    # Build lookup: (unit_type_int, province_id) → (flag_b, flag_c)
-                    _result_lookup: dict = {}
-                    for unit_str, results in result_phase.items():
-                        parts = str(unit_str).strip().split()
-                        if len(parts) < 2:
-                            continue
-                        u_type = 0 if parts[0].upper() == 'A' else 1
-                        # Movement/retreat records store the base province ID.
-                        # Prefer that same key for a coasted result such as
-                        # ``F STP/SC``; choosing the coast-variant ID first
-                        # prevents the result flags from matching the record.
-                        prov_str = parts[1]
-                        prov_id = self.prov_to_id.get(
-                            prov_str.split('/')[0],
-                            self.prov_to_id.get(prov_str, -1),
-                        )
-                        if prov_id < 0:
-                            continue
-                        flag_b = flag_c = 0
-                        for r in results:
-                            rname = str(r).lower()
-                            if ':' in rname:
-                                rname = rname.split(':', 1)[1]
-                            if rname in ('bounce', 'cut'):
-                                flag_b = 1
-                            elif rname == 'dislodged':
-                                flag_c = 1
-                        _result_lookup[(u_type, prov_id)] = (flag_b, flag_c)
-                    for rec in self.g_order_hist_list:
-                        key = (int(rec.get('unit_type', 0)), int(rec.get('src_province', -1)))
-                        fb, fc = _result_lookup.get(key, (0, 0))
-                        rec['flag_b'] = fb
-                        rec['flag_c'] = fc
+    def _apply_sco_hook(self, centers_by_power) -> None:
+        """Albert's SCO hook FUN_0040e700 (vtable +0xe4), static-map part.
+
+        0x40e709-0x40e744: copy the SCO into DAT_00bbf498 and compare it with
+        the previous SCO (FUN_00465d90).  Equal messages add one to
+        DAT_00baed2c and raise DAT_00baed30 only while the count is > 2; any
+        difference (including the first SCO, compared against the empty
+        list) resets both.  The per-power counts the hook also rebuilds are
+        ``sc_count`` (the quadratic 0x4ec0/0x4ec8/0x4ed0 transform is the
+        identity with the constructor's 0/1/0 coefficients).
+        """
+        message = tuple(sorted(
+            (str(power), tuple(sorted(str(c) for c in centers)))
+            for power, centers in centers_by_power.items()
+        ))
+        if self.g_prev_sco_message is not None and message == self.g_prev_sco_message:
+            self.g_sco_repeat_count += 1
+            self.g_static_map_flag = 1 if self.g_sco_repeat_count > 2 else 0
+        else:
+            self.g_sco_repeat_count = 0
+            self.g_static_map_flag = 0
+        self.g_prev_sco_message = message
 
     def get_unit_type(self, prov_id: int):
         return self.unit_info.get(prov_id, {}).get('type', None)

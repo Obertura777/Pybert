@@ -89,7 +89,7 @@ def test_retreat_random_source_priority_prevents_shared_destination():
     assert len(set(selected.values())) == 2
 
 
-def test_retreat_avoids_non_enemy_dmz_promise_and_trusted_ally_claim():
+def test_retreat_demotes_non_enemy_dmz_promise_and_skips_trusted_claim():
     state = _retreat_state()
     state.dislodged_unit_info[1] = {
         "power": 0,
@@ -101,11 +101,12 @@ def test_retreat_avoids_non_enemy_dmz_promise_and_trusted_ally_claim():
     state.g_ally_promise_list = {1: [{"dest_prov": 3}]}
 
     # An own-controlled SC with A-designation unset enables the source's
-    # trusted-designation exclusion. DST2 is claimed by trusted power 2.
+    # trusted-designation exclusion. DST2 is claimed by trusted power 2 in
+    # the DAT_004d2610 designation pair.
     state.sc_provinces = frozenset({9})
     state.g_sc_owner[9] = 0
-    state.g_ally_designation_a[4] = 2
-    state.g_ally_designation_a_hi[4] = 0
+    state.g_ally_designation_b[4] = 2
+    state.g_ally_designation_b_hi[4] = 0
     state.g_ally_trust_score[0, 2] = 1
     state.g_ally_trust_score_hi[0, 2] = 0
 
@@ -114,7 +115,66 @@ def test_retreat_avoids_non_enemy_dmz_promise_and_trusted_ally_claim():
         state, SimpleNamespace(powers={}), "AUSTRIA", 0
     )
 
+    # DST1 falls to score 0 behind DST3; DST2 is skipped.
     assert orders[0]["dest_province"] == 5
+
+
+def test_retreat_takes_promised_destination_when_it_is_the_only_candidate():
+    """0x441c30: a promised destination is keyed with score 0, not removed."""
+    state = _retreat_state()
+    state.dislodged_unit_info[1] = {
+        "power": 0, "type": "A", "coast": "", "retreats": ["DST1"],
+    }
+    state.final_score_set[0, 3] = 300
+    state.g_ally_promise_list = {1: [{"dest_prov": 3}]}
+
+    _rng.seed(1)
+    orders = _populate_retreat_orders(
+        state, SimpleNamespace(powers={}), "AUSTRIA", 0
+    )
+
+    assert orders[0]["order_type"] == 7
+    assert orders[0]["dest_province"] == 3
+
+
+def test_retreat_promise_zero_outranks_negative_scores():
+    state = _retreat_state()
+    state.dislodged_unit_info[1] = {
+        "power": 0, "type": "A", "coast": "", "retreats": ["DST1", "DST2"],
+    }
+    state.final_score_set[0, 3] = -50
+    state.final_score_set[0, 4] = -10
+    state.g_ally_promise_list = {1: [{"dest_prov": 3}]}
+
+    _rng.seed(1)
+    orders = _populate_retreat_orders(
+        state, SimpleNamespace(powers={}), "AUSTRIA", 0
+    )
+
+    assert orders[0]["dest_province"] == 3
+
+
+def test_retreat_trusted_claim_ignores_designation_a():
+    """FUN_0040dda0 gates on DAT_004d2e10, the claim test on DAT_004d2610."""
+    state = _retreat_state()
+    state.dislodged_unit_info[1] = {
+        "power": 0, "type": "A", "coast": "", "retreats": ["DST1", "DST2"],
+    }
+    state.final_score_set[0, 3] = 300
+    state.final_score_set[0, 4] = 200
+    state.sc_provinces = frozenset({9})
+    state.g_sc_owner[9] = 0
+    state.g_ally_designation_a[3] = 2
+    state.g_ally_designation_a_hi[3] = 0
+    state.g_ally_trust_score[0, 2] = 1
+    state.g_ally_trust_score_hi[0, 2] = 0
+
+    _rng.seed(1)
+    orders = _populate_retreat_orders(
+        state, SimpleNamespace(powers={}), "AUSTRIA", 0
+    )
+
+    assert orders[0]["dest_province"] == 3
 
 
 def test_send_gof_scores_sum_and_aut_but_never_runs_process_turn():

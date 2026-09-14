@@ -231,10 +231,37 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
 
     from .scoring import score_order_candidates_own_power, score_provinces
 
+    from .. import rng as _rng
+
     state.g_selected_build_candidates = []
     selected: list[tuple[int, str, str]] = []
     selected_provinces: set[int] = set()
     for _ in range(delta):
+        # FUN_0044bd40 tests its candidate count (local_bc) before any work:
+        # with no build site left the remaining builds become one waive.
+        remaining = [
+            candidate for candidate in state.g_adjustment_build_candidates
+            if int(candidate['province']) not in selected_provinces
+        ]
+        if not remaining:
+            break
+
+        # It then counts Albert's armies and fleets — units (inner+0x24b4)
+        # plus the builds already chosen (inner+0x2474) — before rescoring;
+        # the ratio is armies*100/fleets, or 100 without fleets.
+        armies = sum(
+            1 for info in state.unit_info.values()
+            if int(info.get('power', -1)) == own_power
+            and info.get('type', 'A') in ('A', 'AMY')
+        ) + sum(1 for _, unit_type, _ in selected if unit_type == 'AMY')
+        fleets = sum(
+            1 for info in state.unit_info.values()
+            if int(info.get('power', -1)) == own_power
+            and info.get('type', 'A') not in ('A', 'AMY')
+        ) + sum(1 for _, unit_type, _ in selected if unit_type != 'AMY')
+        total_units = armies + fleets
+        army_ratio = 100.0 if fleets < 1 else float((armies * 100) // fleets)
+
         # FUN_0044bd40 calls these two scorers inside the build-count loop,
         # after accounting for the orders already inserted at inner+0x2474.
         score_provinces(
@@ -251,10 +278,8 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
         )
 
         ranked: list[tuple[float, int, int, str, str]] = []
-        for candidate in state.g_adjustment_build_candidates:
+        for candidate in remaining:
             prov = int(candidate['province'])
-            if prov in selected_provinces:
-                continue
             unit_type = str(candidate['unit_type'])
             coast = str(candidate.get('coast', ''))
             key = (prov, unit_type, coast)
@@ -267,11 +292,23 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
             token_tie = 0 if unit_type == 'AMY' else 1
             ranked.append((-score, prov, token_tie, unit_type, coast))
 
-        if not ranked:
-            break
         ranked.sort()
         _, prov, _, unit_type, coast = ranked[0]
+        # 0x0044c618-0x0044c726: a fleet-heavy power (armies*100/fleets
+        # < 35.0) at least 43% of the way to the win threshold builds an army
+        # instead of a fleet on a site with a zero DAT_005460e8 entry, on a
+        # (rand()/23)%100 < 50 draw taken last.
+        win_threshold = int(getattr(state, 'win_threshold', 18)) or 1
+        if (int(state.g_threat_level[own_power, prov]) == 0
+                and unit_type != 'AMY'
+                and (total_units * 100) // win_threshold > 42
+                and army_ratio < 35.0
+                and _rng.randrange(100) < 50):
+            unit_type = 'AMY'
+            coast = ''
         selected.append((prov, unit_type, coast))
+        # 0x0044c7fa counts each build in DAT_00baed34.
+        state.g_order_commit_count = int(getattr(state, 'g_order_commit_count', 0)) + 1
         selected_provinces.add(prov)
         state.g_selected_build_candidates.append({
             'province': prov,
@@ -288,6 +325,9 @@ def compute_win_builds(state: InnerGameState, delta: int) -> None:
         state.g_build_order_list_size += 1
 
     state.g_waive_count = max(0, delta - len(selected))
+    if state.g_waive_count > 0:
+        # 0x0044c82c: the waive branch adds one whatever the shortfall.
+        state.g_order_commit_count = int(getattr(state, 'g_order_commit_count', 0)) + 1
 
 
 def compute_win_removes(state: InnerGameState, delta: int) -> None:
@@ -325,6 +365,10 @@ def compute_win_removes(state: InnerGameState, delta: int) -> None:
     candidates.sort(key=lambda candidate: (candidate[0], -candidate[1]))
     selected = candidates[:delta]
 
+    # FUN_00442040 increments DAT_00baed34 once per removal (0x004421b4).
+    state.g_order_commit_count = (
+        int(getattr(state, 'g_order_commit_count', 0)) + len(selected)
+    )
     for _, prov in selected:
         raw_type = state.unit_info[prov].get('type', 'A')
         unit_type = 'FLT' if raw_type == 'F' else 'AMY'

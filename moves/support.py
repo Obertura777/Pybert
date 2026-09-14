@@ -352,7 +352,7 @@ def build_support_proposals(state: 'InnerGameState', power_idx: int) -> None:
     (dest) and counts threatening powers via g_coverage_flag / g_proximity_score.
 
       0 threats  — no action.
-      1 threat + completed convoy chain + press off
+      1 threat + completed convoy chain + not the opening turn
                  — alliance handshake: set g_xdo_press_sent for units adjacent to
                    dest whose power != power_idx; no XDO content emitted.
       2+ threats — outer loop over each threatening power (local_1ec).

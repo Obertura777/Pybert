@@ -577,10 +577,18 @@ def test_update_ally_score_writes_source_key_and_primary_pressure():
     assert state.g_mc_fleet_pressure[0, adjacent] == 0
 
 
+def _run_update(state, orders):
+    state.g_candidate_record_list = [_candidate(orders)]
+    state.g_current_best_order = _selected_slots(orders)
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
+    ):
+        _update_ally_order_score(state, 0)
+
+
 def test_foreign_or_empty_sc_routes_key_adjacency_to_fleet_pressure():
     state = InnerGameState()
     source, target_sc, adjacent = 10, 20, 21
-    orders = [(source, 3, target_sc, 0, 0)]
     state.unit_info = {
         source: {'power': 0, 'type': 'A', 'coast': ''},
     }
@@ -588,14 +596,9 @@ def test_foreign_or_empty_sc_routes_key_adjacency_to_fleet_pressure():
         source: [target_sc], target_sc: [source, adjacent], adjacent: [target_sc],
     }
     state.sc_provinces = {target_sc}
-    state.sc_count[0] = 1
-    state.g_candidate_record_list = [_candidate(orders)]
-    state.g_current_best_order = _selected_slots(orders)
 
-    with patch(
-        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
-    ):
-        _update_ally_order_score(state, 0)
+    # A move that adjudicates as successful (+0x6b) keys its destination.
+    _run_update(state, [(source, 2, target_sc, 0, 0)])
 
     assert state.key_weight(0, target_sc, 'A') == 4
     assert state.g_mc_province_pressure[0, target_sc] == 4
@@ -606,7 +609,6 @@ def test_foreign_or_empty_sc_routes_key_adjacency_to_fleet_pressure():
 def test_owned_sc_routes_key_adjacency_to_primary_pressure():
     state = InnerGameState()
     source, target_sc, adjacent = 10, 20, 21
-    orders = [(source, 3, target_sc, 0, 0)]
     state.unit_info = {
         source: {'power': 0, 'type': 'A', 'coast': ''},
     }
@@ -615,14 +617,8 @@ def test_owned_sc_routes_key_adjacency_to_primary_pressure():
     }
     state.sc_provinces = {target_sc}
     state.g_sc_owner[target_sc] = 0
-    state.sc_count[0] = 1
-    state.g_candidate_record_list = [_candidate(orders)]
-    state.g_current_best_order = _selected_slots(orders)
 
-    with patch(
-        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
-    ):
-        _update_ally_order_score(state, 0)
+    _run_update(state, [(source, 2, target_sc, 0, 0)])
 
     assert state.key_weight(0, target_sc, 'A') == 4
     assert state.g_mc_province_pressure[0, target_sc] == 4
@@ -630,26 +626,143 @@ def test_owned_sc_routes_key_adjacency_to_primary_pressure():
     assert state.g_mc_fleet_pressure[0, adjacent] == 0
 
 
-def test_support_move_uses_destination_key_not_secondary_or_zero():
+def test_supporting_unit_keys_its_own_province_not_the_supported_target():
+    """A support does not move, so UpdateAllyOrderScore.c:724 keys +0x10."""
     state = InnerGameState()
     supporter, mover, destination = 10, 11, 20
-    orders = [(supporter, 4, destination, 0, mover)]
+    orders = [(supporter, 4, destination, 0, mover), (mover, 2, destination, 0, 0)]
     state.unit_info = {
         supporter: {'power': 0, 'type': 'A', 'coast': ''},
+        mover: {'power': 0, 'type': 'A', 'coast': ''},
     }
-    state.adj_matrix = {supporter: [], destination: []}
-    state.sc_count[0] = 1
-    state.g_candidate_record_list = [_candidate(orders)]
-    state.g_current_best_order = _selected_slots(orders)
+    state.adj_matrix = {supporter: [destination], mover: [destination], destination: []}
 
+    _run_update(state, orders)
+
+    assert state.key_weight(0, supporter, 'A') == 4
+    assert state.key_weight(0, destination, 'A') == 4   # the mover's arrival
+    assert state.key_weight(0, mover, 'A') == 0
+    assert state.key_weight(0, 0, 'A') == 0
+
+
+def test_bounced_move_keys_its_source_province():
+    state = InnerGameState()
+    first, second, contested = 10, 12, 20
+    state.unit_info = {
+        first: {'power': 0, 'type': 'A', 'coast': ''},
+        second: {'power': 1, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix = {first: [contested], second: [contested], contested: [first, second]}
+    state.g_unit_count[1] = 1
+    state.g_candidate_record_list = [_candidate([(first, 2, contested, 0, 0)])]
+    state.g_current_best_order = {
+        power: ([[(first, 2, contested, 0, 0)]] * 30 if power == 0
+                else [[(second, 2, contested, 0, 0)]] * 30 if power == 1
+                else [[]] * 30)
+        for power in range(7)
+    }
     with patch(
         f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
     ):
         _update_ally_order_score(state, 0)
 
-    assert state.key_weight(0, destination, 'A') == 4
-    assert state.key_weight(0, mover, 'A') == 0
-    assert state.key_weight(0, 0, 'A') == 0
+    assert state.key_weight(0, first, 'A') == 4
+    assert state.key_weight(1, second, 'A') == 4
+    assert state.key_weight(0, contested, 'A') == 0
+
+
+def test_ally_slot_orders_are_staged_only_for_powers_with_units():
+    state = InnerGameState()
+    own, ally_unit, target = 10, 12, 20
+    state.unit_info = {
+        own: {'power': 0, 'type': 'A', 'coast': ''},
+        ally_unit: {'power': 1, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix = {own: [target], ally_unit: [target], target: [own, ally_unit]}
+    state.g_candidate_record_list = [_candidate([(own, 1, own, 0, 0)])]
+    state.g_current_best_order = {
+        power: ([[(own, 1, own, 0, 0)]] * 30 if power == 0
+                else [[(ally_unit, 2, target, 0, 0)]] * 30 if power == 1
+                else [[]] * 30)
+        for power in range(7)
+    }
+
+    # DAT_0062e460 (unit count) gates the staging, not the SC count.
+    state.sc_count[1] = 5
+    state.g_unit_count[1] = 0
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
+    ):
+        _update_ally_order_score(state, 0)
+    assert state.key_weight(1, ally_unit, 'A') == 4
+
+    state.g_unit_count[1] = 1
+    state.__dict__.pop('_adjudication_cache', None)
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
+    ):
+        _update_ally_order_score(state, 0)
+    assert state.key_weight(1, target, 'A') == 4
+
+
+def _dislodge_state(distinct_groups: bool):
+    state = InnerGameState()
+    defender, attacker, supporter = 20, 10, 11
+    retreat_low, retreat_high = 30, 31
+    state.unit_info = {
+        defender: {'power': 1, 'type': 'A', 'coast': ''},
+        attacker: {'power': 0, 'type': 'A', 'coast': ''},
+        supporter: {'power': 0, 'type': 'A', 'coast': ''},
+    }
+    state.adj_matrix = {
+        defender: [attacker, retreat_low, retreat_high],
+        attacker: [defender], supporter: [defender],
+        retreat_low: [defender], retreat_high: [defender],
+    }
+    state.final_score_set[1, attacker] = 999
+    state.final_score_set[1, retreat_low] = 5
+    state.final_score_set[1, retreat_high] = 50
+    state.g_unit_count[1] = 1
+    own = [(attacker, 2, defender, 0, 0), (supporter, 4, defender, 0, attacker)]
+    candidate = _candidate(own)
+    state.g_candidate_record_list = [candidate]
+    state.g_current_best_order = {
+        power: ([own] * 30 if power == 0
+                else [[(defender, 1, defender, 0, 0)]] * 30 if power == 1
+                else [[]] * 30)
+        for power in range(7)
+    }
+    if distinct_groups:
+        # Four different score keys give four groups of multiplicity one.
+        state.g_current_best_order_records = {
+            0: [dict(candidate, heat_scores=[slot] + [0] * 6) for slot in range(30)],
+        }
+    return state, defender, attacker, retreat_high
+
+
+def test_dislodged_unit_keys_best_retreat_excluding_attacker_origin():
+    state, defender, attacker, retreat_high = _dislodge_state(distinct_groups=True)
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
+    ):
+        _update_ally_order_score(state, 0)
+
+    assert state.key_weight(0, defender, 'A') == 4      # the attacker moved in
+    assert state.key_weight(1, defender, 'A') == 0
+    assert state.key_weight(1, retreat_high, 'A') == 4  # best score, not the origin
+    assert state.key_weight(1, attacker, 'A') == 0
+
+
+def test_retreat_pressure_accumulates_group_multiplicity():
+    """C:706-710 adds the group count to apiStack_640, then tests < 2."""
+    state, defender, _attacker, retreat_high = _dislodge_state(distinct_groups=False)
+    with patch(
+        f'{_pkg_name}.heuristics.evaluate_alliance_score', return_value=0,
+    ):
+        _update_ally_order_score(state, 0)
+
+    assert state.key_weight(0, defender, 'A') == 4
+    assert state.key_weight(1, retreat_high, 'A') == 0
 
 
 def test_ally_score_live_fleet_adjacencies_keep_source_coast():

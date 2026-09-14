@@ -107,7 +107,7 @@ def evaluate_province_score(state: InnerGameState, province_id: int, power_id: i
     # C gate (line 163-170).  The comment that used to sit here claimed this
     # fires on `max_threatening_adj_scs == 0`, "NOT on score == 0".  The
     # disassembly says the opposite:
-    #     00434057 CMP  byte [DAT_00baed68],0x1      ; press flag
+    #     00434057 CMP  byte [DAT_00baed68],0x1      ; opening-turn pulse
     #     00434060 FCOMP float [DAT_004afb1c]        ; NearEndGame vs 3.0
     #     0043406b JP   ret
     #     00434071 OR   EAX,[ESP + local_34]         ; local_38 | local_34
@@ -122,7 +122,7 @@ def evaluate_province_score(state: InnerGameState, province_id: int, power_id: i
     # Fixed 2026-08-18: was `state.g_uniform_mode`, a phantom attribute that
     # nothing in the port ever writes, so this branch was dead.  C's test here
     # (EvaluateProvinceScore.c:163) is `DAT_00baed68 == '\x01' && NearEndGame
-    # < 3.0`, and DAT_00baed68 is the press flag — bound as g_press_flag at
+    # < 3.0`; DAT_00baed68 is the opening-turn pulse bound as g_press_flag at
     # 20-odd other sites in this port.
     if int(getattr(state, 'g_press_flag', 0)) == 1 and state.g_near_end_game_factor < 3.0:
         if score == 0 and state.g_enemy_mobility_count[power_id, province_id] > 0:
@@ -1247,7 +1247,7 @@ def evaluate_alliance_score(
             # Ally scoring: reward above 2000 baseline
             # C 1079-1095: boost weight when own_power==albert (piStack_1027c),
             # ally_weight<51 (default non-endgame), power==best_ally (DAT_004c6bc4),
-            # and press flag (DAT_00baed68) is off.
+            # and the opening-turn pulse (DAT_00baed68) is clear.
             best_ally = int(getattr(state, 'g_best_ally_slot0', -1))
             albert_power = int(getattr(state, 'albert_power_idx', -1))
             press_flag = int(getattr(state, 'g_press_flag', 0))

@@ -191,8 +191,6 @@ def test_press_arriving_during_generation_is_answered_before_no_wait():
         client.generate_and_submit_orders = generate
         client.on_message_received = (
             lambda sender, body: events.append(f"ingest:{sender}:{body}"))
-        client._respond_to_pending_press_entries = (
-            lambda: events.append("respond") or 1)
 
         update = asyncio.create_task(
             client._run_game_update_async(game, "S1902M")
@@ -215,7 +213,7 @@ def test_press_arriving_during_generation_is_answered_before_no_wait():
 
         assert events.index(
             "ingest:ENGLAND:PRP ( PCE ( ENG FRA ) )"
-        ) < events.index("respond") < events.index("no_wait")
+        ) < events.index("no_wait")
         assert game.no_wait_threads == [threading.get_ident()]
 
     asyncio.run(scenario())
@@ -227,11 +225,8 @@ def test_notification_copy_is_not_reparsed_after_history_drain():
         client._network_loop = asyncio.get_running_loop()
         client._client_event_lock = asyncio.Lock()
         observed: list[tuple[str, str]] = []
-        responses: list[str] = []
         client.on_message_received = (
             lambda sender, body: observed.append((sender, body)))
-        client._respond_to_pending_press_entries = (
-            lambda: responses.append("respond") or 0)
 
         message = SimpleNamespace(
             time_sent=456,
@@ -248,26 +243,29 @@ def test_notification_copy_is_not_reparsed_after_history_drain():
         )
 
         assert observed == [("GERMANY", "PRP ( PCE ( GER FRA ) )")]
-        assert responses == []
 
     asyncio.run(scenario())
 
 
-def test_response_only_pass_deduplicates_two_registration_records():
+def test_build_and_send_sub_answers_only_the_flagged_second_pass_record():
+    """BuildAndSendSUB.c:491-570 answers a finished record only when its
+    +0x98 flag byte is set, which FUN_00431310 does on the second pass."""
     client = AlbertClient("FRANCE", "example.invalid", 8432)
     client.current_phase = "S1902M"
     client.game = SimpleNamespace(current_short_phase="S1902M")
-    entry = {
+    client.state.g_broadcast_list_watermark = 99
+    base = {
+        "key": 4,
         "received_flag": True,
         "type_flag": 0,
         "from_power_tok": 0x4101,
         "sublist1": [0x4101],
         "sublist2": [0x4102],
-        "sublist3": ["PCE", "(", "ENG", "FRA", ")"],
+        "sublist3": ["PRP", "(", "PCE", "(", "ENG", "FRA", ")", ")"],
         "sched_time": 123,
     }
-    duplicate = dict(entry, watermark=0)
-    client.state.g_broadcast_list[:] = [entry, duplicate]
+    first_pass = dict(base, flag=0)
+    second_pass = dict(base, key=5, flag=1, watermark=4)
     calls: list[str] = []
 
     with (
@@ -291,12 +289,31 @@ def test_response_only_pass_deduplicates_two_registration_records():
             "_evaluate_order_proposals_and_send_gof",
             side_effect=lambda *_args, **_kwargs: calls.append("gof_eval"),
         ),
-        patch.object(_press_mod, "dispatch_scheduled_press"),
     ):
-        assert client._respond_to_pending_press_entries() == 1
-        assert client._respond_to_pending_press_entries() == 0
+        client._finish_broadcast_node(first_pass, 7)
+        assert calls == []
+        client._finish_broadcast_node(second_pass, 7)
 
+    assert first_pass["sent"] is True and second_pass["sent"] is True
     assert calls == ["evaluate", "receive", "respond", "gof_eval"]
+
+
+def test_finished_record_at_the_registration_key_schedules_thn_for_all():
+    """BuildAndSendSUB.c:576-583: key == DAT_00baed60 and LVL > 0."""
+    client = AlbertClient("FRANCE", "example.invalid", 8432)
+    client.state.g_history_counter = 100
+    client.state.g_broadcast_list_watermark = 5
+    scheduled: list[int] = []
+
+    with patch.object(
+        _press_mod, "_send_ally_press_by_power",
+        side_effect=lambda _state, power: scheduled.append(power),
+    ):
+        client._finish_broadcast_node({"key": 4, "flag": 0, "type_flag": 1}, 7)
+        assert scheduled == []
+        client._finish_broadcast_node({"key": 5, "flag": 0, "type_flag": 1}, 7)
+
+    assert scheduled == list(range(7))
 
 
 def test_serialized_message_path_emits_directed_yes_for_valid_prp():
@@ -309,6 +326,7 @@ def test_serialized_message_path_emits_directed_yes_for_valid_prp():
         client.state.albert_power_idx = 2
         client.state.g_season = "SPR"
         client.state.g_year = 1902
+        client.state.g_history_counter = 100
         client.state.g_press_instant = 1
         client.state.g_turn_start_time = time.time()
         sent: list[object] = []
@@ -321,9 +339,9 @@ def test_serialized_message_path_emits_directed_yes_for_valid_prp():
             (789, "ENGLAND", "FRANCE", body),
         )
 
-        assert sent == [{
+        assert sent[0] == {
             "message": "YES ( PRP ( PCE ( ENG FRA ) ) )",
             "recipient": "ENGLAND",
-        }]
+        }
 
     asyncio.run(scenario())

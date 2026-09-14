@@ -501,14 +501,6 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         t0 = tok_list[0]
         return t0 == _NOT_TOK or str(t0).upper() == 'NOT'
 
-    def _neg_cand_text(tok_list: list) -> str:
-        # Strip leading NOT (and any outer parens) so the result matches the
-        # XDO-only strings stored in neg_set by _split_xdo_clauses.
-        t = tok_list[1:] if tok_list else []
-        while t and t[0] == '(' and t[-1] == ')':
-            t = t[1:-1]
-        return ' '.join(str(x) for x in t)
-
     for entry_index, entry in enumerate(state.g_broadcast_list):
         if not isinstance(entry, dict):
             continue
@@ -530,25 +522,20 @@ def _cal_value(state: "InnerGameState", context_toks: list) -> int:
         # C: puVar24[7] == 0  — skip self-generated (type_flag == 1) entries.
         if entry.get('type_flag', 0) != 0:
             continue
-        cands = entry.get('order_candidates', [])
-        if not cands:
+        if not entry.get('order_candidates'):
             continue
-        # Split candidates into positive (plain XDO) and negative (NOT-XDO) sub-trees.
-        # C: ppiStack_c4 positive BST / ppiStack_b8 negative BST in the entry.
-        pos_cands_tok: list = []
-        neg_cands_tok: list = []
-        for c in cands:
-            tok = c.get('tokens', []) if isinstance(c, dict) else (c if isinstance(c, list) else [])
-            (neg_cands_tok if _cand_is_neg(tok) else pos_cands_tok).append(tok)
-        # C: iStack_c0 == puVar24[0xe] AND iStack_b4 == puVar24[0x11] — exact count.
-        if len(positive) != len(pos_cands_tok) or len(negative) != len(neg_cands_tok):
+        # C: the plain clauses must fill set A (node+0x30, size [0xe]) and the
+        # negated clauses set B (node+0x3c, size [0x11]) exactly.  The two
+        # FUN_00431310 records of one proposal hold the same clauses in
+        # opposite sets, so only the second-pass record — whose reference key
+        # (+0x84) names the first — matches a proposal of plain clauses.
+        from ..inbound.gate import _entry_clause_sets
+        set_a, set_b = _entry_clause_sets(entry)
+        if len(positive) != len(set_a) or len(negative) != len(set_b):
             continue
-        # C: bVar27 — all proposed clauses found in the entry's respective sub-trees.
-        pos_texts = {' '.join(str(x) for x in t) for t in pos_cands_tok}
-        neg_texts = {_neg_cand_text(t) for t in neg_cands_tok}
-        if not pos_set.issubset(pos_texts):
+        if not pos_set.issubset(set_a):
             continue
-        if not neg_set.issubset(neg_texts):
+        if not neg_set.issubset(set_b):
             continue
         matched_entry = entry
         matched_index = entry_index
@@ -979,23 +966,23 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
       NOT DMZ          → _eval_not_dmz    (FUN_0041f5a0)
       NOT XDO          → _cal_value       (local_48 = [NOT, …] passed as ctx)
       NOT (other)      → HUH
-      SUB PCE          → _eval_not_pce    (FUN_0040d310, same as NOT PCE)
-      SUB DMZ          → _eval_not_dmz    (FUN_0041f5a0, same as NOT DMZ)
-      SUB XDO          → _eval_sub_xdo    (FUN_0040d450, no `this`)
-      SUB NOT XDO      → _cal_value       (local_48 context)
+      CCL PCE          → _eval_not_pce    (FUN_0040d310, same as NOT PCE)
+      CCL DMZ          → _eval_not_dmz    (FUN_0041f5a0, same as NOT DMZ)
+      CCL XDO          → _eval_sub_xdo    (FUN_0040d450, no `this`)
+      CCL NOT XDO      → HUH (the CAL_VALUE arm is unreachable)
       else             → HUH
 
-    DAT_004c6e14 is PRP (0x4A13), the press-proposal wrapper.
+    DAT_004c6e14 holds 0x4A26, CCL (press cancel) — not PRP (0x4A13).
     """
     _YES, _REJ, _HUH = 0x481C, 0x4814, 0x4806
     _PCE, _DMZ, _ALY = 0x4A10, 0x4A03, 0x4A00
     _XDO, _SLO, _DRW = 0x4A1F, 0x4816, 0x4801
-    _NOT, _PRP        = 0x480D, 0x4A13
+    _NOT, _CCL        = 0x480D, 0x4A26
 
     _NAME = {
         _PCE: 'PCE', _DMZ: 'DMZ', _ALY: 'ALY',
         _XDO: 'XDO', _SLO: 'SLO', _DRW: 'DRW',
-        _NOT: 'NOT', _PRP: 'PRP',
+        _NOT: 'NOT', _CCL: 'CCL',
     }
 
     def _teq(tok, val):
@@ -1056,8 +1043,8 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
             return _cal_value(state, raw_tokens)
         return _HUH
 
-    if _teq(t0, _PRP):
-        # PRP = DAT_004c6e14; unwrap its one press-content sublist.
+    if _teq(t0, _CCL):
+        # CCL = DAT_004c6e14; unwrap its one press-content sublist.
         if not rest:
             return _HUH
         inner = _unwrap(rest[0]) if isinstance(rest[0], list) else rest
@@ -1074,11 +1061,11 @@ def _eval_single_xdo(state: "InnerGameState", tokens: list,
         if _teq(t1, _NOT):
             # _eval_single_xdo.c:238-243.  The top-level NOT arm (line 131)
             # descends with GetSubList(input, 1) before re-testing element 0;
-            # this SUB/PRP arm calls AppendList(local_48, input) and then
+            # this CCL arm calls AppendList(local_48, input) and then
             # re-reads element 0 of the *undescended* list, which is still
             # NOT.  The `XDO != *psVar4` test therefore always jumps to
             # LAB_0042c5e4, so CAL_VALUE is unreachable here and Albert
-            # answers HUH to every `PRP (NOT (XDO ...))`.  Reproduced rather
+            # answers HUH to every `CCL (NOT (XDO ...))`.  Reproduced rather
             # than repaired: this is a fidelity port.
             return _HUH
         return _HUH

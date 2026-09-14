@@ -72,7 +72,8 @@ def send_alliance_press(
     Python absorption
     -----------------
     * ``g_broadcast_list`` is a plain Python ``list`` (no tree structure).
-    * The lower-bound search is replicated as a linear scan by ``key``.
+    * The descent is replicated as a linear scan by ``key``; equal keys go
+      right, so a new record follows existing records with the same key.
     * ``FUN_0042e450`` (RB-tree node allocator + rebalancer) is absorbed
       into ``list.insert``.
     * The ``pair<iterator,bool>`` output is absorbed into the return value.
@@ -118,10 +119,11 @@ def send_alliance_press(
 
     bl: list = state.g_broadcast_list
 
-    # lower_bound: first position where existing key >= new key
+    # C descends left only when the new key is smaller, so a key equal to an
+    # existing one is inserted after it: the first position with a larger key.
     insert_pos = len(bl)
     for i, node in enumerate(bl):
-        if node.get('key', 0) >= key:
+        if node.get('key', 0) > key:
             insert_pos = i
             break
 
@@ -298,17 +300,22 @@ def _reset_participating_candidate_records(state: "InnerGameState") -> int:
     proposal being scored, bound as ``g_proposal_order_powers`` — C restores
     the TrialEvaluateOrders constructor defaults:
 
-      puVar5[9] = puVar5[8]      base_score  <- score      (+0x24 <- +0x20)
+      puVar5[9] = puVar5[8]      score <- base_score       (+0x24 <- +0x20)
       puVar5[10] = 10000         min_rank                  (+0x28)
       puVar5[0xb] = 0            max_rank                  (+0x2c)
       puVar5[0xc] = 0x461c4000   running_avg = 10000.0f    (+0x30)
       puVar5[0xd] = 0            round_count               (+0x34)
-      puVar5[0x10] = 0           weight (8-byte double)    (+0x40/+0x44)
+      puVar5[0x10] = 0           8-byte double             (+0x40/+0x44)
       puVar5[0x11] = 0
       *(byte *)(puVar5 + 0x14) = 0   processed             (+0x50)
       *(byte *)(puVar5 + 0x51) = 0   pareto_flag           (+0x51)
-      puVar5[0x16] = 0           output_score              (+0x58)
-      puVar5[0x71] = 0                                     (+0x1c4)
+      puVar5[0x16] = 0           weight (float32)          (+0x58)
+      puVar5[0x71] = 0           output_score              (+0x1c4)
+
+    The names follow the ranker and UpdateAllyOrderScore ports: field 8 is
+    EvaluateOrderScore's ``base_score``, field 9 the live ``score``,
+    RankCandidatesForPower writes its selection ``weight`` to +0x58 and its
+    smoothed ``output_score`` to +0x1c4.
 
     plus three contiguous 30-entry arrays at +0x5c / +0xd4 / +0x14c and one
     per-province array at +0x21c.  The port carries two of the 30-entry arrays
@@ -334,7 +341,7 @@ def _reset_participating_candidate_records(state: "InnerGameState") -> int:
             continue
         if power not in participants:
             continue
-        record['base_score'] = record.get('score', 0)
+        record['score'] = record.get('base_score', record.get('score', 0))
         record['min_rank'] = 10000
         record['max_rank'] = 0
         record['running_avg'] = 10000.0
@@ -349,108 +356,87 @@ def _reset_participating_candidate_records(state: "InnerGameState") -> int:
     return reset
 
 
-def score_order_candidates_from_broadcast(state: "InnerGameState") -> int:
+def score_order_candidates_from_broadcast(state: "InnerGameState", entry: "dict | None" = None) -> int:
     """
-    Python port of ScoreOrderCandidates' writer loop
-    (Source/ScoreOrderCandidates.c, lines 217–294).
+    Observable effects of ScoreOrderCandidates (0x004559c0) for one node.
 
-    Walks state.g_broadcast_list (DAT_00bb65ec) and projects each entry's
-    parsed XDO order_candidates into:
+    BuildAndSendSUB.c:243-262 calls it on round zero of a non-base node with
+    copies of the node's set A (param_1/param_2) and set B (param_4/param_5).
 
-      * state.g_general_orders[power]   (≡ DAT_00bb6cf8 + power*0xc) —
-        unconditional general-orders set; consulted by MC sub-pass 1c
-        unconditional second pass.
-      * state.g_alliance_orders[power]  (≡ DAT_00bb65f8 + power*0xc) —
-        alliance-orders set; consulted by MC sub-pass 1c first pass when
-        the proposer is the own power or a trusted ally.
+    C effects:
+      * :96-113 destroy DAT_00bb6cf8[p] — ``g_general_orders`` — for every
+        power;
+      * :116-215 re-arm the candidate records of the powers in DAT_00bc1e00
+        (``_reset_participating_candidate_records``);
+      * :215-294 for each set-A clause ``XDO ( body )`` insert the body into
+        DAT_00bb6cf8[unit power], and for a five-element SUP-MTO body also the
+        supported unit's ``( unit ) MTO dest`` into DAT_00bb6cf8[its power].
+      * :327-340 run ProcessTurn for every power with units whose general
+        orders are non-empty, (units * DAT_004c6bb8 + 10) / 10 trials (one
+        for a power other than Albert when DAT_004c6bbc is 0), with the ring
+        convoy flag DAT_00baed5c cleared.
+    Set B, and set-A SUP-HLD clauses, only fill function-local trees whose
+    sole use is the discarded return value.  Nothing is written to the
+    alliance orders (DAT_00bb65f8), which only XDO() fills.
 
-    Trust gate for the alliance set mirrors the dispatch_first_pass
-    decision in monte_carlo.process_turn (~line 1091): own power, or
-    g_ally_trust_score_hi > 0, or (Hi >= 0 and Lo > 2).
-
-    Returns the number of order_records inserted (sum across both sets).
-    Designed to be safe to call multiple times — callers that want
-    fresh state should clear g_general_orders / g_alliance_orders first.
+    Returns the number of order records inserted.
     """
     import logging as _logging
+    from .inbound.gate import _entry_clause_token_sets
     _log = _logging.getLogger(__name__)
 
-    # C:116-215 runs before the writer loop, inside the same routine.
+    state.g_general_orders = {}
     _reset_participating_candidate_records(state)
-
-    bl = getattr(state, 'g_broadcast_list', None)
-    if not bl:
+    if not entry:
         return 0
 
-    if not hasattr(state, 'g_general_orders'):
-        state.g_general_orders = {}
-    if not hasattr(state, 'g_alliance_orders'):
-        state.g_alliance_orders = {}
-
-    own_power = getattr(state, 'own_power_index', None)
-    if own_power is None:
-        own_power = getattr(state, 'albert_power_idx', 0)
-    own_power = int(own_power)
-
+    set_a, _ = _entry_clause_token_sets(entry)
+    seen: set = set()
     inserted = 0
-    seen_keys: set = set()  # de-dup absorption of the C std::set semantics
-    for entry in bl:
-        if not isinstance(entry, dict):
+
+    def _insert(power: int, order_seq: dict) -> None:
+        nonlocal inserted
+        key = (power, tuple(sorted((k, str(v)) for k, v in order_seq.items())))
+        if key in seen:
+            return
+        seen.add(key)
+        state.g_general_orders.setdefault(power, []).append(order_seq)
+        inserted += 1
+
+    for clause in set_a:
+        parsed = _parse_xdo_body_to_order(list(clause))
+        if parsed is None:
+            _log.debug("score_order_candidates: unparseable clause %r", clause)
             continue
-        cands = entry.get('order_candidates') or []
-        for cand in cands:
-            tokens = cand.get('tokens') if isinstance(cand, dict) else None
-            if not tokens:
+        power_idx, order_seq = parsed
+        _insert(power_idx, order_seq)
+        if order_seq.get('type') == 'SUP' and order_seq.get('target_dest'):
+            from .parsers import _parse_unit_triple, _split_top_level_groups
+            body = _split_top_level_groups(_split_top_level_groups(list(clause)[1:])[0])
+            supported = _parse_unit_triple(body[2]) if len(body) > 2 else None
+            if supported is None:
                 continue
-            parsed = _parse_xdo_body_to_order(tokens)
-            if parsed is None:
-                _log.debug(
-                    "score_order_candidates: skipped unparseable XDO %r",
-                    tokens,
-                )
-                continue
-            power_idx, order_seq = parsed
+            _insert(supported[0], {
+                'type': 'MTO',
+                'unit': order_seq['target_unit'],
+                'target': order_seq['target_dest'],
+                'coast': order_seq.get('target_coast', ''),
+            })
 
-            # De-dup key: (power, type, unit, target?, target_unit?, target_dest?)
-            key = (
-                power_idx,
-                order_seq.get('type'),
-                order_seq.get('unit'),
-                order_seq.get('target'),
-                order_seq.get('target_unit'),
-                order_seq.get('target_dest'),
-            )
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-
-            state.g_general_orders.setdefault(power_idx, []).append(order_seq)
-            inserted += 1
-
-            # Alliance gate.
-            is_ally_first_pass = False
-            if power_idx == own_power:
-                is_ally_first_pass = True
-            else:
-                try:
-                    trust_lo = int(state.g_ally_trust_score[own_power, power_idx])
-                    trust_hi = int(state.g_ally_trust_score_hi[own_power, power_idx])
-                    if trust_hi > 0 or (trust_hi >= 0 and trust_lo > 2):
-                        is_ally_first_pass = True
-                except Exception:
-                    pass
-            if is_ally_first_pass:
-                state.g_alliance_orders.setdefault(power_idx, []).append(order_seq)
-                inserted += 1
-
-    if inserted:
-        _log.debug(
-            "score_order_candidates: inserted %d order_records "
-            "(general slots: %s, alliance slots: %s)",
-            inserted,
-            sorted(state.g_general_orders.keys()),
-            sorted(state.g_alliance_orders.keys()),
-        )
+    from ..monte_carlo import process_turn
+    own_power = int(getattr(state, 'albert_power_idx', 0))
+    trial_scale = int(getattr(state, 'g_trial_scale', 260))
+    press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
+    unit_count = getattr(state, 'g_unit_count', None)
+    for power in range(len(unit_count) if unit_count is not None else 0):
+        units = int(unit_count[power])
+        if units <= 0 or not state.g_general_orders.get(power):
+            continue
+        trials = (units * trial_scale + 10) // 10
+        state.g_ring_convoy_enabled = 0
+        if press_cap == 0 and power != own_power:
+            trials = 1
+        process_turn(state, power, num_trials=trials)
     return inserted
 
 
@@ -472,7 +458,7 @@ def propose_dmz(state: InnerGameState,
       1 bilateral   → PRP ( DMZ ( own ally ) prov )   (flag2=1, flag3=0)
       1 unilateral  → PRP ( DMZ ally prov )            (flag3=0, flag2=0)
 
-    g_dmz_aggressiveness = DAT_004c6bd4/4 − 4 ∈ [−4, 20] (randomised per game).
+    threshold = DAT_004c6bd4/4 − 4 (``g_press_thresh_random``, randomised per game).
 
     g_active_dmz_list (DAT_00bb7130/34) records are ``{power, province,
     count}``: field +0 is the power (``puVar1[3]``), +4 the province
@@ -508,7 +494,9 @@ def propose_dmz(state: InnerGameState,
     _send = send_fn if send_fn is not None else (lambda msg: _log.debug("ProposeDMZ: %s", msg))
 
     own_power   = getattr(state, 'albert_power_idx', 0)
-    threshold   = int(getattr(state, 'g_dmz_aggressiveness', 0))
+    # C: ((DAT_004c6bd4 + (DAT_004c6bd4 >> 31 & 3)) >> 2) - 4 — signed /4.
+    press_thresh = int(getattr(state, 'g_press_thresh_random', 50))
+    threshold   = int(press_thresh / 4) - 4
     counter_map = getattr(state, 'g_ally_counter_list', {}) or {}
     order_list  = getattr(state, 'g_order_list', [])
     # DAT_00bb7130/34 — the single container both passes read and write.
@@ -943,8 +931,8 @@ def cancel_prior_press(state: InnerGameState,
     as power-to-power press. Guarded by g_cancel_press_sent (once-per-turn).
     Fires when:
       - curr_sc_cnt[own_power] > 0, OR
-      - unit_pending count > 0 (param_1+8+0x24bc in original; reset each
-        turn by ParseNOW, compared against 0x24e0 in send_GOF/builds)
+      - the own unit count (inner +0x24bc, the own-unit set ParseNOWUnit
+        fills; send_GOF compares it with the centre count +0x24e0)
 
     Research.md §1319 / §2570 note.
     """
@@ -957,9 +945,11 @@ def cancel_prior_press(state: InnerGameState,
         return
 
     own_sc = int(state.sc_count[own_power]) if hasattr(state, 'sc_count') else 0
-    unit_pending = int(getattr(state, 'g_unit_pending', 0))
+    # inner +0x24bc: the size of the own-unit set ParseNOWUnit fills.
+    unit_count = getattr(state, 'g_unit_count', None)
+    own_units = int(unit_count[own_power]) if unit_count is not None else 0
 
-    if own_sc > 0 or unit_pending:
+    if own_sc > 0 or own_units != 0:
         _send("NOT ( GOF )")
         state.g_cancel_press_sent = 1
 
@@ -1147,8 +1137,11 @@ def _prepare_ally_press_entry(state: "InnerGameState", power: int) -> None:
     Python: token-list mechanics absorbed; equality check reduces to
     press_type == 'THN' and data == [power].
     """
-    master: list = getattr(state, 'g_master_order_list', [])
-    state.g_master_order_list = [
+    # Filter in place: ScheduledPressDispatch holds a reference to this list
+    # while its callbacks run, and rebinding the attribute would leave the
+    # dispatcher popping entries from a stale copy.
+    master: list = state.g_master_order_list
+    master[:] = [
         e for e in master
         if not (e.get('press_type') == 'THN' and e.get('data') == [power])
     ]
@@ -1263,7 +1256,8 @@ def propose(
         return False
 
     # C FUN_00465d90: exact token-sequence equality (not overlap / frozenset intersection).
-    proposal_tokens = message.split()
+    from .tokens import _c_sublist, _token_seq_equal, _wire_tokens
+    proposal_tokens = _wire_tokens(message)
 
     # Proposal-tree matching (C PROPOSE.c lines 110–168):
     # Walk g_pos_analysis_list; skip processed entries (C: sent_flag != '\0' → advance).
@@ -1276,18 +1270,27 @@ def propose(
         if entry.get('processed_flag', 0) != 0:
             continue
         existing_participants = set(entry.get('participant_powers', set()))
-        if (proposal_tokens == entry.get('tokens', [])
+        if (_token_seq_equal(proposal_tokens, entry.get('tokens', []))
                 and participants.issubset(existing_participants)):
             _log.debug("propose: dedup skip — exact match in g_pos_analysis_list")
             return False
 
+    # C PROPOSE.c:173-189 stores the proposal time in DAT_00ba2858, the base
+    # AwaitPressAndSendGOF adds its 25-second grace period to.
+    state.g_base_wait_time = float(
+        int(_time.time() - getattr(state, 'g_turn_start_time', 0.0))
+    )
+
     # C: FUN_00465f60 copy + FUN_00430370 insert into DAT_00bb65c8
-    # This happens before CancelPriorPress and SendDM.
+    # This happens before CancelPriorPress and SendDM.  The record's clause
+    # list (node+0x54) holds the proposal body, GetSubList(content, 1)
+    # (PROPOSE.c:94-96): once every recipient has said YES,
+    # EvaluateOrderProposalsAndSendGOF applies it through CAL_MOVE.
     state.g_pos_analysis_list.append({
         'tokens':         proposal_tokens,
         'token_set':      frozenset(proposal_tokens),
         'participant_powers': participants,
-        'press_entries':  [],
+        'press_entries':  [{'tokens': _c_sublist(proposal_tokens, 1)}],
         'sender_power':   own_power,
         'processed_flag': 0,
         'role_b_set':     {own_power},

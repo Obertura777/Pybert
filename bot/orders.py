@@ -529,10 +529,11 @@ def _populate_retreat_orders(
     Port the dedicated retreat selector at Albert.exe ``0x4418e0``.
 
     Dislodged units are processed in the source's random-priority order. Each
-    chooses its highest token-specific ``final_score_set`` destination while
-    honoring non-enemy DMZ promises, trusted ally designations, and the rule
-    that two own retreats cannot select the same destination. If no candidate
-    survives, the unit disbands.
+    chooses its highest token-specific ``final_score_set`` destination, where
+    a destination promised as a DMZ by a non-enemy power scores zero, a
+    destination designated to a trusted power (``DAT_004d2610``) is skipped
+    while Albert holds a self-designated centre, and two own retreats cannot
+    select the same destination. If no candidate survives, the unit disbands.
 
     Returns a list of dicts matching the schema at state.py line 539:
         {'province': int, 'unit_type': str, 'unit_coast': str,
@@ -605,7 +606,11 @@ def _populate_retreat_orders(
         prioritized.append((-priority, insertion_index, record))
     prioritized.sort(key=lambda item: (item[0], item[1]))
 
-    claimed = set()
+    # 0x4419c0-0x441a4b: DAT_00bb7124 is rebuilt from every non-enemy power's
+    # DMZ promise set (DAT_00bb6f28[p]).  0x441c0d-0x441c67 then keys a
+    # destination found in it with a zero score instead of its OrderedSet
+    # score; the destination stays a candidate.
+    promised = set()
     num_powers = int(getattr(state, 'g_num_powers', 7))
     for power in range(num_powers):
         if power == own_power_idx:
@@ -618,7 +623,7 @@ def _populate_retreat_orders(
             value = (entry.get('dest_prov', entry.get('province', -1))
                      if isinstance(entry, dict) else entry)
             try:
-                claimed.add(int(value))
+                promised.add(int(value))
             except (TypeError, ValueError):
                 pass
 
@@ -650,19 +655,24 @@ def _populate_retreat_orders(
         candidates = sorted(
             record['destinations'], key=lambda item: (int(item[0]), str(item[1]))
         )
+        # BuildOrderSpec orders by the signed int64 score alone (descending,
+        # equal scores keep insertion order).
         candidates.sort(
-            key=lambda item: float(score_table[own_power_idx, int(item[0])]),
+            key=lambda item: (0 if int(item[0]) in promised
+                              else int(score_table[own_power_idx, int(item[0])])),
             reverse=True,
         )
 
         selected = None
         for dest_id, dest_coast in candidates:
             dest_id = int(dest_id)
-            if dest_id in claimed or dest_id in selected_destinations:
+            if dest_id in selected_destinations:
                 continue
             if has_self_designated_sc:
-                ally = int(state.g_ally_designation_a[dest_id])
-                ally_hi = int(state.g_ally_designation_a_hi[dest_id])
+                # 0x441e71-0x441ea9 reads DAT_004d2610/14, not the
+                # g_AllyDesignation_A pair FUN_0040dda0 tests above.
+                ally = int(state.g_ally_designation_b[dest_id])
+                ally_hi = int(state.g_ally_designation_b_hi[dest_id])
                 if ally_hi >= 0 and 0 <= ally < num_powers:
                     trust_lo = int(state.g_ally_trust_score[own_power_idx, ally])
                     trust_hi = int(state.g_ally_trust_score_hi[own_power_idx, ally])

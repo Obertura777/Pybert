@@ -1,6 +1,6 @@
 # Python-port move-fidelity progress
 
-Last updated: 2026-09-01
+Last updated: 2026-09-13
 
 ## Goal and oracle
 
@@ -17,7 +17,7 @@ some unrelated candidate.
 
 ## Current verified checkpoint
 
-- `python -m pytest -q` passes: **394 tests**.
+- `python -m pytest -q` passes: **448 tests**.
 - `python -m compileall -q` passes for the repository's Python source and
   tests.
 - `git diff --check` passes.
@@ -2279,6 +2279,8 @@ some unrelated candidate.
      `DAT_004c6bdc`, but the recovered corpus contains no write to that pending
      global. The Python full-press lifecycle therefore remains an explicit
      unresolved adaptation until the arming event can be recovered.
+     (Resolved in item 121: the arming event is `DAT_004c6bdc`'s `.data`
+     initialiser.)
    - The refreshed `game_10.json` `S1901M` primary oracle remains **7/7** at
      **502** candidates and **10/22** diagnostic unit orders. `F1901M` remains
      **5/7** at primary seed 1 across **600** candidates; seeds 0–9 reach
@@ -2836,6 +2838,201 @@ some unrelated candidate.
    - Full suite: **448 tests**; `pyflakes`, `compileall` and
      `git diff --check` pass.
 
+117. Fresh Ghidra-to-port fidelity audit
+
+   - Restored `/Users/feng/Downloads/Albert.exe.gzf` with Ghidra 12.1.3 and
+     exported program metadata, 263 external/import symbols, 5,783 functions,
+     and 2,662 named decompilations. The restored PE has SHA-256
+     `449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb`.
+   - Correlated 121 recovered `Source/**/*.c` files to fresh same-named Ghidra
+     functions: 83 normalized-body exact, 36 annotated/retyped recoveries, and
+     two expected composite files. No unexplained low-similarity mapping was
+     found. High-value generation, scoring, SUB, retreat, and GOF paths were
+     rechecked against their Python responsibilities with no confirmed defect.
+   - Current verification passes: **448 tests**, `compileall`, and
+     `git diff --check`.
+   - A full 30-round `game_100001` opening comparison found Albert's complete
+     order set in Pybert's production candidate pool for **7/7 powers**, with
+     zero failures. Across 12 valid shared opening states, a diagnostic seeds
+     0-9 sweep covered **79/84** complete sets. The five misses remain
+     inconclusive because the logs contain zero replayable structured DAIDE
+     messages and no original process-wide CRT RNG call history.
+   - Later phases in the overlapping human logs are not valid paired oracle
+     states: the human trajectory was adjudicated, while the counterfactual
+     Albert reference orders were not. Those mismatches are excluded from
+     correctness conclusions.
+   - Formal evidence and the bounded conclusion are in
+     `work/albert-port-audit/report/2026-09-13_reverse-Albert-port-audit-report.md`.
+
+118. Binary-first audit beyond `Source/` (evidence E-012–E-018)
+
+   - Item 117 only compared the recovered `Source/` files. Exporting every
+     Ghidra function (`work/albert-port-audit/ghidra-full/`) and auditing the
+     helpers and framework handlers the port relies on found five defects:
+     * SCO handler: the static-map flag is FUN_004613d0's repeat counter
+       (`DAT_00baed2c`), not a draw request; `heuristics/board.py` no longer
+       sets `g_request_draw_flag`.
+     * Retreat selector (0x441c30): a destination an ally promised is keyed
+       with score 0 rather than dropped, and the trusted-claim filter reads
+       designation B.
+     * Province numbering: Albert's province index is the DAIDE token's low
+       byte; `synchronize_from_game` now numbers provinces in token order.
+     * ORD result flags (FUN_0045fe30): moved/bounced/cut/dislodged are decoded
+       as C does and feed PostProcessOrders, DEVIATE_MOVE and the retreat list.
+     * UpdateAllyOrderScore adjudicates every staged order set with the
+       MapAndUnits adjudicator (FUN_0040b4b0 family); `monte_carlo/
+       adjudicator.py` ports it (differential-tested against the diplomacy
+       library) and the weighting uses its moved/bounced/dislodged flags.
+
+119. Press lifecycle, BuildAndSendSUB record walk and send_GOF re-run
+     (evidence E-019–E-022)
+
+   - **Inbound press** now follows Albert's FRM handler (FUN_0045a2f0):
+     CancelPriorPress on every message; PRP only when LVL > 0 (otherwise
+     FUN_0040d4d0's `HUH ( ERR … )` + `TRY ( … )`); DELAY_REVIEW registers only
+     novel XDO proposals and returns "delayed" iff the legitimacy score is 0;
+     undelayed proposals are answered at once, delayed ones get REJ outside
+     SPR/FAL and are otherwise answered by BuildAndSendSUB after the
+     second-pass record's trials. Replies (FUN_0042c970) mark responded and
+     rejection sets as C does, a peer's HUH counts as a rejection, an unmatched
+     YES records the proposal with Albert's own YES, and Albert's delivered
+     `YES ( PRP … )` credits itself (FUN_0045a090).
+   - **Misread globals:** `DAT_004c6e14` is CCL (0x4A26), not PRP; the function
+     Ghidra calls `SetTurnDeadline` is `srand` (the HLO handler seeds the CRT
+     with `time + own_power*1000`); `DAT_004c6bd4` is one field read raw by
+     RESPOND and as `/4 − 4` by ProposeDMZ (both readers previously saw 0).
+   - **CAL_VALUE** matched a registered proposal's first-pass (baseline)
+     record; it now matches set A/set B in C's orientation, scoring the
+     second-pass record against its baseline.
+   - **BuildAndSendSUB** walks records in key order: finished records get
+     per-power scores from the candidate records, the base record alone
+     submits SUB and snapshots the best-order tables, and at LVL > 19 the
+     g_ProposalHistoryMap requests become N0 plus one record each, restarting
+     the walk. FUN_00433510 proposes the record with the best score delta
+     against N0. ScoreOrderCandidates now scopes general orders to the
+     record's set A and runs its ProcessTurn calls; send_GOF empties the
+     general orders before the main rounds, and agreed XDOs reach ProcessTurn's
+     first pass (`g_alliance_orders`, DAT_00bb65f8).
+   - **Lifecycle:** the framework calls Albert's FUN_00459280 after every
+     message (re-entering BuildAndSendSUB while it is live, else
+     AwaitPressAndSendGOF); EvaluateOrderProposalsAndSendGOF re-runs send_GOF
+     after CAL_MOVE applies an agreement; GOF pairs with NOT(GOF) through
+     DAT_00baed47 and waits out C's 25-second grace period; queued press is
+     handled after the phase's generation, as C's window thread does.
+   - **Per-turn state:** GenerateAndSubmitOrders' clears (scheduled press, XDO
+     trees, turn scores, deceit flags, sent-XDO set) and its per-power loop
+     (g_AllyMatrix cool-down decay, eliminated-power resets) are ported.
+   - **Candidate fields:** the ScoreOrderCandidates reset wrote
+     `base_score ← score`; C sets field 9 (`score`) from field 8
+     (`base_score`).
+   - Full suite **520 tests**; the no-press opening oracle is unchanged
+     (79/84 generated, 4/84 exact, 132/264 units).
+
+120. WIN army switch and the retreat/adjustment commit count (evidence E-023)
+
+   - **Army-for-fleet switch.** Each iteration of `FUN_0044bd40` counts
+     Albert's armies and fleets over its own units plus the builds already
+     chosen. After ranking, a fleet build becomes an army when the site's
+     `DAT_005460e8` entry is zero, `(armies+fleets)*100/win_threshold > 42`,
+     `armies*100/fleets < 35.0` (100.0 without fleets) and, drawn last,
+     `(rand()/23)%100 < 50`. `compute_win_builds` now does the same, and it
+     stops before rescoring once no site is left, as C's candidate-count test
+     does.
+   - **`DAT_00baed34`.** send_GOF zeroes it; each retreat or disband, removal
+     and build adds one, and a waive adds one. When it is positive and
+     `DAT_00baed32` (command-line `-t`) is clear, send_GOF sleeps
+     `(n+2)*2000` ms after retreats or `n*2000+5000` ms after adjustments, plus
+     `(rand()/23)%6000`, before `FUN_0045aa40` sends SUB. The port takes the
+     draw at that point and skips the pause. There is no time-limit condition,
+     so the earlier limitation note describing the draw as time-limit-gated is
+     withdrawn.
+   - **Key offsets.** The removal key is `score + 200` (`ADD ECX,0xc8` at
+     0x00442143) and the build key `score + 500`. Ghidra's `+ 0x32` and
+     `+ 0x7d` are `int*` arithmetic, so the constant difference item 111 noted
+     is not a difference.
+   - In the corpus the switch's draw is never reached (250 builds: 57 past
+     42% of the threshold, 11 with a ratio below 35, none both on an
+     unthreatened fleet choice). The retreat/adjustment sweep is identical
+     with the switch disabled, and the opening oracle is unchanged. Full suite
+     **530 tests**.
+
+121. `DAT_00baed68` is the opening-turn pulse (evidence E-024)
+
+   - Item 99 left the flag's arming event unresolved. The listing resolves
+     it: `DAT_004c6bdc` is initialised to `01` in `.data`, and its only
+     references are GenerateAndSubmitOrders' read and clear (0x0045954e,
+     0x0045955e). Those two instructions are also the only writes to
+     `DAT_00baed68`. The flag is therefore **1 during the first
+     GenerateAndSubmitOrders call and 0 on every later call**, whatever the
+     press level.
+   - Its readers fit that meaning. HOSTILITY runs its trust/ally
+     initialisation instead of the enemy roll; PCE proposals are gated on it;
+     MOVE_ANALYSIS runs in the first Fall only when it is clear; and
+     `ComputePress`, which counts unowned centres next to each power's units
+     and sends nothing, runs only when it is set.
+   - The port had computed `g_history_counter > 0 and not minimal press`:
+     0 on the opening turn of a no-press game and 1 on every turn of a press
+     game. `_refresh_opening_turn_flag` now replays C's two statements from
+     `g_opening_turn_pending` (`DAT_004c6bdc`). The attribute keeps its
+     historical name `g_press_flag`; its definition and the reader comments
+     now describe the pulse.
+   - Opening oracle (cap 0, seeds 10): generated 79/84 and exact 4/84 are
+     unchanged; per-unit rises 132 → 136/264. Germany now plays
+     `F KIE - DEN`, Albert's order in 7 of 12 games. A fresh harness client
+     arms the pulse on its first generation; for the counterfactual post-opening
+     references, whether Albert ran as a fresh process per phase is unknown.
+   - **NOW/SCO handlers.** ParseNOW, ParseNOWUnit, FUN_004613d0/FUN_00460ec0 and
+     Albert's SCO hook FUN_0040e700 match the port's synchronisation. Build
+     sites are own home centres (`FUN_00460de0`) that Albert owns and no unit
+     occupies. The SC-count polynomial is the identity: the constructor writes
+     0/1/0 and nothing else writes those fields. python-diplomacy's DAIDE
+     server sends SCO before every NOW, as the port's per-phase hook assumes;
+     the original server's cadence could not be checked offline.
+   - Removed `apply_press_corroboration_penalty`: its C counterpart only
+     computes a return value that BuildAndSendSUB discards (commit 22801de),
+     and its call site was already gone. Full suite **533 tests**.
+
+122. Undisassembled code and YES acknowledgements (evidence E-025)
+
+   - Ghidra left some `.text` bytes undisassembled, and references from them
+     appear in neither the listing's XREFs nor the datarefs export.
+     `DumpAlbertBytes.java` dumps the project's memory blocks, and
+     `hidden_refs.py` finds every absolute data reference in uncovered bytes.
+     Inside Albert's code these are GUI glue only: the icon query, the
+     inbound-queue pump (message 0x4149 → FUN_0045f860), and the draw checkbox
+     (control 1001 → 0x0040bf00 → 0x0040e8c0). The checkbox handler stores the
+     box's state in `DAT_00baed29` and sends `DRW` or `NOT ( DRW )`. That
+     explains the flag the port had marked "setter not found": it stays 0 in
+     headless play. Nothing hidden references the opening-turn pulse,
+     `DAT_00baed5d` or the time limit, so item 121's writer analysis is
+     complete.
+   - Albert's vtable routes YES(NME/OBS/GOF/TME/DRW) and every YES(NOT …)
+     to empty functions; only YES(IAM) (send MAP) and YES(SND) (FUN_0045a090)
+     act. The recovered handlers had cleared `g_draw_sent` on YES(NOT(DRW)),
+     toggled `g_gof_sent`, and extended the time limit on YES(TME).
+     `DAT_00624ef4` is written only by ParseHSTResponse. The handlers now
+     only log. The dispatcher is not wired into the python-diplomacy client,
+     so runtime behaviour is unchanged.
+
+123. Field-writer cross-check and draw-vote order (evidence E-028)
+
+   - Each state field whose comment binds it to `DAT_` addresses was paired
+     with the C functions referencing those addresses and the Python functions
+     writing the field (`analysis/precise-writers.txt`). Every Python writer
+     without a same-named C writer resolved to one of two cases:
+     * a computed-address (`DATA`) reference in the matching C routine;
+     * a comment false positive, such as `g_sc_owner`'s note that it is not
+       `DAT_00ba2f70`.
+   - `g_draw_sent` is `DAT_00baed5d`, not `DAT_00baed2b`. C sends DRW, or
+     `NOT ( DRW )`, right after PrepareDrawVoteSet, before
+     NormalizeInfluenceMatrix and send_GOF. The port submitted its YES vote
+     after `_send_gof_pass`, which can send GOF first; python-diplomacy clears
+     votes when it processes a phase, so a late vote could land in the next
+     phase. The vote now precedes send_GOF. Full suite **534 tests**.
+   - The case report is revised with F-006–F-018, P-002 and E-012–E-028.
+     The case review has no errors; its three warnings are the evidence
+     records hashing the shared `Albert.exe.txt`.
+
 ## Selection-context limitations (not generation blockers)
 
 - The supplied x87 assembly and constant bytes now prove the complete ranker
@@ -2849,16 +3046,17 @@ some unrelated candidate.
   order lists. Their paired source games contain board states and human press,
   but no Albert seed or serialized bot state.
 - The PRNG algorithm is now source-faithful, but final slot selection still
-  depends on the reference process's call history. `send_GOF.c` also consumes
-  a sleep-jitter draw only on positive-time-limit phase branches; that draw
-  must be replayed from actual TME/timing state, not burned unconditionally by
-  the stateless offline harness.
+  depends on the reference process's call history. After committing retreats
+  or adjustments, send_GOF takes one pause-jitter draw unless Albert was
+  started with `-t` (item 120). Whether the reference runs used `-t` is
+  unknown.
 
 ## Open work, in priority order
 
-0. Restore the oracle corpora (`all_games`, `all_games_albert`) to this
-   working tree. They are Git-ignored and currently absent, so items 107-110
-   were verified only against the source and the regression suite.
+0. Obtain a truly paired oracle corpus in which Albert's submitted orders are
+   adjudicated into the next recorded state. Twelve overlapping human logs and
+   Albert reference files were recovered for item 117, but only their common
+   initial `S1901M` board is a paired state.
 
 1. Expand candidate coverage beyond the bounded opening/S1902 checkpoints and
    trace any remaining movement-phase misses against their recovered source

@@ -4,9 +4,11 @@ The 32-bit Windows binary calls MSVC ``rand()`` throughout the order, board,
 and press code.  Python's :mod:`random` uses a different algorithm, so equal
 integer seeds cannot reproduce the binary's values or branch sequence.
 
-No ``srand`` call is present in the recovered source set.  MSVC starts with
-seed 1 when ``srand`` is never called; callers such as the offline oracle may
-still set an explicit seed to explore or replay a captured stream.
+The binary has one ``srand`` call, under the Ghidra name ``SetTurnDeadline``
+(0x0047b66b): the HLO handler seeds the stream with ``time + own_power *
+1000`` (``process_hst``).  Before that the CRT state is 1.  The offline
+oracle never reaches the HLO handler, so it keeps seed 1 or sets an explicit
+seed to explore or replay a captured stream.
 """
 
 from __future__ import annotations

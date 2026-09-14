@@ -609,7 +609,8 @@ def _deviate_move(state: InnerGameState) -> None:
                     relation_override = (
                         dst_prov in state.sc_provinces
                         and int(state.g_sc_owner[dst_prov]) == p
-                        and int(rec.get("flag_c", 0)) == 1
+                        # 0x43aea8: node +0x6b, the move succeeded (SUC)
+                        and int(rec.get("moved", 0)) == 1
                     )
                 elif other != own_power and p == own_power:
                     deviation = _protected(
@@ -666,7 +667,7 @@ def _deviate_move(state: InnerGameState) -> None:
                 continue
 
             # Final classification checks signed 64-bit trust in both
-            # directions, followed by the flag_c/relation-score override.
+            # directions, followed by the moved-flag/relation-score override.
             if (
                 _positive_trust(p, other)
                 or _positive_trust(other, p)
@@ -879,16 +880,19 @@ def _friendly(state: InnerGameState) -> None:
 
 
 def _hostility(state: InnerGameState) -> None:
-    """HOSTILITY (FUN_~0x42F200).
+    """HOSTILITY (0x0042ee90).
 
     Highest-level per-turn diplomatic strategy function.  research.md §6649.
 
     Block 1 — enemy activation: random roll gates g_EnemyDesired (= g_stabbed_flag).
-    Block 2 — CAL_BOARD + mutual-enemy table (press_on or FAL/WIN).
+    Block 2 — CAL_BOARD + mutual-enemy table (opening turn or FAL/WIN).
     Block 3 — FUN_004113d0 (ComputeOrderDipFlags) — always; ported.
-    Block 4 — press-on initialisation (SPR/FAL): trust from proximity, random ally.
+    Block 4 — opening-turn initialisation (SPR/FAL): trust from proximity, random ally.
     Block 5 — enemy-desired trust management (SPR/FAL): betrayal counter, peace overtures.
-    Block 6 — UpdateRelationHistory when press off or near-end (embedded in friendly()).
+    Block 6 — UpdateRelationHistory after the opening turn or near the end.
+
+    ``press_on`` is DAT_00baed68, the opening-turn pulse (1 only during the
+    first GenerateAndSubmitOrders call; see _refresh_opening_turn_flag).
     """
     num_powers = 7
     own_power = getattr(state, "albert_power_idx", 0)
@@ -899,7 +903,7 @@ def _hostility(state: InnerGameState) -> None:
     enemy_desired = state.g_stabbed_flag
 
     # ── Block 1: enemy activation check ──────────────────────────────────────
-    # C: outer gate = g_EnemyDesired==0; inner gate = press_off (DAT_00baed68==0).
+    # C: outer gate = g_EnemyDesired==0; inner gate = not the opening turn (DAT_00baed68==0).
     # Threshold = (g_deceit_level + 3) * 15  → ~60 % year-1, ~75 % year-2.
     # C fires multiple rand calls but only the final value is used.
     if enemy_desired == 0:
@@ -917,7 +921,7 @@ def _hostility(state: InnerGameState) -> None:
                 )
 
     # ── Block 2: CAL_BOARD + mutual-enemy table ───────────────────────────────
-    # C gate: press_on OR FAL OR WIN.
+    # C gate: opening turn (DAT_00baed68) OR FAL OR WIN.
     if press_on or phase in ("FAL", "WIN"):
         cal_board(state, own_power)
 
@@ -972,11 +976,11 @@ def _hostility(state: InnerGameState) -> None:
 
     # ── SPR||FAL outer gate (wraps Blocks 4 and 5) ───────────────────────────
     if phase in ("SPR", "FAL"):
-        # ── Block 4: press-on per-turn initialisation ─────────────────────────
-        # C: runs every SPR/FAL with press_on (not gated by g_history_counter==0).
+        # ── Block 4: opening-turn initialisation ──────────────────────────────
+        # C: runs when DAT_00baed68 is set, i.e. on the first generation only.
         if press_on:
             # Zero per-power press counters.
-            # C (HOSTILITY.c:177-188): zeroes six items every press-on SPR/FAL turn:
+            # C (HOSTILITY.c:177-188): zeroes six items on the opening SPR/FAL turn:
             # two int32 pairs (004d55c8/cc stride 0x2a; 004d6248/4c stride 2) plus
             # the DiplomacyState int64 snapshot used by evaluators and scheduling gates.
             state.g_ally_press_count.fill(0)
@@ -1060,7 +1064,7 @@ def _hostility(state: InnerGameState) -> None:
                         state.g_ally_trust_score_hi[own_power, p] = 0
                     _send_ally_press_by_power(state, p)  # HOSTILITY.c:319
 
-            # ── Near-end-game overrides (inside press_on + SPR/FAL block) ─────
+            # ── Near-end-game overrides (inside opening-turn + SPR/FAL block) ─
             if state.g_near_end_game_factor > 5.0:
                 state.g_stabbed_flag = 1
                 enemy_desired = 1
@@ -1196,7 +1200,7 @@ def _hostility(state: InnerGameState) -> None:
 
     # Block 6 — UpdateRelationHistory (HOSTILITY.c:510-512).
     # C: `if ((DAT_00baed68 == '\0') || (3.0 < _g_NearEndGameFactor))`
-    # i.e., press off OR near-end-game phase. Added 2026-04-14 — was previously
+    # i.e., after the opening turn OR near the end. Added 2026-04-14 — was previously
     # missing; docstring mistakenly claimed it was "embedded in friendly()".
     near_end = float(getattr(state, "g_near_end_game_factor", 0.0))
     if (not press_on) or near_end > 3.0:

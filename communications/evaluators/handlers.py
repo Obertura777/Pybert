@@ -46,7 +46,7 @@ def _handle_pce(state: InnerGameState, tokens: list) -> bool:
            - Update g_ally_trust_score[i,j] / g_ally_trust_score_hi[i,j] if the
              new trust (as uint64) exceeds the current value.
       2. If any score was updated: log + BuildAllianceMsg(0x66) (recalc notice).
-      3. If g_press_flag == 1 (trust-override / press mode active):
+      3. If g_press_flag == 1 (DAT_00baed68, the opening turn):
            - Scan all 7 powers; if any power still has a pending PCE flag
              (g_turn_order_hist_lo == 1) or has zero trust despite having
              a DiplomacyState entry, the peace deal is not yet complete.
@@ -627,6 +627,15 @@ def _handle_xdo(state: InnerGameState, tokens: list) -> bool:
         state.g_xdo_proposal_by_sender.setdefault(sender_power, []),
         tokens[1:],
     )
+    # DAT_00bb65f8[power] is also ProcessTurn's first-pass order tree (the
+    # port's g_alliance_orders): an agreed XDO is dispatched in every trial
+    # for Albert or a trusted power.  Python keeps the parsed order there.
+    from ..parsers import _parse_xdo_body_to_order
+    _parsed = _parse_xdo_body_to_order(list(tokens))
+    if _parsed is not None:
+        _orders = state.g_alliance_orders.setdefault(sender_power, [])
+        if _parsed[1] not in _orders:
+            _orders.append(_parsed[1])
 
     # ── Step 4: pvStack_80 = element 2 of sublist 0 (source province) ─────────
     # C: GetSubList(local_40, 0) + GetListElement(2) → low byte = province code
