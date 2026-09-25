@@ -82,6 +82,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p.add_argument(
+        "--no-draw",
+        action="store_true",
+        help="Ignore the bot's draw votes instead of sending them to the server.",
+    )
+
     # ── Logging ──────────────────────────────────────────────────────────
     p.add_argument(
         "--log-level",
@@ -111,6 +117,7 @@ def main(argv: list[str] | None = None) -> None:
         username=args.username,
         password=args.password,
         game_id=args.game_id,
+        no_draw=args.no_draw,
     )
 
     # Apply press option before the game loop starts.

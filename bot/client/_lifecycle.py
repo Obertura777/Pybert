@@ -87,13 +87,14 @@ class _LifecycleMixin:
     # DONE(api): #6 — send_is_bot() and set_comm_status() called after join.
     def __init__(self, power_name: str, host: str, port: int, *,
                  username: str | None = None, password: str = 'password',
-                 game_id: str | None = None):
+                 game_id: str | None = None, no_draw: bool = False):
         self.power_name = power_name
         self.host = host
         self.port = port
         self.username = username or f'Albert_{power_name}'
         self.password = password
         self.target_game_id = game_id   # None = auto-pick first available
+        self.no_draw = no_draw
         self.state = InnerGameState()
         self.connection = None
         self.game = None

@@ -166,6 +166,7 @@ def _run_bot_process(
             username=f"Albert_{power}",
             password="password",
             game_id=game_id,
+            no_draw=True,
         )
         if not press:
             client.state.g_minimal_press_mode = 1

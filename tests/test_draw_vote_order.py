@@ -7,7 +7,10 @@ NormalizeInfluenceMatrix and send_GOF.
 
 import os
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import pytest
 
 
 _pkg_root = os.path.dirname(os.path.dirname(__file__))
@@ -20,6 +23,31 @@ _client_mod = __import__(f'{_pkg_name}.bot.client', fromlist=['AlbertClient'])
 _orders_mod = __import__(f'{_pkg_name}.bot.client._orders', fromlist=['_OrdersMixin'])
 
 AlbertClient = _client_mod.AlbertClient
+
+
+@pytest.mark.parametrize('no_draw', [False, True])
+def test_no_draw_suppresses_server_vote(no_draw):
+    client = AlbertClient('GERMANY', 'example.invalid', 8432, no_draw=no_draw)
+    client.state.g_draw_sent = 1
+    client.game = SimpleNamespace(vote=Mock(), current_short_phase='S1902M')
+    with (
+        patch.object(client, '_marshal_to_network_loop', return_value=False) as marshal,
+        patch.object(client, '_track_request_future'),
+    ):
+        client._submit_draw_vote()
+
+    if no_draw:
+        client.game.vote.assert_not_called()
+        marshal.assert_not_called()
+    else:
+        client.game.vote.assert_called_once_with(vote='yes')
+
+
+def test_no_draw_cli_flag():
+    main_mod = __import__(f'{_pkg_name}.main', fromlist=['_build_parser'])
+    parser = main_mod._build_parser()
+    assert not parser.parse_args(['--power', 'GERMANY']).no_draw
+    assert parser.parse_args(['--power', 'GERMANY', '--no-draw']).no_draw
 
 
 def test_draw_vote_is_sent_before_send_gof():

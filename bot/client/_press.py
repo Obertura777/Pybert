@@ -1053,6 +1053,8 @@ class _PressMixin:
         The server defaults to neutral each phase, so we never need to
         explicitly send NO or NEUTRAL — only YES when we want it.
         """
+        if self.no_draw:
+            return
         if self._marshal_to_network_loop(self._submit_draw_vote):
             return
         if self.game is None:
