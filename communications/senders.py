@@ -428,7 +428,9 @@ def score_order_candidates_from_broadcast(state: "InnerGameState", entry: "dict 
     trial_scale = int(getattr(state, 'g_trial_scale', 260))
     press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
     unit_count = getattr(state, 'g_unit_count', None)
-    for power in range(len(unit_count) if unit_count is not None else 0):
+    if unit_count is None:
+        unit_count = ()
+    for power in range(len(unit_count)):
         units = int(unit_count[power])
         if units <= 0 or not state.g_general_orders.get(power):
             continue

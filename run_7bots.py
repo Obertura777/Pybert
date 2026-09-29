@@ -104,13 +104,13 @@ def _patch_connect_for_ssl():
         await conn._connect("Connecting (SSL) …")
         return conn
 
-    _conn_mod.connect = connect_with_ssl  # type: ignore[assignment]
+    setattr(_conn_mod, "connect", connect_with_ssl)
 
     # _lifecycle.py already did `from diplomacy.client.connection import connect`
     # at module level, so we must also patch its local binding.
     try:
         _lc = importlib.import_module(f"{_PKG}.bot.client._lifecycle")
-        _lc.connect = connect_with_ssl  # type: ignore[assignment]
+        setattr(_lc, "connect", connect_with_ssl)
         log.info("Patched _lifecycle.connect for SSL.")
     except Exception as exc:
         log.warning("Could not patch _lifecycle.connect: %s", exc)
@@ -248,7 +248,7 @@ async def main(
     # bots in separate processes also prevents one bot's CPU work from starving
     # the lightweight admin watcher here.
     process_context = multiprocessing.get_context("spawn")
-    processes: list[multiprocessing.Process] = []
+    processes: list[multiprocessing.process.BaseProcess] = []
     for power in POWERS:
         process = process_context.Process(
             target=_run_bot_process,

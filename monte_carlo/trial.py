@@ -1450,7 +1450,7 @@ def process_turn(state: InnerGameState, power_index: int, num_trials: int = -1) 
         state.g_army_adj_count[:num_provinces]      = 0
         state.g_convoy_fleet_registered.clear()
         # DAT_00bbf644 — per-trial ScoreSupportOpp map (src_prov → dest_prov).
-        state.g_support_opp_map: dict = {}
+        state.g_support_opp_map = {}
 
         # Reset unit-presence matrix (g_unit_presence[power*0x100+prov] = -1).
         state.g_unit_presence[:, :num_provinces] = -1
@@ -2551,7 +2551,7 @@ def _staged_unit_order(entry, base_of: dict[int, int]) -> tuple:
     if order_type in (_ORDER_SUP_MTO, _ORDER_CVY):
         return order_type, -1, base(secondary), base(dest), ()
     if order_type == _ORDER_CTO:
-        row = entry[5] if len(entry) > 5 and isinstance(entry[5], (list, tuple)) else ()
+        row: list | tuple = entry[5] if len(entry) > 5 and isinstance(entry[5], (list, tuple)) else ()
         depth = int(row[_F_CONVOY_DEPTH]) if len(row) > _F_CONVOY_DEPTH else 0
         legs = tuple(
             base(row[field])

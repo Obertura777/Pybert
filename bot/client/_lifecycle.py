@@ -18,65 +18,27 @@ cross-mixin method calls resolve through normal MRO at call time.
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
-import time
 from typing import Any, Callable
 
-import numpy as np
 from diplomacy.client.connection import connect
 
+from ...communications import parse_message
 from ...state import InnerGameState
-from ...monte_carlo import (
-    process_turn,
-    update_score_state,
-    check_time_limit,
-    _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
-)
-from ...communications import (
-    parse_message,
-    dispatch_scheduled_press,
-    cancel_prior_press,
-    _send_ally_press_by_power,
-)
-from ...heuristics import (
-    score_provinces,
-    score_order_candidates_all_powers,
-    score_order_candidates_own_power,
-    populate_build_candidates,
-    populate_remove_candidates,
-    compute_win_builds,
-    compute_win_removes,
-    _WIN_BUILD_WEIGHTS,
-    _WIN_REMOVE_WEIGHTS,
-    _SPR_FAL_WEIGHTS,
-)
-from ...dispatch import validate_and_dispatch_order
-
-from .._shared import _POWER_NAMES
-from ..orders import (
-    _populate_retreat_orders,
-    _format_retreat_commands,
-    _build_order_seq_from_table,
-)
-from ..gof import _send_gof, _evaluate_order_proposals_and_send_gof
-from ..analysis import (
-    _phase_handler, _analyze_position, _move_analysis,
-    _post_process_orders, _compute_press,
-    _cleanup_turn, _prepare_draw_vote_set,
-    _rank_candidates_for_power,
-    _game_phase, _game_status,
-)
-from ..strategy import (
-    _stabbed, _deviate_move, _friendly, _hostility, _post_friendly_update,
-)
+from ..analysis import _game_phase, _game_status
 
 logger = logging.getLogger(__name__)
 
 
 class _LifecycleMixin:
-    # Cross-mixin method (provided by _OrdersMixin)
+    # Cross-mixin methods (provided by _OrdersMixin)
     generate_and_submit_orders: Callable[[], None]
+    _initialize_press_session: Callable[[], None]
+    _rerun_send_gof: Callable[..., None]
+    # Cross-mixin methods (provided by _PressMixin)
+    _send_dm: Callable[..., None]
+    _build_and_send_sub: Callable[..., None]
+    _await_press_and_send_gof: Callable[..., None]
 
     # DONE(api): #4 — play() uses NetworkGame notification callbacks
     #   (GameProcessed, GameStatusUpdate, GameMessageReceived) with a 30s

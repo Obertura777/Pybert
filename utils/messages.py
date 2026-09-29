@@ -124,6 +124,7 @@ def process_sco(dist):
                     result[POWER_NAMES[item]] = []
                 curr_p = POWER_NAMES[item]
             else:
+                assert curr_p is not None, f"Invalid SCO message: {dist}"
                 result[curr_p].append(dipnet_location(item))
 
     return result

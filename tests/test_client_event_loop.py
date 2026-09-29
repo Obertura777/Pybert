@@ -179,8 +179,8 @@ def test_press_arriving_during_generation_is_answered_before_no_wait():
             events.append("no_wait")
             return original_no_wait()
 
-        game.set_orders = set_orders
-        game.no_wait = no_wait
+        setattr(game, "set_orders", set_orders)
+        setattr(game, "no_wait", no_wait)
 
         def generate() -> None:
             client._schedule_set_orders(["A PAR H"])

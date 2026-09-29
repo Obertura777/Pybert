@@ -9,7 +9,7 @@ token strings and retreat command lists.  Zero calls to other bot submodules.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -542,7 +542,7 @@ def _populate_retreat_orders(
     where order_type 7 = RTO, 8 = DSB.
     """
     prov_to_id = state.prov_to_id
-    records = []
+    records: list[dict[str, Any]] = []
 
     # ParseNOWUnit/synchronize_from_game already populate the source's +0x245c
     # set. Keep a game-object fallback for isolated adapter fixtures.

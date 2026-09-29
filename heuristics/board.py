@@ -966,6 +966,7 @@ def cal_board(state: InnerGameState, own_power: int) -> None:
                 inf_2_val = float(inf_alt[own_power, top_enemy_2])
                 inf_3_val = float(inf_alt[own_power, top_enemy_3])
                 ratio_21 = (inf_2_val * 100.0) / (inf_1_val + 1.0)
+                assert power_exp is not None
                 pe_own = float(power_exp[own_power])
                 pe_1 = float(power_exp[top_enemy_1])
                 power_gate_fails = (pe_own - pe_1 * 1.7) + 69.0 <= 0.0

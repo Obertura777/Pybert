@@ -25,53 +25,23 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ...state import InnerGameState
+from ...communications import (
+    _send_ally_press_by_power,
+    dispatch_scheduled_press,
+    score_order_candidates_from_broadcast,
+)
 from ...monte_carlo import (
-    process_turn,
-    update_score_state,
     _refresh_order_table,
     check_time_limit,
     restore_order_entry,
-    _F_ORDER_TYPE, _F_DEST_PROV, _F_DEST_COAST,
+    update_score_state,
 )
-from ...communications import (
-    parse_message,
-    dispatch_scheduled_press,
-    cancel_prior_press,
-    _send_ally_press_by_power,
-)
-from ...heuristics import (
-    score_provinces,
-    score_order_candidates_all_powers,
-    score_order_candidates_own_power,
-    populate_build_candidates,
-    populate_remove_candidates,
-    compute_win_builds,
-    compute_win_removes,
-    _WIN_BUILD_WEIGHTS,
-    _WIN_REMOVE_WEIGHTS,
-    _SPR_FAL_WEIGHTS,
-)
-from ...dispatch import validate_and_dispatch_order
-
-from .._shared import _POWER_NAMES, _DAIDE_POWER_NAMES
-from ..orders import (
-    _populate_retreat_orders,
-    _format_retreat_commands,
-    _build_order_seq_from_table,
-)
-from ...communications import score_order_candidates_from_broadcast
-from ..gof import _send_gof, _evaluate_order_proposals_and_send_gof
-from ..analysis import (
-    _phase_handler, _analyze_position, _move_analysis,
-    _post_process_orders, _compute_press,
-    _cleanup_turn, _prepare_draw_vote_set,
-    _rank_candidates_for_power,
-    _game_phase, _game_status,
-)
-from ..strategy import (
-    _stabbed, _deviate_move, _friendly, _hostility, _post_friendly_update,
-)
+from ...state import InnerGameState
+from .._shared import _DAIDE_POWER_NAMES
+from ..analysis import _rank_candidates_for_power
+from ..dispatch import validate_and_dispatch_order
+from ..gof import _evaluate_order_proposals_and_send_gof, _send_gof
+from ..orders import _build_order_seq_from_table
 
 logger = logging.getLogger(__name__)
 
@@ -96,18 +66,25 @@ def _entry_participant_powers(state: InnerGameState, entry: dict) -> set:
     ``_build_and_send_sub``), so an entry that carries no participant
     information stands in for it and covers every power with live units.
     """
-    recorded = entry.get('participant_powers')
+    recorded = entry.get("participant_powers")
     if recorded:
         return {int(p) for p in recorded}
     return {
-        power for power in range(len(state.g_unit_count))
+        power
+        for power in range(len(state.g_unit_count))
         if int(state.g_unit_count[power]) > 0
     }
 
 
 _INTERNAL_COAST_TO_DAIDE = {
-    'NC': 'NCS', 'NE': 'NEC', 'EC': 'ECS', 'SE': 'SEC',
-    'SC': 'SCS', 'SW': 'SWC', 'WC': 'WCS', 'NW': 'NWC',
+    "NC": "NCS",
+    "NE": "NEC",
+    "EC": "ECS",
+    "SE": "SEC",
+    "SC": "SCS",
+    "SW": "SWC",
+    "WC": "WCS",
+    "NW": "NWC",
 }
 
 
@@ -118,15 +95,16 @@ def _unit_spec_tokens(state: InnerGameState, prov: int) -> list | None:
     if unit is None:
         return None
     id_to_prov = state._id_to_prov or {v: k for k, v in state.prov_to_id.items()}
-    power = int(unit.get('power', 0))
-    power_name = (_DAIDE_POWER_NAMES[power]
-                  if 0 <= power < len(_DAIDE_POWER_NAMES) else 'UNO')
-    unit_type = 'AMY' if unit.get('type', 'A') in ('A', 'AMY') else 'FLT'
+    power = int(unit.get("power", 0))
+    power_name = (
+        _DAIDE_POWER_NAMES[power] if 0 <= power < len(_DAIDE_POWER_NAMES) else "UNO"
+    )
+    unit_type = "AMY" if unit.get("type", "A") in ("A", "AMY") else "FLT"
     name = id_to_prov.get(prov, str(prov))
-    coast = _INTERNAL_COAST_TO_DAIDE.get(str(unit.get('coast', '') or '').upper())
+    coast = _INTERNAL_COAST_TO_DAIDE.get(str(unit.get("coast", "") or "").upper())
     if coast:
-        return ['(', power_name, unit_type, '(', name, coast, ')', ')']
-    return ['(', power_name, unit_type, name, ')']
+        return ["(", power_name, unit_type, "(", name, coast, ")", ")"]
+    return ["(", power_name, unit_type, name, ")"]
 
 
 def _proposal_record_tokens(state: InnerGameState, record: dict) -> list:
@@ -136,19 +114,19 @@ def _proposal_record_tokens(state: InnerGameState, record: dict) -> list:
     and ``XDO ( support )`` otherwise, the support built by FUN_00463690 as
     SUP HLD when the mover's province is the destination, else SUP MTO.
     """
-    if record.get('type') != 'XDO_SUP':
-        return ['SUB']
-    supporter = _unit_spec_tokens(state, int(record.get('province', -1)))
-    mover = _unit_spec_tokens(state, int(record.get('src_prov', -1)))
+    if record.get("type") != "XDO_SUP":
+        return ["SUB"]
+    supporter = _unit_spec_tokens(state, int(record.get("province", -1)))
+    mover = _unit_spec_tokens(state, int(record.get("src_prov", -1)))
     if supporter is None or mover is None:
-        return ['SUB']
-    body = supporter + ['SUP'] + mover
-    src = int(record.get('src_prov', -1))
-    dest = int(record.get('dst_prov', -1))
+        return ["SUB"]
+    body = supporter + ["SUP"] + mover
+    src = int(record.get("src_prov", -1))
+    dest = int(record.get("dst_prov", -1))
     if src != dest:
         id_to_prov = state._id_to_prov or {v: k for k, v in state.prov_to_id.items()}
-        body += ['MTO', id_to_prov.get(dest, str(dest))]
-    return ['XDO', '('] + body + [')']
+        body += ["MTO", id_to_prov.get(dest, str(dest))]
+    return ["XDO", "("] + body + [")"]
 
 
 def _support_slot_count(state: InnerGameState, own: int, record: dict) -> int:
@@ -158,9 +136,10 @@ def _support_slot_count(state: InnerGameState, own: int, record: dict) -> int:
     slot with the request body; the port compares the order fields.
     """
     from ...monte_carlo.trial import _ORDER_SUP_HLD, _ORDER_SUP_MTO
-    supporter = int(record.get('province', -1))
-    mover = int(record.get('src_prov', -1))
-    dest = int(record.get('dst_prov', -1))
+
+    supporter = int(record.get("province", -1))
+    mover = int(record.get("src_prov", -1))
+    dest = int(record.get("dst_prov", -1))
     wanted = _ORDER_SUP_HLD if mover == dest else _ORDER_SUP_MTO
     count = 0
     for orders in state.g_current_best_order.get(own, []) or []:
@@ -182,10 +161,10 @@ def _token_list_in(tokens: list, stored: list) -> bool:
 
 
 def _advance_broadcast_proposal_trials(
-        state: InnerGameState,
-        entry: dict,
-        trial_cap: int,
-        dispatch_fn: Callable[[], None] | None = None,
+    state: InnerGameState,
+    entry: dict,
+    trial_cap: int,
+    dispatch_fn: Callable[[], None] | None = None,
 ) -> bool:
     """Run BuildAndSendSUB's inner proposal-trial loop for one broadcast node.
 
@@ -196,7 +175,7 @@ def _advance_broadcast_proposal_trials(
     scheduled-press dispatch.
     """
     trial_cap = max(int(trial_cap), 0)
-    completed = max(int(entry.get('trial_count', 0)), 0)
+    completed = max(int(entry.get("trial_count", 0)), 0)
     num_powers = len(state.g_unit_count)
     participants = _entry_participant_powers(state, entry)
 
@@ -218,7 +197,7 @@ def _advance_broadcast_proposal_trials(
         # restores the best-order table from its DAT_00bc0a40/44 snapshot, so
         # each proposal is scored from the last *accepted* table rather than
         # from the previous, rejected node's leftovers.
-        if completed == 0 and int(entry.get('key', 0)) != 0:
+        if completed == 0 and int(entry.get("key", 0)) != 0:
             try:
                 score_order_candidates_from_broadcast(state, entry)
             except (KeyError, IndexError, TypeError, ValueError):
@@ -226,14 +205,14 @@ def _advance_broadcast_proposal_trials(
                     "score_order_candidates_from_broadcast raised during"
                     " round zero; continuing"
                 )
-            backup = getattr(state, 'g_best_order_backup', None) or {}
+            backup = getattr(state, "g_best_order_backup", None) or {}
             state.g_current_best_order = {
                 power: list(slots) for power, slots in backup.items()
             }
             state.g_current_best_order_records = {
                 power: list(records)
                 for power, records in (
-                    getattr(state, 'g_best_order_backup_records', None) or {}
+                    getattr(state, "g_best_order_backup_records", None) or {}
                 ).items()
             }
 
@@ -259,9 +238,8 @@ def _advance_broadcast_proposal_trials(
 
         update_score_state(state)
 
-        previous_alt = int(getattr(state, 'g_trial_prev_score_alt', 0))
-        previous_baseline = int(
-            getattr(state, 'g_trial_prev_score_baseline', 0))
+        previous_alt = int(getattr(state, "g_trial_prev_score_alt", 0))
+        previous_baseline = int(getattr(state, "g_trial_prev_score_baseline", 0))
         _set_round_value(
             state.g_trial_score_b,
             completed,
@@ -277,17 +255,17 @@ def _advance_broadcast_proposal_trials(
 
         # candidate[0x17 + round] = candidate[0x71]
         for candidate in state.g_candidate_record_list:
-            history = candidate.setdefault('output_score_history', [])
+            history = candidate.setdefault("output_score_history", [])
             while len(history) <= completed:
                 history.append(0.0)
-            history[completed] = float(candidate.get('output_score', 0.0))
+            history[completed] = float(candidate.get("output_score", 0.0))
 
         if dispatch_fn is not None:
             dispatch_fn()
 
         completed += 1
         state.g_n_trials_completed = completed
-        entry['trial_count'] = completed
+        entry["trial_count"] = completed
 
     return True
 
@@ -298,9 +276,13 @@ class _PressMixin:
     power_name: str
     game: Any
     current_phase: str | None
+    no_draw: bool
 
     # Cross-mixin method (provided by _OrdersMixin)
     _validate_orders: Callable[..., None]
+    # Cross-mixin methods (provided by _LifecycleMixin)
+    _marshal_to_network_loop: Callable[..., bool]
+    _schedule_gof_recheck: Callable[[float], None]
 
     @staticmethod
     def _track_request_future(future: Any, operation: str, phase: str = "") -> None:
@@ -361,13 +343,11 @@ class _PressMixin:
         phase = getattr(self.game, "current_short_phase", "") or ""
         try:
             future = self.game.set_orders(
-                power_name=self.power_name, orders=orders, wait=True)
+                power_name=self.power_name, orders=orders, wait=True
+            )
         except TypeError:
-            future = self.game.set_orders(
-                power_name=self.power_name, orders=orders)
-        self._track_request_future(
-            future, f"set_orders for {self.power_name}", phase
-        )
+            future = self.game.set_orders(power_name=self.power_name, orders=orders)
+        self._track_request_future(future, f"set_orders for {self.power_name}", phase)
         if future is not None and hasattr(future, "add_done_callback"):
             self._pending_orders_future = future
 
@@ -416,36 +396,39 @@ class _PressMixin:
         # the original proposer rather than being broadcast to all powers.
         _explicit_recipient: str | None = None
         if isinstance(msg, dict):
-            _explicit_recipient = msg.get('recipient')
-            msg = msg.get('message', '')
+            _explicit_recipient = msg.get("recipient")
+            msg = msg.get("message", "")
 
         # GOF and NOT(GOF) are server-readiness controls, never press messages.
         # Canonicalize whitespace so both token-list and string callers hit the
         # control path and can never fall through to per-power fan-out.
-        body_str = ' '.join(str(t) for t in msg) if isinstance(msg, list) else str(msg)
-        control_body = ''.join(body_str.upper().split())
+        body_str = " ".join(str(t) for t in msg) if isinstance(msg, list) else str(msg)
+        control_body = "".join(body_str.upper().split())
 
-        if control_body == 'NOT(GOF)':
+        if control_body == "NOT(GOF)":
             # A later NOT(GOF) supersedes a GOF still waiting to be flushed.
             self._deferred_gof_phase = None
             phase = getattr(self.game, "current_short_phase", "") or ""
             try:
-                if hasattr(self.game, 'wait'):
+                if hasattr(self.game, "wait"):
                     future = self.game.wait()
                     self._track_request_future(
-                        future, f"wait for {self.power_name}", phase)
-                elif hasattr(self.game, 'set_wait'):
+                        future, f"wait for {self.power_name}", phase
+                    )
+                elif hasattr(self.game, "set_wait"):
                     # Offline/server Game fallback.  NetworkGame always uses
                     # wait() above so the change is sent to the server.
                     self.game.set_wait(self.power_name, True)
                 else:
-                    logger.warning(
-                        "NOT(GOF) ignored: game has no wait-control API")
+                    logger.warning("NOT(GOF) ignored: game has no wait-control API")
                     return
             except Exception as exc:
                 logger.warning(
                     "wait for %s rejected for phase %s: %s: %s",
-                    self.power_name, phase, type(exc).__name__, exc,
+                    self.power_name,
+                    phase,
+                    type(exc).__name__,
+                    exc,
                 )
                 return
             logger.info(
@@ -454,7 +437,7 @@ class _PressMixin:
             )
             return
 
-        if control_body == 'GOF':
+        if control_body == "GOF":
             phase = getattr(self.game, "current_short_phase", "") or ""
 
             # generate_and_submit_orders() calls _send_gof() from its worker
@@ -462,7 +445,7 @@ class _PressMixin:
             # response pass.  Releasing wait here can advance a deadline-0
             # game and discard those proposals.  _run_game_update_async flushes
             # this deferred GOF after it drains and answers current-turn press.
-            if getattr(self, '_generation_in_progress', False):
+            if getattr(self, "_generation_in_progress", False):
                 self._deferred_gof_phase = phase
                 logger.info(
                     "_send_dm: GOF deferred until inbound press drains for %s",
@@ -486,6 +469,7 @@ class _PressMixin:
 
             pending_orders = getattr(self, "_pending_orders_future", None)
             if pending_orders is not None:
+
                 def _after_orders(done_future) -> None:
                     try:
                         done_future.result()
@@ -508,7 +492,7 @@ class _PressMixin:
             return
 
         # Skip all outbound press in no-press mode.
-        if getattr(self.state, 'g_minimal_press_mode', 0) == 1:
+        if getattr(self.state, "g_minimal_press_mode", 0) == 1:
             return
         try:
             from diplomacy import Message
@@ -518,13 +502,13 @@ class _PressMixin:
 
         # Determine recipient set.  An explicit per-power recipient on the
         # message object wins; otherwise fan out to every other power.
-        msg_recipient = _explicit_recipient or getattr(msg, 'recipient', None)
-        powers_attr = getattr(self.game, 'powers', None) or {}
+        msg_recipient = _explicit_recipient or getattr(msg, "recipient", None)
+        powers_attr = getattr(self.game, "powers", None) or {}
         try:
             all_powers = list(powers_attr.keys())
         except AttributeError:
             all_powers = list(powers_attr)
-        if msg_recipient and msg_recipient not in ('GLOBAL', 'ALL', None):
+        if msg_recipient and msg_recipient not in ("GLOBAL", "ALL", None):
             recipients = [msg_recipient]
         else:
             recipients = [p for p in all_powers if p != self.power_name]
@@ -536,8 +520,8 @@ class _PressMixin:
         # game hasn't reached 'active' status yet (e.g. not all powers have
         # joined).  Drop the fan-out silently rather than generating N ERROR
         # log lines from the diplomacy library for each failed round-trip.
-        game_status = getattr(self.game, 'status', '') or ''
-        if game_status and game_status != 'active':
+        game_status = getattr(self.game, "status", "") or ""
+        if game_status and game_status != "active":
             logger.debug(
                 "_send_dm: game not active (status=%r) — dropping press",
                 game_status,
@@ -550,12 +534,13 @@ class _PressMixin:
         # advanced — common when MC scoring takes longer than the deadline —
         # drop the entire fan-out instead of paying N round-trip
         # GamePhaseException rejections.
-        scoring_phase = getattr(self, 'current_phase', None) or ''
-        server_phase  = getattr(self.game, 'current_short_phase', None) or ''
+        scoring_phase = getattr(self, "current_phase", None) or ""
+        server_phase = getattr(self.game, "current_short_phase", None) or ""
         if scoring_phase and server_phase and scoring_phase != server_phase:
             logger.debug(
-                "_send_dm: skipping stale message (built for %s, server is"
-                " now at %s)", scoring_phase, server_phase,
+                "_send_dm: skipping stale message (built for %s, server is now at %s)",
+                scoring_phase,
+                server_phase,
             )
             return
         # Use the server's current phase on the wire — Message validates
@@ -563,8 +548,8 @@ class _PressMixin:
         # rejected even if scoring_phase == server_phase a moment ago.
         phase = server_phase or scoring_phase
 
-        body = ' '.join(str(tok) for tok in msg) if isinstance(msg, list) else str(msg)
-        is_network = hasattr(self.game, 'send_game_message')
+        body = " ".join(str(tok) for tok in msg) if isinstance(msg, list) else str(msg)
+        is_network = hasattr(self.game, "send_game_message")
         import asyncio as _asyncio
 
         for recipient in recipients:
@@ -579,7 +564,10 @@ class _PressMixin:
                 logger.warning(
                     "_send_dm: Message validation failed (recipient=%r,"
                     " phase=%r): %s: %s",
-                    recipient, phase, type(exc).__name__, exc,
+                    recipient,
+                    phase,
+                    type(exc).__name__,
+                    exc,
                 )
                 continue
 
@@ -593,7 +581,8 @@ class _PressMixin:
                         except RuntimeError:
                             _asyncio.run(fut)
                             continue
-                    if hasattr(fut, 'add_done_callback'):
+                    if hasattr(fut, "add_done_callback"):
+
                         def _log_send_error(f, _r=recipient, _p=phase):
                             try:
                                 f.result()
@@ -601,14 +590,21 @@ class _PressMixin:
                                 logger.debug(
                                     "_send_dm: send rejected"
                                     " (recipient=%r, phase=%r): %s: %s",
-                                    _r, _p, type(exc).__name__, exc,
+                                    _r,
+                                    _p,
+                                    type(exc).__name__,
+                                    exc,
                                 )
+
                         fut.add_done_callback(_log_send_error)
                 except Exception as exc:
                     logger.debug(
                         "_send_dm: send_game_message raised synchronously"
                         " (recipient=%r, phase=%r): %s: %s",
-                        recipient, phase, type(exc).__name__, exc,
+                        recipient,
+                        phase,
+                        type(exc).__name__,
+                        exc,
                     )
             else:
                 # Server-game / offline path (kept for unit tests).
@@ -618,9 +614,11 @@ class _PressMixin:
                     logger.warning(
                         "_send_dm: add_message rejected (recipient=%r,"
                         " phase=%r): %s: %s",
-                        recipient, phase, type(exc).__name__, exc,
+                        recipient,
+                        phase,
+                        type(exc).__name__,
+                        exc,
                     )
-
 
     def _answer_delayed_proposal(self, entry: dict) -> None:
         """BuildAndSendSUB.c:491-570 — answer a delayed proposal's record.
@@ -632,29 +630,34 @@ class _PressMixin:
         receipt time, then EvaluateOrderProposalsAndSendGOF.
         """
         from ...communications import (
-            receive_proposal as _receive_proposal,
-            respond as _respond,
             evaluate_press as _evaluate_press,
         )
+        from ...communications import (
+            receive_proposal as _receive_proposal,
+        )
+        from ...communications import (
+            respond as _respond,
+        )
 
-        sender = int(entry.get('from_power_tok', 0)) & 0xff
-        content = entry.get('sublist3', entry.get('press_content', []))
+        sender = int(entry.get("from_power_tok", 0)) & 0xFF
+        content = entry.get("sublist3", entry.get("press_content", []))
         recipients = [
-            int(tok) & 0x7f
-            for tok in entry.get('sublist2', [])
-            if isinstance(tok, int)
+            int(tok) & 0x7F for tok in entry.get("sublist2", []) if isinstance(tok, int)
         ]
         verdict = _evaluate_press(self.state, entry)
         _receive_proposal(
-            self.state, sender, content, participant_powers=recipients,
+            self.state,
+            sender,
+            content,
+            participant_powers=recipients,
         )
-        received = int(entry.get('sched_time', 0))
+        received = int(entry.get("sched_time", 0))
         _respond(
             self.state,
             press_list={
-                'sublist1': [0x4100 | sender],
-                'sublist2': list(entry.get('sublist2', [])),
-                'sublist3': list(content),
+                "sublist1": [0x4100 | sender],
+                "sublist2": list(entry.get("sublist2", [])),
+                "sublist3": list(content),
             },
             response_type=verdict,
             elapsed_lo=received & 0xFFFFFFFF,
@@ -675,40 +678,39 @@ class _PressMixin:
         and schedules a THN for every power when its key is DAT_00baed60.
         """
         state = self.state
-        entry['sent'] = True
-        own = int(getattr(state, 'albert_power_idx', 0))
+        entry["sent"] = True
+        own = int(getattr(state, "albert_power_idx", 0))
         slots = state.g_current_best_order.get(own, [])
-        entry['sub_orders'] = list(slots[0]) if slots else []
+        entry["sub_orders"] = list(slots[0]) if slots else []
 
         participants = _entry_participant_powers(state, entry)
-        vector = list(entry.get('score_vector') or [0] * n_powers)
+        vector = list(entry.get("score_vector") or [0] * n_powers)
         while len(vector) < n_powers:
             vector.append(0)
         for power in range(n_powers):
             total = np.float32(0.0)
             for record in state.g_candidate_record_list:
-                if int(record.get('power', -1)) != power:
+                if int(record.get("power", -1)) != power:
                     continue
                 # puVar5[0x16] is the ranker's float32 weight, puVar5[9] the
                 # live score.
-                weight = np.float32(record.get('weight', 0.0))
+                weight = np.float32(record.get("weight", 0.0))
                 if weight > np.float32(0.0):
                     total = np.float32(
-                        total + np.float32(int(record.get('score', 0))) * weight
+                        total + np.float32(int(record.get("score", 0))) * weight
                     )
             if power not in participants:
                 continue
-            if int(entry.get('key', 0)) != 0 and total == np.float32(0.0):
+            if int(entry.get("key", 0)) != 0 and total == np.float32(0.0):
                 vector[power] = -1000000
             else:
                 vector[power] = int(float(total))
-        entry['score_vector'] = vector
+        entry["score_vector"] = vector
 
-        if int(entry.get('flag', 0)) == 1 and int(entry.get('type_flag', 0)) == 0:
+        if int(entry.get("flag", 0)) == 1 and int(entry.get("type_flag", 0)) == 0:
             self._answer_delayed_proposal(entry)
-        watermark = int(getattr(state, 'g_broadcast_list_watermark', 0))
-        if (int(entry.get('key', 0)) == watermark
-                and int(state.g_history_counter) > 0):
+        watermark = int(getattr(state, "g_broadcast_list_watermark", 0))
+        if int(entry.get("key", 0)) == watermark and int(state.g_history_counter) > 0:
             for power_i in range(n_powers):
                 _send_ally_press_by_power(state, power_i)
 
@@ -720,21 +722,17 @@ class _PressMixin:
         the orders from the candidate snapshot and submits them through
         python-diplomacy.
         """
-        own_power_idx = getattr(self.state, 'albert_power_idx', 0)
+        own_power_idx = getattr(self.state, "albert_power_idx", 0)
         refreshed_slots = self.state.g_current_best_order.get(own_power_idx, [])
         if refreshed_slots:
             order_pairs = refreshed_slots[0]
         else:
             # Defensive fallback for callers that invoke this method without
             # the normal GenerateAndSubmitOrders/update_score_state prelude.
-            own_candidates = [
-                c for c in best_orders if c.get('power') == own_power_idx
-            ]
+            own_candidates = [c for c in best_orders if c.get("power") == own_power_idx]
             if own_candidates:
-                best = max(
-                    own_candidates, key=lambda c: float(c.get('score', 0.0))
-                )
-                order_pairs = best.get('orders', [])
+                best = max(own_candidates, key=lambda c: float(c.get("score", 0.0)))
+                order_pairs = best.get("orders", [])
             else:
                 order_pairs = []
 
@@ -746,8 +744,7 @@ class _PressMixin:
         _diag_dispatch_fail = 0
         _diag_seq_none = 0
         for entry in order_pairs:
-            prov = restore_order_entry(
-                self.state.g_order_table, entry, full_row=True)
+            prov = restore_order_entry(self.state.g_order_table, entry, full_row=True)
             seq = _build_order_seq_from_table(self.state, prov)
             if seq is not None:
                 rc = validate_and_dispatch_order(
@@ -759,39 +756,46 @@ class _PressMixin:
                     _diag_dispatch_fail += 1
                     logger.warning(
                         "DIAG[%s] validate_and_dispatch REJECTED rc=%d seq=%s",
-                        self.power_name, rc, seq,
+                        self.power_name,
+                        rc,
+                        seq,
                     )
             else:
                 _diag_seq_none += 1
                 logger.warning(
                     "DIAG[%s] _build_order_seq_from_table returned None for prov=%d",
-                    self.power_name, prov,
+                    self.power_name,
+                    prov,
                 )
         logger.info(
-            "DIAG[%s] dispatch results: ok=%d fail=%d seq_none=%d "
-            "order_pairs=%d",
-            self.power_name, _diag_dispatch_ok, _diag_dispatch_fail,
-            _diag_seq_none, len(order_pairs),
+            "DIAG[%s] dispatch results: ok=%d fail=%d seq_none=%d order_pairs=%d",
+            self.power_name,
+            _diag_dispatch_ok,
+            _diag_dispatch_fail,
+            _diag_seq_none,
+            len(order_pairs),
         )
 
-        formatted = list(getattr(self.state, 'g_submitted_orders', []))
+        formatted = list(getattr(self.state, "g_submitted_orders", []))
 
         # Safety net: submitting HOLDs is strictly better than civil disorder
         # if the MC table was cleared after seeding.
         if not formatted:
             try:
                 game_state = self.game.get_state() if self.game is not None else {}
-                units = list(game_state.get('units', {}).get(self.power_name, []))
+                units = list(game_state.get("units", {}).get(self.power_name, []))
             except Exception:
                 units = []
             formatted = [f"{u} H" for u in units]
             if formatted:
                 logger.info(
                     "MC produced no orders for %s — defaulting %d units to HOLD",
-                    self.power_name, len(formatted),
+                    self.power_name,
+                    len(formatted),
                 )
-        logger.info("SUB — %d orders for %s: %s",
-                    len(formatted), self.power_name, formatted)
+        logger.info(
+            "SUB — %d orders for %s: %s", len(formatted), self.power_name, formatted
+        )
 
         if self.game is not None:
             self._validate_orders(formatted)
@@ -826,13 +830,15 @@ class _PressMixin:
         from ...communications.parsers import _parse_xdo_body_to_order
 
         state = self.state
-        own = int(getattr(state, 'albert_power_idx', 0))
-        cap = int(getattr(state, 'g_press_proposals_cap', 30))
+        own = int(getattr(state, "albert_power_idx", 0))
+        cap = int(getattr(state, "g_press_proposals_cap", 30))
         n_powers = len(state.g_unit_count)
 
         def trust(a: int, b: int) -> tuple:
-            return (int(state.g_ally_trust_score_hi[a, b]),
-                    int(state.g_ally_trust_score[a, b]))
+            return (
+                int(state.g_ally_trust_score_hi[a, b]),
+                int(state.g_ally_trust_score[a, b]),
+            )
 
         def at_least_three(a: int, b: int) -> bool:
             hi, lo = trust(a, b)
@@ -840,28 +846,32 @@ class _PressMixin:
 
         now = int(time.time())
         base_key = len(state.g_broadcast_list)
-        base = send_alliance_press(state, key=base_key, entry_data={
-            'sent': False,
-            'type_flag': 1,
-            'trial_count': 0,
-            'sched_time': now,
-            'watermark': None,
-            'history_flag': 0,
-            'from_power_tok': 0x4100 | own,
-            'sublist1': [0x4100 | own],
-            'sublist2': [0x4100 | own],
-            'sublist3': ['SUB'],
-            'clause_set_a': [],
-            'clause_set_b': [],
-            'score_vector': [0] * n_powers,
-            'participant_powers': {own},
-        })
+        base = send_alliance_press(
+            state,
+            key=base_key,
+            entry_data={
+                "sent": False,
+                "type_flag": 1,
+                "trial_count": 0,
+                "sched_time": now,
+                "watermark": None,
+                "history_flag": 0,
+                "from_power_tok": 0x4100 | own,
+                "sublist1": [0x4100 | own],
+                "sublist2": [0x4100 | own],
+                "sublist3": ["SUB"],
+                "clause_set_a": [],
+                "clause_set_b": [],
+                "score_vector": [0] * n_powers,
+                "participant_powers": {own},
+            },
+        )
 
-        for record in list(getattr(state, 'g_proposal_history_map', []) or []):
-            supporter = int(record.get('power', -1))
-            mover = int(record.get('target_power', -1))
+        for record in list(getattr(state, "g_proposal_history_map", []) or []):
+            supporter = int(record.get("power", -1))
+            mover = int(record.get("target_power", -1))
             tokens = _proposal_record_tokens(state, record)
-            is_sub = tokens == ['SUB']
+            is_sub = tokens == ["SUB"]
             own_supports = False
             eligible = False
             if supporter == own:
@@ -878,13 +888,19 @@ class _PressMixin:
             if not eligible:
                 continue
 
-            dest = int(record.get('dst_prov', -1))
-            des_b = (int(state.g_ally_designation_b[dest]),
-                     int(state.g_ally_designation_b_hi[dest]))
-            des_a = (int(state.g_ally_designation_a[dest]),
-                     int(state.g_ally_designation_a_hi[dest]))
-            des_c = (int(state.g_ally_designation_c[dest]),
-                     int(state.g_ally_designation_c_hi[dest]))
+            dest = int(record.get("dst_prov", -1))
+            des_b = (
+                int(state.g_ally_designation_b[dest]),
+                int(state.g_ally_designation_b_hi[dest]),
+            )
+            des_a = (
+                int(state.g_ally_designation_a[dest]),
+                int(state.g_ally_designation_a_hi[dest]),
+            )
+            des_c = (
+                int(state.g_ally_designation_c[dest]),
+                int(state.g_ally_designation_c_hi[dest]),
+            )
             trust_c = 0
             trust_b = 0
             if des_c[1] >= 0 and des_c[0] != own:
@@ -893,50 +909,62 @@ class _PressMixin:
                 trust_b = int(state.g_ally_trust_score[supporter, des_b[0]])
 
             partner = mover if own_supports else supporter
-            if (des_a[1] < 0 or des_a[0] == own or des_b[0] == own
-                    or int(state.g_ally_trust_score[supporter, des_a[0]]) < 3):
+            if (
+                des_a[1] < 0
+                or des_a[0] == own
+                or des_b[0] == own
+                or int(state.g_ally_trust_score[supporter, des_a[0]]) < 3
+            ):
                 if trust_b > 2 or trust_c > 2:
                     score = -200000
-                elif _token_list_in(tokens,
-                                    state.g_xdo_proposal_by_sender.get(supporter, [])):
+                elif _token_list_in(
+                    tokens, state.g_xdo_proposal_by_sender.get(supporter, [])
+                ):
                     score = -300000
                 else:
                     parsed = _parse_xdo_body_to_order(list(tokens))
                     if parsed is None:
                         score = 0
                     else:
-                        score = int(validate_and_dispatch_order(
-                            state, partner, parsed[1], commit=False))
+                        score = int(
+                            validate_and_dispatch_order(
+                                state, partner, parsed[1], commit=False
+                            )
+                        )
             else:
                 score = -200000
 
             node_key = len(state.g_broadcast_list)
             vector = [score] * n_powers if score != 0 else [0] * n_powers
-            send_alliance_press(state, key=node_key, entry_data={
-                'sent': score != 0,
-                'type_flag': 1,
-                'trial_count': cap if score != 0 else 0,
-                'sched_time': now,
-                'watermark': base_key,
-                'history_flag': 1 if score != 0 else 0,
-                'from_power_tok': 0x4100 | own,
-                'sublist1': [0x4100 | own],
-                'sublist2': [0x4100 | partner],
-                'sublist3': list(tokens),
-                'clause_set_a': [list(tokens)],
-                'clause_set_b': [],
-                'score_vector': vector,
-                'participant_powers': {own, partner},
-            })
+            send_alliance_press(
+                state,
+                key=node_key,
+                entry_data={
+                    "sent": score != 0,
+                    "type_flag": 1,
+                    "trial_count": cap if score != 0 else 0,
+                    "sched_time": now,
+                    "watermark": base_key,
+                    "history_flag": 1 if score != 0 else 0,
+                    "from_power_tok": 0x4100 | own,
+                    "sublist1": [0x4100 | own],
+                    "sublist2": [0x4100 | partner],
+                    "sublist3": list(tokens),
+                    "clause_set_a": [list(tokens)],
+                    "clause_set_b": [],
+                    "score_vector": vector,
+                    "participant_powers": {own, partner},
+                },
+            )
             state.g_broadcast_list_watermark = node_key
             if score == 0:
-                if tokens not in base['clause_set_b']:
-                    base['clause_set_b'].append(list(tokens))
-                base['participant_powers'].add(partner)
+                if tokens not in base["clause_set_b"]:
+                    base["clause_set_b"].append(list(tokens))
+                base["participant_powers"].add(partner)
 
-        if not base['clause_set_b']:
-            base['sent'] = True
-            base['trial_count'] = cap
+        if not base["clause_set_b"]:
+            base["sent"] = True
+            base["trial_count"] = cap
 
     def _await_press_and_send_gof(self) -> None:
         """AwaitPressAndSendGOF (0x00443ed0), without its Sleep polling.
@@ -951,14 +979,14 @@ class _PressMixin:
 
         state = self.state
         dispatch_scheduled_press(state, self._send_dm)
-        if int(getattr(state, 'g_cancel_press_sent', 0)) != 1:
+        if int(getattr(state, "g_cancel_press_sent", 0)) != 1:
             return
         if not _is_game_active(state) or check_time_limit(state):
             return
         if state.g_master_order_list:
             return
-        elapsed = time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
-        base_wait = float(getattr(state, 'g_base_wait_time', 0.0))
+        elapsed = time.time() - float(getattr(state, "g_turn_start_time", 0.0))
+        base_wait = float(getattr(state, "g_base_wait_time", 0.0))
         if _fun_004117d0(state, -1) and elapsed <= base_wait + 25.0:
             # C sleeps and polls here; the client re-checks when the 25 s
             # grace period after the last proposal has run out.
@@ -987,22 +1015,23 @@ class _PressMixin:
             restarts the walk.
         """
         state = self.state
-        n_powers = int(getattr(state, 'n_powers', 7))
-        press_cap = int(getattr(state, 'g_press_proposals_cap', 30))
+        n_powers = int(getattr(state, "n_powers", 7))
+        press_cap = int(getattr(state, "g_press_proposals_cap", 30))
 
         dispatch_scheduled_press(state, self._send_dm)
 
         entries = state.g_broadcast_list
-        if not any(int(e.get('key', -1)) == 0 for e in entries):
+        if not any(int(e.get("key", -1)) == 0 for e in entries):
             # Callers outside GenerateAndSubmitOrders have no base SUB node.
             from ._orders import _insert_base_broadcast_node
+
             _insert_base_broadcast_node(state)
 
         def in_final_seconds(margin: int) -> bool:
-            limit = int(getattr(state, 'g_move_time_limit_sec', 0))
+            limit = int(getattr(state, "g_move_time_limit_sec", 0))
             if limit <= 0:
                 return False
-            elapsed = time.time() - float(getattr(state, 'g_turn_start_time', 0.0))
+            elapsed = time.time() - float(getattr(state, "g_turn_start_time", 0.0))
             return elapsed > limit - margin
 
         index = 0
@@ -1013,38 +1042,42 @@ class _PressMixin:
                 self._await_press_and_send_gof()
                 return
             node = entries[index]
-            if node.get('sent', False):
+            if node.get("sent", False):
                 index += 1
                 continue
 
             def after_trial(node=node) -> None:
                 dispatch_scheduled_press(state, self._send_dm)
-                if int(node.get('key', -1)) == 0 and in_final_seconds(10):
+                if int(node.get("key", -1)) == 0 and in_final_seconds(10):
                     self._submit_sub_orders(best_orders)
 
             _advance_broadcast_proposal_trials(
-                state, node, press_cap, dispatch_fn=after_trial,
+                state,
+                node,
+                press_cap,
+                dispatch_fn=after_trial,
             )
-            if int(node.get('trial_count', 0)) == press_cap:
+            if int(node.get("trial_count", 0)) == press_cap:
                 self._finish_broadcast_node(node, n_powers)
 
-            if (int(node.get('key', -1)) == 0
-                    and int(node.get('trial_count', 0)) == press_cap
-                    and not getattr(state, 'g_baed6d', 0)):
+            if (
+                int(node.get("key", -1)) == 0
+                and int(node.get("trial_count", 0)) == press_cap
+                and not getattr(state, "g_baed6d", 0)
+            ):
                 self._submit_sub_orders(best_orders)
                 state.g_baed6d = 1
                 state.g_best_order_backup = {
-                    power: list(slots) for power, slots
-                    in state.g_current_best_order.items()
+                    power: list(slots)
+                    for power, slots in state.g_current_best_order.items()
                 }
                 state.g_best_order_backup_records = {
-                    power: list(records) for power, records
-                    in state.g_current_best_order_records.items()
+                    power: list(records)
+                    for power, records in state.g_current_best_order_records.items()
                 }
                 if int(state.g_history_counter) > 19 and not in_final_seconds(15):
                     self._insert_proposal_records()
                     index = 0
-
 
     def _submit_draw_vote(self) -> None:
         """Submit a YES draw vote to the server/game.
@@ -1061,8 +1094,8 @@ class _PressMixin:
             return
         try:
             # NetworkGame (server): async vote request — schedule coroutine
-            if hasattr(self.game, 'vote') and callable(self.game.vote):
-                future = self.game.vote(vote='yes')
+            if hasattr(self.game, "vote") and callable(self.game.vote):
+                future = self.game.vote(vote="yes")
                 self._track_request_future(
                     future,
                     f"draw vote for {self.power_name}",
@@ -1072,7 +1105,7 @@ class _PressMixin:
                 # Local Game: set directly on the power object
                 power = self.game.powers.get(self.power_name)
                 if power is not None:
-                    power.vote = 'yes'
+                    power.vote = "yes"
             logger.info("Draw vote: submitted YES to server")
         except Exception as exc:
             logger.warning("Draw vote: failed to submit YES: %s", exc)

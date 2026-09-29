@@ -115,14 +115,16 @@ def _random_case(seed):
     game = Game(map_name="standard", rules=["NO_PRESS"])
     game.set_current_phase("S1901M")
     game.clear_units()
+    game_map = game.map
+    assert game_map is not None
     locations = {}
-    for loc in game.map.locs:
+    for loc in game_map.locs:
         base = loc.split('/')[0].upper()
-        if game.map.area_type(base) != 'SHUT':
+        if game_map.area_type(base) != 'SHUT':
             locations.setdefault(base, []).append(loc.upper())
     placed = {power: [] for power in POWERS}
     for base in rng.sample(sorted(locations), rng.randint(10, 28)):
-        area = game.map.area_type(base)
+        area = game_map.area_type(base)
         unit_type = 'F' if area == 'WATER' else 'A' if area == 'LAND' else rng.choice('AF')
         coasts = [loc for loc in locations[base] if '/' in loc]
         loc = rng.choice(coasts) if unit_type == 'F' and coasts else base
