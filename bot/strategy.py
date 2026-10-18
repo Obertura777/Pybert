@@ -1210,7 +1210,7 @@ def _hostility(state: InnerGameState) -> None:
 
 
 def _post_friendly_update(state: InnerGameState) -> None:
-    """ComputeInfluenceMatrix (FUN_0040d8c0). Trust-adjusts g_influence_matrix,
+    """ComputeInfluenceMatrix (FUN_0040d8c0). Trust-adjusts g_influence_matrix_raw into g_influence_matrix,
     adds noise, row-normalises to 100, builds g_ally_pref_ranking.
     research.md §4241."""
     own_power = getattr(state, "albert_power_idx", 0)

@@ -16,7 +16,7 @@ import numpy as np
 
 from ..state import InnerGameState
 
-from ._primitives import _safe_pow, _float_to_int64
+from ._primitives import _safe_pow, _float_to_int64, _inject_influence_noise
 
 
 def _runtime_province_count(state: InnerGameState) -> int:
@@ -601,9 +601,10 @@ def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
     Port of ComputeInfluenceMatrix (FUN_0040d8c0).
 
     All 6 phases from the decompile (decompiled.txt):
-      Phase 1 — trust-adjust g_influence_matrix_raw → g_influence_matrix
+      Phase 1 — trust-adjust g_influence_matrix_raw (DAT_00b81228) → g_influence_matrix
+                (DAT_00b81ff0; its only other reader is CAL_BOARD)
       Phase 2 — per-power row-sum via PackScoreU64 (banker's-round int64)
-      Phase 3 — add _safe_pow noise: cell += pow(cell/(col_sum+1), 0.3) * 500
+      Phase 3 — noise: cell += 500 * pow(100*cell/(row_sum[col]+1), 1.2)
       Phase 4 — row-normalise each row to sum = 100
       Phase 5 — initialise g_ally_pref_ranking / g_influence_rank_flag
       Phase 6 — selection-sort to build ranked alliance preference list
@@ -628,19 +629,9 @@ def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
                 else:
                     state.g_influence_matrix[row, col] = raw / 6.0
 
-    # Phase 2 — per-power row sum via PackScoreU64 (FRNDINT + truncation correction)
-    power_sum = np.array(
-        [_float_to_int64(float(np.sum(state.g_influence_matrix[p]))) for p in range(num_powers)],
-        dtype=np.int64,
-    )
-
-    # Phase 3 — noise injection: cell += _safe_pow(cell / (row_sum+1), 0.3) * 500
-    # Divisor is DAT_004f6af0[iVar12] where iVar12 is the outer (row) loop — not col.
-    for row in range(num_powers):
-        row_sum = float(power_sum[row])
-        for col in range(num_powers):
-            base = float(state.g_influence_matrix[row, col]) / (row_sum + 1.0)
-            state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
+    # Phases 2-3 — per-row int64 sums into DAT_004f6af0, then noise
+    # (0x40d9a1-0x40daa3; see _inject_influence_noise).
+    _inject_influence_noise(state.g_influence_matrix, num_powers)
 
     # Phase 4 — row-normalise to 100
     for row in range(num_powers):
@@ -674,18 +665,24 @@ def compute_influence_matrix(state: InnerGameState, own_power: int = 0) -> None:
 
 def normalize_influence_matrix(state: InnerGameState) -> None:
     """
-    Port of NormalizeInfluenceMatrix (standalone C function).
+    Port of NormalizeInfluenceMatrix (0x40cdc0). Output: g_influence_matrix_norm
+    (DAT_00b82db8), read only by ScoreProvinces' 6:1 blend.
 
     Runs all four phases that the C version runs:
-      Phase 1 — trust-adjust: g_influence_matrix[r,c] = raw[r,c] / (trust[r,c] + 1)
+      Phase 1 — trust-adjust: g_influence_matrix_norm[r,c] = raw[r,c] / (trust[r,c] + 1)
                 No own_power exemption and no divide-by-6 branch (contrast with
                 compute_influence_matrix Phase 1).  Divisor is the full 64-bit
                 (trust_hi:trust_lo) + 1, matching CONCAT44 carry propagation in C.
       Phase 2 — per-row sum via PackScoreU64 (_float_to_int64 of row sum).
-      Phase 3 — noise injection: cell += _safe_pow(cell / (row_sum+1), 0.3) * 500.
+      Phase 3 — noise: cell += 500 * pow(100*cell/(row_sum[col]+1), 1.2).
       Phase 4 — row-normalise each row to sum 100 (skip if row_sum == 0).
     """
     num_powers = 7
+
+    # C reads raw (DAT_00b81228) and writes only DAT_00b82db8 (matrix A,
+    # 0x40ce1a-0x40d012); it never touches ComputeInfluenceMatrix's
+    # DAT_00b81ff0 (g_influence_matrix), which CAL_BOARD reads.
+    m = state.g_influence_matrix_norm
 
     # Phase 1 — unconditional trust-adjust (no own_power special-casing)
     # Divisor mirrors CONCAT44(trust_hi + carry, trust_lo + 1): reconstruct the
@@ -696,23 +693,14 @@ def normalize_influence_matrix(state: InnerGameState) -> None:
             trust_lo = int(np.uint32(state.g_ally_trust_score[row, col]))
             trust_hi = int(state.g_ally_trust_score_hi[row, col])
             divisor = ((trust_hi << 32) | trust_lo) + 1
-            state.g_influence_matrix[row, col] = raw / divisor if divisor != 0 else raw
+            m[row, col] = raw / divisor if divisor != 0 else raw
 
-    # Phase 2 — per-row sum via PackScoreU64
-    power_sum = np.array(
-        [_float_to_int64(float(np.sum(state.g_influence_matrix[p]))) for p in range(num_powers)],
-        dtype=np.int64,
-    )
-
-    # Phase 3 — noise injection
-    for row in range(num_powers):
-        row_sum = float(power_sum[row])
-        for col in range(num_powers):
-            base = float(state.g_influence_matrix[row, col]) / (row_sum + 1.0)
-            state.g_influence_matrix[row, col] += _safe_pow(base, 0.3) * 500.0
+    # Phases 2-3 — per-row int64 sums into DAT_004f6b98, then noise
+    # (0x40ce5f-0x40cf60; see _inject_influence_noise).
+    _inject_influence_noise(m, num_powers)
 
     # Phase 4 — row-normalise to 100
     for row in range(num_powers):
-        row_sum = float(np.sum(state.g_influence_matrix[row]))
+        row_sum = float(np.sum(m[row]))
         if row_sum != 0.0:
-            state.g_influence_matrix[row] = (state.g_influence_matrix[row] * 100.0) / row_sum
+            m[row] = (m[row] * 100.0) / row_sum

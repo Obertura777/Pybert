@@ -15,7 +15,7 @@ Module-level deps: ``numpy`` and ``..state.InnerGameState``.
 import numpy as np
 
 from ..state import InnerGameState
-from ..heuristics._primitives import _safe_pow, _signed_int_div
+from ..heuristics._primitives import _safe_pow, _signed_int_div, _inject_influence_noise
 
 
 def _initial_build_heat_seed(
@@ -115,10 +115,10 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     Phases (research.md §GenerateOrders — FUN_004466e0 / §generate_orders):
       Phase 0  — Zero all scoring tables and influence matrices.
       Phase 1  — Per-power loop: urgency seed → 5-round BFS heat diffusion →
-                 candidate scores → g_heat_movement → g_influence_matrix accumulation.
-      Phase 3  — Snapshot g_influence_matrix → g_influence_matrix_raw.
+                 candidate scores → g_heat_movement → g_influence_matrix_b accumulation.
+      Phase 3  — Snapshot g_influence_matrix_b → g_influence_matrix_raw.
       Phase 4  — Per-power noise injection (_safe_pow approx).
-      Phase 5  — Row-normalize g_influence_matrix to row-sums of 100.
+      Phase 5  — Row-normalize g_influence_matrix_b to row-sums of 100.
       Phase 6  — Asymmetric g_alliance_score from Raw matrix (via compute_alliance_score).
       Phase 7  — g_opening_target per power (SPR + g_deceit_level==1 only).
       Finally  — refresh the Python live convoy-route cache. In Albert,
@@ -145,7 +145,8 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
     # Note: g_candidate_scores, g_target_flag, and several reach arrays are
     # already zeroed by _init_scoring_state above (GenerateOrders.c:102-130).
     state.g_heat_movement.fill(0)
-    state.g_influence_matrix.fill(0)
+    # 0x446885/0x44688e zero B (DAT_00b84948) and raw (DAT_00b81228) only;
+    # ComputeInfluenceMatrix's DAT_00b81ff0 (g_influence_matrix) is untouched.
     state.g_influence_matrix_raw.fill(0)
     state.g_influence_matrix_b.fill(0)
     state.g_alliance_score.fill(0)
@@ -192,38 +193,34 @@ def generate_orders(state: InnerGameState, own_power: int) -> None:
         state.g_heat_movement[p] = heat_move
         state.g_heat_movement_b[p] = heat_move
 
-        # 1g — Accumulate g_influence_matrix[col, p]
+        # 1g — Accumulate g_influence_matrix_b[col, p] (0x446e0c)
         # GenerateOrders.c:359-373 checks whether `col` belongs to the
         # province's +0x14 home-power set and separately requires p != col.
         # Live unit ownership is not read in this pass.
         for col in range(NUM_POWERS):
-            state.g_influence_matrix[col, p] = _sum_influence_heat(
+            state.g_influence_matrix_b[col, p] = _sum_influence_heat(
                 state, p, col, valid_provs, heat_build, heat_move
             )
 
     # ── Phase 3–4 — Snapshot Raw, inject noise ────────────────────────────────
-    # Phase 3: copy g_influence_matrix → g_influence_matrix_raw (in-place to
-    # preserve any external references to the array object).
-    state.g_influence_matrix_raw[:] = state.g_influence_matrix
-    # g_InfluenceMatrix_B (GenerateOrders.c:352-383) uses the same per-power gate
-    # and heat arrays as Phase 1h; it equals the pre-normalization raw matrix.
-    state.g_influence_matrix_b[:] = state.g_influence_matrix_raw
+    # g_influence_matrix_b (DAT_00b84948) is the matrix GenerateOrders builds,
+    # noises and normalises IN PLACE: 0x447020 copies B -> raw (DAT_00b81228),
+    # then 0x4470bd-0x447130 noise B and 0x447156-0x4471d3 normalise B.  Its
+    # readers (HOSTILITY 0x42ee90, ApplyInfluenceScores 0x436470, 0x438b30,
+    # the alliance scorer 0x43d770, ScoreProvinces 0x448ff6) see these
+    # post-noise values; the alliance score below reads the raw copy.
+    # Phase 3: copy B → raw (in place, to keep external references valid).
+    state.g_influence_matrix_raw[:] = state.g_influence_matrix_b
 
-    # Phase 4: per-cell noise via _safe_pow (FUN_0047b370).
-    # Formula: B[i][j] += pow(B[i][j] / (sum[j] + 1), 0.3) * 500.0
-    # where sum[j] = column sum of Raw for power j (g_PowerInfluenceSum[col]).
-    # ST1=base=B[i][j]/(sum[j]+1), ST0=exponent=0.3 (DAT_004af9f8).
-    col_sums = np.sum(state.g_influence_matrix_raw, axis=0).astype(float)  # shape (NUM_POWERS,)
-    for i in range(NUM_POWERS):
-        for j in range(NUM_POWERS):
-            base = state.g_influence_matrix[i, j] / (col_sums[j] + 1.0)
-            state.g_influence_matrix[i, j] += _safe_pow(base, 0.3) * 500.0
+    # Phase 4: per-row int64 sums into DAT_004f6c40, then per-cell noise
+    # (0x447062-0x447130; see _inject_influence_noise).
+    _inject_influence_noise(state.g_influence_matrix_b, NUM_POWERS)
 
-    # ── Phase 5 — Row-normalize g_influence_matrix to row-sums of 100 ─────────
+    # ── Phase 5 — Row-normalize B to row-sums of 100 ─────────────────────────
     for i in range(NUM_POWERS):
-        row_sum = float(np.sum(state.g_influence_matrix[i]))
+        row_sum = float(np.sum(state.g_influence_matrix_b[i]))
         if row_sum != 0.0:
-            state.g_influence_matrix[i] *= 100.0 / row_sum
+            state.g_influence_matrix_b[i] *= 100.0 / row_sum
 
     # ── Phase 6 — Compute asymmetric g_alliance_score ─────────────────────────
     # Delegated to compute_alliance_score (heuristics/influence.py).

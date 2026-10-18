@@ -1,0 +1,22 @@
+// sub_472d30 @ 0x472d30
+// hopper name: sub_472d30
+// referenced by: pointer
+// source: REA batch_decompile (Hopper) evidence ev_7eaefcae85d881030ab52580d0138645a5f7610a1853d5e3198d2c7a6fa244cc
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_472d30() {
+    sub_47d6bb(0x8);
+    sub_471606(*(arg_4 - 0x14));
+    eax = *(arg_4 - 0x30);
+    esp = esp - 0x1c;
+    decomp_var_18 = arg_8;
+    decomp_var_18 = arg_8;
+    decomp_var_18 = arg_8;
+    decomp_var_18 = arg_8;
+    esi = (eax[0x28])();
+    if (decomp_var_10 != 0x0) {
+            sub_470ddd();
+    }
+    eax = sub_47d75a();
+    return eax;
+}

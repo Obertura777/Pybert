@@ -1,0 +1,589 @@
+[
+ {
+  "address": "0x4216f0",
+  "hopper_lines": 2825,
+  "globals": 16,
+  "name": "RESPOND",
+  "cited_in": [
+   "bot/client/_press.py",
+   "communications/__init__.py",
+   "communications/evaluators/_evals.py",
+   "communications/evaluators/press.py",
+   "communications/inbound/__init__.py",
+   "communications/inbound/frm.py",
+   "communications/inbound/gate.py",
+   "communications/inbound/history.py",
+   "communications/inbound/respond.py",
+   "communications/tokens.py",
+   "run_7bots.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x426350",
+  "hopper_lines": 2188,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x436470",
+  "hopper_lines": 2113,
+  "globals": 20,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x4559c0",
+  "hopper_lines": 1885,
+  "globals": 8,
+  "name": "ScoreOrderCandidates",
+  "cited_in": [
+   "bot/client/_press.py",
+   "bot/strategy.py",
+   "communications/inbound/gate.py",
+   "communications/parsers.py",
+   "communications/senders.py",
+   "heuristics/scoring.py",
+   "monte_carlo/trial.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x41f090",
+  "hopper_lines": 1884,
+  "globals": 10,
+  "name": null,
+  "cited_in": [
+   "communications/evaluators/_evals.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x41e2d0",
+  "hopper_lines": 1643,
+  "globals": 13,
+  "name": "_eval_aly",
+  "cited_in": [
+   "communications/__init__.py",
+   "communications/evaluators/__init__.py",
+   "communications/evaluators/_evals.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x4325a0",
+  "hopper_lines": 1240,
+  "globals": 10,
+  "name": null,
+  "cited_in": [
+   "bot/client/_orders.py",
+   "communications/scheduling.py",
+   "communications/tokens.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x439c30",
+  "hopper_lines": 1047,
+  "globals": 9,
+  "name": "ExecuteThennAction",
+  "cited_in": [
+   "bot/strategy.py",
+   "communications/inbound/ack.py",
+   "communications/scheduling.py",
+   "communications/senders.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x432960",
+  "hopper_lines": 705,
+  "globals": 6,
+  "name": "ProposeDMZ",
+  "cited_in": [
+   "communications/evaluators/flags.py",
+   "communications/scheduling.py",
+   "communications/senders.py",
+   "dispatch/orders.py",
+   "heuristics/influence.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x438b30",
+  "hopper_lines": 479,
+  "globals": 12,
+  "name": null,
+  "cited_in": [
+   "communications/scheduling.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x4418e0",
+  "hopper_lines": 440,
+  "globals": 13,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x420100",
+  "hopper_lines": 435,
+  "globals": 8,
+  "name": "DMZ",
+  "cited_in": [
+   "bot/gof.py",
+   "bot/orders.py",
+   "communications/evaluators/_common.py",
+   "communications/evaluators/_evals.py",
+   "communications/evaluators/cancellation.py",
+   "communications/evaluators/handlers.py",
+   "communications/evaluators/press.py",
+   "communications/inbound/ack.py",
+   "communications/inbound/history.py",
+   "communications/scheduling.py",
+   "communications/senders.py",
+   "compare_albert.py",
+   "main.py",
+   "monte_carlo/trial.py",
+   "state.py",
+   "utils/tokens.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x41f5a0",
+  "hopper_lines": 378,
+  "globals": 4,
+  "name": "_eval_not_dmz",
+  "cited_in": [
+   "communications/__init__.py",
+   "communications/evaluators/__init__.py",
+   "communications/evaluators/_evals.py",
+   "communications/evaluators/handlers.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x41daf0",
+  "hopper_lines": 347,
+  "globals": 8,
+  "name": "PCE",
+  "cited_in": [
+   "bot/strategy.py",
+   "communications/evaluators/_common.py",
+   "communications/evaluators/_evals.py",
+   "communications/evaluators/cancellation.py",
+   "communications/evaluators/handlers.py",
+   "communications/evaluators/press.py",
+   "communications/inbound/ack.py",
+   "communications/inbound/history.py",
+   "communications/scheduling.py",
+   "communications/senders.py",
+   "main.py",
+   "state.py",
+   "utils/tokens.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x4113d0",
+  "hopper_lines": 336,
+  "globals": 10,
+  "name": "ComputeOrderDipFlags",
+  "cited_in": [
+   "bot/strategy.py",
+   "communications/evaluators/__init__.py",
+   "communications/evaluators/flags.py",
+   "communications/evaluators/handlers.py",
+   "dispatch/orders.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x42fc40",
+  "hopper_lines": 316,
+  "globals": 2,
+  "name": "EvaluatePress",
+  "cited_in": [
+   "bot/client/_press.py",
+   "communications/evaluators/__init__.py",
+   "communications/evaluators/press.py",
+   "communications/inbound/frm.py",
+   "communications/inbound/gate.py",
+   "communications/inbound/respond.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x421040",
+  "hopper_lines": 310,
+  "globals": 2,
+  "name": "REMOVE_DMZ",
+  "cited_in": [
+   "communications/evaluators/cancellation.py",
+   "communications/evaluators/handlers.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x433510",
+  "hopper_lines": 260,
+  "globals": 4,
+  "name": null,
+  "cited_in": [
+   "communications/scheduling.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x431fe0",
+  "hopper_lines": 254,
+  "globals": 4,
+  "name": "RECEIVE_PROPOSAL",
+  "cited_in": [
+   "bot/client/_press.py",
+   "communications/__init__.py",
+   "communications/inbound/__init__.py",
+   "communications/inbound/frm.py",
+   "communications/inbound/gate.py",
+   "communications/inbound/respond.py",
+   "communications/tokens.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x41cd70",
+  "hopper_lines": 246,
+  "globals": 6,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x43dfb0",
+  "hopper_lines": 236,
+  "globals": 1,
+  "name": null,
+  "cited_in": [
+   "moves/hold.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x431940",
+  "hopper_lines": 219,
+  "globals": 7,
+  "name": "PROPOSE",
+  "cited_in": [
+   "communications/__init__.py",
+   "communications/evaluators/flags.py",
+   "communications/scheduling.py",
+   "communications/senders.py",
+   "communications/tokens.py",
+   "monte_carlo/evaluation.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x41df20",
+  "hopper_lines": 209,
+  "globals": 4,
+  "name": "CANCEL",
+  "cited_in": [
+   "bot/client/_lifecycle.py",
+   "bot/client/_orders.py",
+   "communications/evaluators/_evals.py",
+   "communications/evaluators/cancellation.py",
+   "communications/evaluators/handlers.py",
+   "communications/senders.py",
+   "heuristics/_primitives.py",
+   "run_7bots.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x4684e0",
+  "hopper_lines": 205,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x4690e0",
+  "hopper_lines": 205,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x44b760",
+  "hopper_lines": 182,
+  "globals": 13,
+  "name": null,
+  "cited_in": [
+   "moves/convoy.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x40cdc0",
+  "hopper_lines": 170,
+  "globals": 7,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x41fcc0",
+  "hopper_lines": 141,
+  "globals": 7,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x44f1d0",
+  "hopper_lines": 139,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x4117d0",
+  "hopper_lines": 138,
+  "globals": 2,
+  "name": null,
+  "cited_in": [
+   "bot/client/_press.py",
+   "communications/__init__.py",
+   "communications/scheduling.py",
+   "communications/senders.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x448760",
+  "hopper_lines": 114,
+  "globals": 10,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x4424e0",
+  "hopper_lines": 113,
+  "globals": 4,
+  "name": "ScheduledPressDispatch",
+  "cited_in": [
+   "bot/client/_press.py",
+   "bot/gof.py",
+   "communications/scheduling.py",
+   "communications/senders.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x40d1a0",
+  "hopper_lines": 112,
+  "globals": 3,
+  "name": null,
+  "cited_in": [
+   "communications/evaluators/_evals.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x41ed30",
+  "hopper_lines": 104,
+  "globals": 1,
+  "name": "_eval_drw",
+  "cited_in": [
+   "communications/__init__.py",
+   "communications/evaluators/__init__.py",
+   "communications/evaluators/_evals.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x44a840",
+  "hopper_lines": 89,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x437510",
+  "hopper_lines": 77,
+  "globals": 4,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x421570",
+  "hopper_lines": 60,
+  "globals": 4,
+  "name": "SendAllyPressByPower",
+  "cited_in": [
+   "bot/strategy.py",
+   "communications/inbound/ack.py",
+   "communications/inbound/respond.py",
+   "communications/scheduling.py",
+   "communications/senders.py",
+   "communications/tokens.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x45fa10",
+  "hopper_lines": 59,
+  "globals": 2,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x40d4d0",
+  "hopper_lines": 55,
+  "globals": 1,
+  "name": null,
+  "cited_in": [
+   "communications/inbound/frm.py",
+   "communications/inbound/respond.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x445c50",
+  "hopper_lines": 55,
+  "globals": 3,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x40dda0",
+  "hopper_lines": 54,
+  "globals": 2,
+  "name": null,
+  "cited_in": [
+   "bot/orders.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x418db0",
+  "hopper_lines": 54,
+  "globals": 2,
+  "name": null,
+  "cited_in": [
+   "communications/inbound/respond.py",
+   "communications/senders.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x40b990",
+  "hopper_lines": 44,
+  "globals": 1,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x411740",
+  "hopper_lines": 43,
+  "globals": 3,
+  "name": null,
+  "cited_in": [
+   "communications/senders.py"
+  ],
+  "cls": "press-module"
+ },
+ {
+  "address": "0x40e8e0",
+  "hopper_lines": 43,
+  "globals": 2,
+  "name": "CancelPriorPress",
+  "cited_in": [
+   "bot/gof.py",
+   "communications/inbound/frm.py",
+   "communications/senders.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x44bbe0",
+  "hopper_lines": 42,
+  "globals": 1,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x40d7e0",
+  "hopper_lines": 37,
+  "globals": 2,
+  "name": "UpdateRelationHistory",
+  "cited_in": [
+   "bot/strategy.py",
+   "communications/senders.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x45f990",
+  "hopper_lines": 16,
+  "globals": 2,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x45f930",
+  "hopper_lines": 16,
+  "globals": 1,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ },
+ {
+  "address": "0x445be0",
+  "hopper_lines": 14,
+  "globals": 1,
+  "name": "ComputeWinterBuilds",
+  "cited_in": [
+   "bot/client/_orders.py",
+   "heuristics/_primitives.py",
+   "moves/convoy.py",
+   "state.py"
+  ],
+  "cls": "cited-unpaired"
+ },
+ {
+  "address": "0x45b860",
+  "hopper_lines": 7,
+  "globals": 1,
+  "name": null,
+  "cited_in": [],
+  "cls": "unreferenced"
+ }
+]

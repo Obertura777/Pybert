@@ -19,6 +19,7 @@ import numpy as np
 
 from ..state import InnerGameState
 from ..moves import build_support_proposals
+from ..heuristics._primitives import _signed_int_div as _trunc_div
 
 _dbg_log = logging.getLogger("pybert.scoring_dbg")
 
@@ -26,6 +27,20 @@ _dbg_log = logging.getLogger("pybert.scoring_dbg")
 def _float32(value: float) -> float:
     """Round one assignment to Albert's 32-bit ``float`` storage."""
     return float(np.float32(value))
+
+
+HISTORY_DECAY_BASE = 0.85  # DAT_004b0f70, base of FUN_0040e890 at 0x437786
+
+
+def _history_term(move_history: int) -> float:
+    """EvaluateOrderScore's history factor, Albert.exe 0x437786-0x4377a8.
+
+    push int(field17 / 10) (signed, truncating); push 0.85; call FUN_0040e890
+    = pow(double base, int n) by repeated squaring, reciprocal for n < 0;
+    the result is stored as float32.  Ghidra showed only the low dword
+    0x33333333, which 0.85 shares with 0.3.
+    """
+    return _float32(HISTORY_DECAY_BASE ** _trunc_div(move_history, 10))
 
 
 from ._flags import (
@@ -228,9 +243,8 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> int:
         # Main path (C:143-258).  The old port replaced this decision tree
         # with an unrelated own-SC/attack-vs-defense heuristic.  Fields 13,
         # 14 and 15 are respectively the incoming count, base/support count,
-        # and peak hostile reach.  FUN_0040e890 is the x87 power helper: the
-        # decompiler exposes the low dword 0x33333333 of double 0.3, applied
-        # to field 17 / 10.
+        # and peak hostile reach.  FUN_0040e890 is pow(double, int); the
+        # history factor is 0.85 ** (field17 / 10) — see _history_term.
         base_count = int(ot[prov, _F_INCOMING_MOVE + 1])
         target_count = int(ot[prov, _F_TARGET_PROV])
         move_history = int(ot[prov, _F_MOVE_HISTORY])
@@ -251,9 +265,7 @@ def evaluate_order_score(power_idx: int, state: InnerGameState) -> int:
         )
 
         if complex_path:
-            # C performs integer division before the x87 power call.
-            history_base = max(move_history, 0) // 10
-            history_term = _float32(float(history_base) ** 0.3)
+            history_term = _history_term(move_history)
             if incoming + 1 < target_count and is_supply_center:
                 move_prob = (
                     history_term * 0.1

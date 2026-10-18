@@ -3114,6 +3114,22 @@ def _update_ally_order_score(state: InnerGameState, power: int) -> None:
     _rank_candidates_for_power(state, power, flag=1)
 
 
+def _refresh_order_key(candidate: dict) -> int:
+    """RefreshOrderTable's tree key, Albert.exe 0x424573-0x424587.
+
+        fld dword [node+0x1c4] ; fmul 10.0 ; fstp dword ; fld dword ; call FloatToInt64
+
+    Node slot 0x71 (+0x1c4) is the ranker's running ``output_score``
+    (written at 0x4256ac as (1-a)*weight + a*old), not ``weight`` (+0x58).
+    The x10 turns that 0-100 probability into the per-mille key the
+    ``1000 - key`` complement and the 50/20 slot gates expect.  Ghidra
+    printed FloatToInt64 with its x87 operand hidden.  FloatToInt64
+    truncates toward zero; the key is not clamped.
+    """
+    scaled = np.float32(np.float32(candidate.get('output_score', 0.0)) * 10.0)
+    return int(float(scaled))
+
+
 def _refresh_order_table(state: InnerGameState, power: int) -> None:
     """
     Port of RefreshOrderTable (FUN_00424490).
@@ -3139,13 +3155,7 @@ def _refresh_order_table(state: InnerGameState, power: int) -> None:
     # hybrid sets which never existed in any trial.
     candidate_pool: list = []  # [(orders, weight, insertion_idx, record), ...]
     for insertion_idx, c in enumerate(candidates):
-        # RefreshOrderTable.c inserts FloatToInt64(candidate[0x16]) into its
-        # temporary tree.  RankCandidatesForPower writes that field; Python
-        # binds it as ``weight``.  ``pressure_cost`` is local_c10's input and
-        # must not bypass the ranker's probability calculation here.
-        # FloatToInt64 truncates toward zero.  Preserve negative and >1000
-        # values here; the C tree key is not clamped.
-        selection_weight = int(float(c.get('weight', 0)))
+        selection_weight = _refresh_order_key(c)
         orders = c.get('orders', [])
         if isinstance(orders, (list, tuple)) and orders:
             candidate_pool.append((orders, selection_weight, insertion_idx, c))

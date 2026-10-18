@@ -1,0 +1,42 @@
+// sub_4065f0 @ 0x4065f0
+// hopper name: sub_4065f0
+// referenced by: called
+// source: REA batch_decompile (Hopper) evidence ev_5cc63cb94071c63420dabfd8b5335985b2493814f2238a7b3efca7a872bd75f9
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_4065f0() {
+    var_C = *0x0;
+    decomp_var_18 = edi;
+    *0x0 = &var_C;
+    *ecx = *arg_0;
+    ecx[0x2] = arg_0[0x2];
+    ecx[0x2] = arg_0[0x2];
+    ecx[0x6] = arg_0[0x6] & 0xffff;
+    ecx[0x4] = arg_0[0x4];
+    ecx[0x5] = arg_0[0x5];
+    ecx[0xc] = arg_0[0xc] & 0xffff;
+    ecx[0x7] = arg_0[0x7];
+    ecx[0x8] = arg_0[0x8];
+    sub_405d20(arg_0 + 0x24);
+    ecx[0xc] = arg_0[0xc];
+    sub_405090(arg_0 + 0x34);
+    ecx[0x10] = arg_0[0x10];
+    ecx[0x44] = arg_0[0x44] & 0xff;
+    ecx[0x12] = arg_0[0x12];
+    ecx[0x13] = arg_0[0x13];
+    ecx[0x14] = arg_0[0x14];
+    ecx[0x54] = arg_0[0x54] & 0xff;
+    ecx[0x55] = arg_0[0x55] & 0xff;
+    ecx[0x56] = arg_0[0x56] & 0xff;
+    ecx[0x57] = arg_0[0x57] & 0xff;
+    ecx[0x58] = arg_0[0x58] & 0xff;
+    ecx[0x59] = arg_0[0x59] & 0xff;
+    ecx[0x5a] = arg_0[0x5a] & 0xff;
+    ecx[0x5b] = arg_0[0x5b] & 0xff;
+    ecx[0x5c] = arg_0[0x5c] & 0xff;
+    ecx[0x2f] = arg_0[0x2f];
+    sub_405db0(arg_0 + 0x60);
+    eax = ecx;
+    *0x0 = var_C;
+    return eax;
+}

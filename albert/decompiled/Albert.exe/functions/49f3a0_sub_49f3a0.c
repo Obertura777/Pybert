@@ -1,0 +1,20 @@
+// sub_49f3a0 @ 0x49f3a0
+// hopper name: sub_49f3a0
+// referenced by: pointer
+// source: REA batch_decompile (Hopper) evidence ev_d0ced5848078d0c8fa33850112ccedc1b66b774e6265bab395e5928f9c409794
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_49f3a0() {
+    eax = sub_40fed0();
+    *dword_bbf624 = eax;
+    eax[0x21] = 0x1;
+    eax = *dword_bbf624;
+    eax[0x1] = eax;
+    eax = *dword_bbf624;
+    *eax = eax;
+    eax = *dword_bbf624;
+    eax[0x2] = eax;
+    *dword_bbf628 = 0x0;
+    eax = sub_47ae90(sub_4a7b80);
+    return eax;
+}

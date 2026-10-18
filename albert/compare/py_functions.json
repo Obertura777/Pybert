@@ -1,0 +1,9709 @@
+[
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "build_candidate_list_find",
+  "line": 54,
+  "end": 65,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "setdefault"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "evaluate_province_score",
+  "line": 67,
+  "end": 131,
+  "claimed": "0x433ce0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x433ce0"
+  ],
+  "calls": [
+   "get_max_threatening_adj_scs",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3.0,
+   6.0,
+   15,
+   50,
+   100,
+   150
+  ],
+  "strings": [
+   "g_press_flag"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "compute_winter_builds",
+  "line": 134,
+  "end": 263,
+  "claimed": "0x445be0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x445be0"
+  ],
+  "calls": [
+   "add",
+   "fill",
+   "float",
+   "frozenset",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "lstrip",
+   "min",
+   "normalize_coast",
+   "normalize_type",
+   "set",
+   "sorted",
+   "str",
+   "unit_matches",
+   "update",
+   "upper"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   3,
+   20,
+   30.0,
+   10000.0
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "FLT",
+   "coast",
+   "delta",
+   "flag",
+   "g_adjustment_build_candidates",
+   "g_build_delta",
+   "power",
+   "province",
+   "sc_provinces",
+   "type",
+   "unit_type"
+  ],
+  "branches": 34
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_safe_pow",
+  "line": 265,
+  "end": 275,
+  "claimed": "0x47b370",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x47b370"
+  ],
+  "calls": [
+   "float"
+  ],
+  "numbers": [
+   0.0
+  ],
+  "strings": [
+   "inf"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_float_to_int64",
+  "line": 278,
+  "end": 289,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_signed_int_div",
+  "line": 292,
+  "end": 305,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "ZeroDivisionError",
+   "abs",
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "integer division by zero"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_signed_divide_array",
+  "line": 308,
+  "end": 318,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "ValueError",
+   "asarray",
+   "int",
+   "where"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "denominator must be positive"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_trusted_foreign_sc_mask",
+  "line": 321,
+  "end": 346,
+  "claimed": "0x43bd20",
+  "how": "docstring-cname:EvaluateAllianceScore",
+  "mentioned": [],
+  "calls": [
+   "int",
+   "range",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   3
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_apply_sc_controller_phase",
+  "line": 349,
+  "end": 508,
+  "claimed": "0x43bd20",
+  "how": "docstring-cname:EvaluateAllianceScore",
+  "mentioned": [
+   "0x43c25b"
+  ],
+  "calls": [
+   "_signed_int_div",
+   "float",
+   "getattr",
+   "int",
+   "max",
+   "range",
+   "sorted",
+   "str",
+   "where",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4,
+   5.0,
+   8,
+   16,
+   35
+  ],
+  "strings": [
+   "",
+   "SPR",
+   "g_season",
+   "sc_provinces"
+  ],
+  "branches": 37
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_apply_controlled_sc_pressure_phase",
+  "line": 511,
+  "end": 593,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_float_to_int64",
+   "float",
+   "getattr",
+   "int",
+   "max",
+   "range",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   6.0,
+   10,
+   20.0
+  ],
+  "strings": [
+   "g_albert_power",
+   "g_press_flag",
+   "sc_provinces"
+  ],
+  "branches": 18
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_apply_alliance_province_phase",
+  "line": 596,
+  "end": 684,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_float_to_int64",
+   "_signed_int_div",
+   "float",
+   "frozenset",
+   "get",
+   "getattr",
+   "int",
+   "max",
+   "range",
+   "str"
+  ],
+  "numbers": [
+   0,
+   0.75,
+   1,
+   2,
+   10,
+   20
+  ],
+  "strings": [
+   "",
+   "FAL",
+   "SPR",
+   "g_season",
+   "sc_provinces"
+  ],
+  "branches": 19
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_apply_alliance_seasonal_phase",
+  "line": 687,
+  "end": 720,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_float_to_int64",
+   "float",
+   "getattr",
+   "int",
+   "max",
+   "range",
+   "str"
+  ],
+  "numbers": [
+   1,
+   10.0,
+   100.0,
+   300.0
+  ],
+  "strings": [
+   "",
+   "FAL",
+   "SPR",
+   "g_season"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "evaluate_alliance_score",
+  "line": 723,
+  "end": 1277,
+  "claimed": "0x43bd20",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x41c270",
+   "0x43bd20"
+  ],
+  "calls": [
+   "_apply_alliance_province_phase",
+   "_apply_alliance_seasonal_phase",
+   "_apply_controlled_sc_pressure_phase",
+   "_apply_sc_controller_phase",
+   "_float_to_int64",
+   "_signed_divide_array",
+   "_signed_int_div",
+   "_trusted_foreign_sc_mask",
+   "any",
+   "astype",
+   "copy",
+   "count_nonzero",
+   "fill",
+   "float",
+   "frozenset",
+   "fss",
+   "full",
+   "get",
+   "getattr",
+   "hasattr",
+   "int",
+   "items",
+   "max",
+   "maximum",
+   "min",
+   "range",
+   "sorted",
+   "sum",
+   "where",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   0.05,
+   0.1,
+   0.85,
+   1,
+   2,
+   3.0,
+   5.0,
+   6.0,
+   7,
+   8.0,
+   10,
+   11,
+   16.0,
+   19,
+   20,
+   30,
+   50,
+   51,
+   70,
+   80,
+   90,
+   100,
+   120,
+   256,
+   1000,
+   2000.0,
+   5000.0,
+   10000.0
+  ],
+  "strings": [
+   "A",
+   "albert_power_idx",
+   "g_albert_power",
+   "g_ally_trust_score",
+   "g_ally_trust_score_hi",
+   "g_best_ally_slot0",
+   "g_conviction_bonus",
+   "g_deceit_level",
+   "g_early_game_bonus",
+   "g_leading_flag",
+   "g_mc_province_pressure",
+   "g_other_power_lead_flag",
+   "g_other_score",
+   "g_press_flag",
+   "g_relation_score",
+   "g_ring_convoy_score",
+   "g_support_trust_adj",
+   "power",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 74
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "evaluate_alliance_scores_batch",
+  "line": 1280,
+  "end": 1777,
+  "claimed": "0x43bd20",
+  "how": "docstring-cname:EvaluateAllianceScore",
+  "mentioned": [],
+  "calls": [
+   "ValueError",
+   "_apply_alliance_province_phase",
+   "_apply_alliance_seasonal_phase",
+   "_apply_controlled_sc_pressure_phase",
+   "_apply_sc_controller_phase",
+   "_candidate_vector",
+   "_signed_divide_array",
+   "_trusted_foreign_sc_mask",
+   "any",
+   "asarray",
+   "astype",
+   "copy",
+   "count_nonzero",
+   "empty",
+   "float",
+   "frozenset",
+   "full",
+   "get",
+   "getattr",
+   "int",
+   "isin",
+   "items",
+   "max",
+   "maximum",
+   "minimum",
+   "range",
+   "sorted",
+   "sum",
+   "trunc",
+   "where",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   0.05,
+   0.1,
+   0.85,
+   1,
+   2,
+   3.0,
+   5.0,
+   6.0,
+   7,
+   8.0,
+   10,
+   11,
+   16.0,
+   19,
+   20,
+   30,
+   50,
+   51,
+   70,
+   80,
+   90,
+   100,
+   120,
+   256,
+   1000,
+   2000.0,
+   5000.0,
+   10000.0
+  ],
+  "strings": [
+   ",), got ",
+   "A",
+   "F",
+   "FLT",
+   "albert_power_idx",
+   "candidate field must have shape (",
+   "g_albert_power",
+   "g_best_ally_slot0",
+   "g_conviction_bonus",
+   "g_deceit_level",
+   "g_early_game_bonus",
+   "g_leading_flag",
+   "g_other_power_lead_flag",
+   "g_other_score",
+   "g_press_flag",
+   "g_ring_convoy_score",
+   "g_support_trust_adj",
+   "power",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 67
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "target_province",
+  "line": 44,
+  "end": 46,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "coast_short",
+  "line": 49,
+  "end": 51,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "normalize_type",
+  "line": 152,
+  "end": 153,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "A",
+   "AMY",
+   "FLT"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "normalize_coast",
+  "line": 155,
+  "end": 156,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "lstrip",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "unit_matches",
+  "line": 158,
+  "end": 164,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "normalize_coast",
+   "normalize_type"
+  ],
+  "numbers": [],
+  "strings": [
+   "coast",
+   "type"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/_primitives.py",
+  "name": "_candidate_vector",
+  "line": 1685,
+  "end": 1696,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "ValueError",
+   "asarray",
+   "full"
+  ],
+  "numbers": [],
+  "strings": [
+   ",), got ",
+   "candidate field must have shape ("
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_fear_weighted_threshold",
+  "line": 19,
+  "end": 38,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int"
+  ],
+  "numbers": [
+   0.0,
+   100.0
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_populate_enemy_rank_matrix",
+  "line": 41,
+  "end": 76,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "fill",
+   "float",
+   "int",
+   "range",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   7
+  ],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_distressed_ally_rescue",
+  "line": 79,
+  "end": 132,
+  "claimed": "0x40d8c0",
+  "how": "docstring-cname:ComputeInfluenceMatrix",
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   7,
+   30
+  ],
+  "strings": [
+   "g_enemy_flag_hi"
+  ],
+  "branches": 12
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_late_gang_up",
+  "line": 135,
+  "end": 199,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "_candidate_works",
+   "_good_ally",
+   "_hostile",
+   "_try_side",
+   "float",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1.0,
+   3,
+   7
+  ],
+  "strings": [
+   "g_enemy_flag_hi",
+   "g_influence_matrix_raw"
+  ],
+  "branches": 14
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_validated_top3_gang_up",
+  "line": 202,
+  "end": 259,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "_hostile",
+   "_mark",
+   "float",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   6,
+   7
+  ],
+  "strings": [
+   "g_enemy_flag_hi",
+   "g_influence_matrix_raw"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_is_weak_influence_target",
+  "line": 262,
+  "end": 275,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "float",
+   "getattr"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   4.5,
+   10.0
+  ],
+  "strings": [
+   "g_influence_matrix_raw"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_weak_elimination_and_sc_grab",
+  "line": 278,
+  "end": 317,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "_is_weak_influence_target",
+   "_mark",
+   "getattr",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   7
+  ],
+  "strings": [
+   "g_deceit_level",
+   "g_enemy_flag_hi"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_dominance_sweep",
+  "line": 320,
+  "end": 345,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2.0,
+   7,
+   75.0
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_apply_alliance_agreement_enemies",
+  "line": 348,
+  "end": 396,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   7,
+   4294967295
+  ],
+  "strings": [],
+  "branches": 11
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "cal_board",
+  "line": 399,
+  "end": 1260,
+  "claimed": "0x427960",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x427960",
+   "0x429317",
+   "0x429d0f",
+   "0x429efb",
+   "0x42a6ef",
+   "0x42aa75",
+   "0x42ac27",
+   "0x42b203",
+   "0x42bff2"
+  ],
+  "calls": [
+   "_apply_alliance_agreement_enemies",
+   "_apply_distressed_ally_rescue",
+   "_apply_dominance_sweep",
+   "_apply_late_gang_up",
+   "_apply_validated_top3_gang_up",
+   "_apply_weak_elimination_and_sc_grab",
+   "_fear_weighted_threshold",
+   "_is_weak_influence_target",
+   "_mark_branch4_enemy",
+   "_neutral",
+   "_populate_enemy_rank_matrix",
+   "add",
+   "copy",
+   "fill",
+   "float",
+   "getattr",
+   "hasattr",
+   "int",
+   "len",
+   "max",
+   "min",
+   "randint",
+   "range",
+   "sorted",
+   "sum",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1.0,
+   1.45,
+   1.7,
+   2,
+   3,
+   4,
+   5.0,
+   6,
+   7,
+   8.0,
+   9,
+   10,
+   11,
+   15.0,
+   20.0,
+   21,
+   23,
+   25.0,
+   40,
+   41.0,
+   50,
+   59,
+   60,
+   65.0,
+   69.0,
+   70.0,
+   75,
+   79,
+   80.0,
+   85,
+   86,
+   100.0,
+   32767
+  ],
+  "strings": [
+   "Apply the shared C:1804-1809 enemy/trust cleanup.",
+   "__getitem__",
+   "__setitem__",
+   "g_ally_matrix",
+   "g_ally_trust_score_hi",
+   "g_best_ally_slot0",
+   "g_best_ally_slot1",
+   "g_best_ally_slot2",
+   "g_deceit_level",
+   "g_history_counter",
+   "g_neutral_flag",
+   "g_opening_best_ally",
+   "g_opening_enemy",
+   "g_opening_sticky_mode",
+   "g_peace_counter",
+   "g_peace_signal",
+   "g_power_exp_score",
+   "g_relation_score",
+   "g_stabbed_flag"
+  ],
+  "branches": 222
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_hostile",
+  "line": 155,
+  "end": 159,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_good_ally",
+  "line": 161,
+  "end": 164,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   3
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_candidate_works",
+  "line": 166,
+  "end": 175,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_hostile",
+   "float"
+  ],
+  "numbers": [
+   0,
+   1.0
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_try_side",
+  "line": 177,
+  "end": 194,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_candidate_works",
+   "_good_ally",
+   "_hostile",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   3
+  ],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_hostile",
+  "line": 219,
+  "end": 223,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_mark",
+  "line": 225,
+  "end": 230,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_mark",
+  "line": 289,
+  "end": 298,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_peace_signal_from",
+  "line": 866,
+  "end": 869,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_neutral",
+  "line": 872,
+  "end": 875,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/board.py",
+  "name": "_mark_branch4_enemy",
+  "line": 1121,
+  "end": 1130,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_runtime_province_count",
+  "line": 22,
+  "end": 30,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "max"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "num_valid_provinces",
+   "valid_provinces"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_populate_contact_matrices",
+  "line": 33,
+  "end": 54,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "fill",
+   "float",
+   "getattr",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [
+   "g_num_powers",
+   "sc_provinces"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_populate_influence_ratio",
+  "line": 57,
+  "end": 80,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "fill",
+   "float",
+   "getattr",
+   "int",
+   "max",
+   "range"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   7
+  ],
+  "strings": [
+   "g_num_powers",
+   "sc_provinces"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_apply_heat_nodes",
+  "line": 83,
+  "end": 103,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "append",
+   "extend",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "set",
+   "setdefault",
+   "sorted",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "A",
+   "F",
+   "fleet_coast_adj",
+   "land_provinces",
+   "valid_provinces",
+   "water_provinces"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_compute_apply_heat_score",
+  "line": 106,
+  "end": 201,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_apply_heat_nodes",
+   "append",
+   "extend",
+   "fill",
+   "get",
+   "get_unit_adjacencies",
+   "getattr",
+   "int",
+   "items",
+   "len",
+   "list",
+   "max",
+   "range",
+   "set",
+   "setdefault",
+   "startswith",
+   "str",
+   "sum",
+   "upper",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   5,
+   7,
+   5000
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "ARMY",
+   "F",
+   "coast",
+   "fleet_coast_adj",
+   "g_num_powers",
+   "power",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 28
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_normalize_movement_heat",
+  "line": 204,
+  "end": 219,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "_runtime_province_count",
+   "float",
+   "floor",
+   "getattr",
+   "int",
+   "max",
+   "range"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   7,
+   100.0
+  ],
+  "strings": [
+   "g_num_powers"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_populate_unit_adjacency_count",
+  "line": 222,
+  "end": 246,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "fill",
+   "get",
+   "get_unit_adjacencies",
+   "getattr",
+   "int",
+   "items",
+   "set",
+   "startswith",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "F",
+   "FLEET",
+   "FLT",
+   "coast",
+   "g_num_powers",
+   "power",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 9
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_max_pair_support_score",
+  "line": 249,
+  "end": 263,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "getattr",
+   "int",
+   "len",
+   "max",
+   "range",
+   "set",
+   "update"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "home_centers",
+   "valid_provinces"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_is_append_order_province",
+  "line": 266,
+  "end": 279,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   7
+  ],
+  "strings": [
+   "g_num_powers",
+   "sc_provinces"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "_populate_global_province_score",
+  "line": 282,
+  "end": 296,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_runtime_province_count",
+   "fill",
+   "float",
+   "floor",
+   "getattr",
+   "int",
+   "max",
+   "sum"
+  ],
+  "numbers": [
+   0.0,
+   7,
+   100.0
+  ],
+  "strings": [
+   "g_num_powers"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "apply_influence_scores",
+  "line": 299,
+  "end": 489,
+  "claimed": "0x419d80",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x419d80",
+   "0x43726c"
+  ],
+  "calls": [
+   "_compute_apply_heat_score",
+   "_float_to_int64",
+   "_is_append_order_province",
+   "_max_pair_support_score",
+   "_normalize_movement_heat",
+   "_populate_contact_matrices",
+   "_populate_global_province_score",
+   "_populate_influence_ratio",
+   "_populate_unit_adjacency_count",
+   "_runtime_province_count",
+   "_safe_pow",
+   "append",
+   "clear",
+   "fill",
+   "float",
+   "getattr",
+   "int",
+   "max",
+   "range",
+   "sort",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   4.0,
+   7,
+   8.0,
+   9.0,
+   256,
+   100000000.0,
+   1e+22
+  ],
+  "strings": [
+   "ally_power",
+   "done",
+   "flag1",
+   "flag2",
+   "flag3",
+   "g_num_powers",
+   "power",
+   "province",
+   "score"
+  ],
+  "branches": 20
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "compute_alliance_score",
+  "line": 492,
+  "end": 531,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "fill",
+   "float",
+   "range",
+   "sum"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   3.0,
+   7
+  ],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "set_opening_targets",
+  "line": 534,
+  "end": 582,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "_float_to_int64",
+   "_safe_pow",
+   "fill",
+   "float",
+   "getattr",
+   "int",
+   "range",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   2.0,
+   2.5,
+   7,
+   256
+  ],
+  "strings": [
+   "SPR",
+   "sc_provinces"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "update_relation_history",
+  "line": 585,
+  "end": 596,
+  "claimed": "0x42ee90",
+  "how": "docstring-cname:HOSTILITY",
+  "mentioned": [],
+  "calls": [
+   "_update_relation_history"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "compute_influence_matrix",
+  "line": 599,
+  "end": 672,
+  "claimed": "0x40d8c0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40d8c0"
+  ],
+  "calls": [
+   "_float_to_int64",
+   "_safe_pow",
+   "array",
+   "fill",
+   "fill_diagonal",
+   "float",
+   "int",
+   "range",
+   "sum"
+  ],
+  "numbers": [
+   0,
+   0.3,
+   1,
+   2,
+   5,
+   6.0,
+   7,
+   100.0,
+   500.0
+  ],
+  "strings": [],
+  "branches": 20
+ },
+ {
+  "file": "heuristics/influence.py",
+  "name": "normalize_influence_matrix",
+  "line": 675,
+  "end": 718,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_float_to_int64",
+   "_safe_pow",
+   "array",
+   "float",
+   "int",
+   "range",
+   "sum",
+   "uint32"
+  ],
+  "numbers": [
+   0.0,
+   0.3,
+   1,
+   7,
+   32,
+   100.0,
+   500.0
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "_seed_and_fold_coasts",
+  "line": 38,
+  "end": 75,
+  "claimed": "0x447460",
+  "how": "docstring-cname:ScoreProvinces",
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "items",
+   "max"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "coast_variants"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "_populate_threat_path_scores",
+  "line": 78,
+  "end": 101,
+  "claimed": "0x44a040",
+  "how": "docstring-cname:ScoreOrderCandidates_AllPowers",
+  "mentioned": [],
+  "calls": [
+   "get_adjacent_provinces",
+   "getattr",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   7,
+   256
+  ],
+  "strings": [
+   "valid_provinces"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "_apply_enemy_sc_flank_denial",
+  "line": 104,
+  "end": 127,
+  "claimed": "0x44a040",
+  "how": "docstring-cname:ScoreOrderCandidates_AllPowers",
+  "mentioned": [],
+  "calls": [
+   "get",
+   "get_power_units",
+   "get_reachable_edges",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   10
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "type"
+  ],
+  "branches": 9
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "_cleanup_sc_designations",
+  "line": 130,
+  "end": 159,
+  "claimed": "0x447460",
+  "how": "docstring-cname:ScoreProvinces",
+  "mentioned": [],
+  "calls": [
+   "float",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   2,
+   5.0,
+   7,
+   256
+  ],
+  "strings": [
+   "g_near_end_game_factor"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "score_order_candidates_all_powers",
+  "line": 162,
+  "end": 477,
+  "claimed": "0x44a040",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x44a040"
+  ],
+  "calls": [
+   "_apply_enemy_sc_flank_denial",
+   "_float_to_int64",
+   "_populate_threat_path_scores",
+   "_signed_int_div",
+   "append",
+   "build_support_opportunities",
+   "can_reach_by_type",
+   "fill",
+   "float",
+   "fss",
+   "get",
+   "get_adjacent_provinces",
+   "get_power_units",
+   "get_reachable_edges",
+   "get_unit_adjacencies",
+   "getattr",
+   "hasattr",
+   "int",
+   "items",
+   "len",
+   "max",
+   "maximum",
+   "min",
+   "minimum",
+   "pow",
+   "range",
+   "set",
+   "sorted",
+   "sum",
+   "values"
+  ],
+  "numbers": [
+   0,
+   0.5,
+   1,
+   2,
+   3,
+   7,
+   10,
+   15,
+   32,
+   100,
+   256,
+   1000,
+   4294967295,
+   100000000000000000
+  ],
+  "strings": [
+   "",
+   "A",
+   "_bfs_flt",
+   "coast",
+   "coast_variants",
+   "g_ally_designation_a",
+   "g_ally_designation_a_hi",
+   "g_dominant_power_mode",
+   "g_support_candidate_mark",
+   "g_target_flag2",
+   "g_war_mode_flag",
+   "get_adjacent_provinces",
+   "get_power_units",
+   "land_provinces",
+   "type",
+   "valid_provinces",
+   "water_provinces"
+  ],
+  "branches": 84
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "score_provinces",
+  "line": 482,
+  "end": 1400,
+  "claimed": "0x447460",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x447460",
+   "0x447c0c",
+   "0x448b2b",
+   "0x449139"
+  ],
+  "calls": [
+   "_cleanup_sc_designations",
+   "_float_to_int64",
+   "_seed_and_fold_coasts",
+   "_signed_int_div",
+   "add",
+   "any",
+   "can_reach_by_type",
+   "compute_winter_builds",
+   "copy",
+   "evaluate_province_score",
+   "fill",
+   "float",
+   "frozenset",
+   "get",
+   "get_unit_adjacencies",
+   "getattr",
+   "hasattr",
+   "int",
+   "items",
+   "keeps_round9",
+   "list",
+   "lstrip",
+   "max",
+   "range",
+   "set",
+   "sorted",
+   "split",
+   "startswith",
+   "str",
+   "upper",
+   "zeros",
+   "zeros_like"
+  ],
+  "numbers": [
+   0,
+   0.95,
+   1,
+   2.0,
+   3.0,
+   4,
+   5,
+   7,
+   9,
+   10,
+   12,
+   15.0,
+   18,
+   20.0,
+   75.0,
+   80.0,
+   90.0,
+   100.0,
+   150.0,
+   256,
+   600,
+   2500,
+   1000000
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "F",
+   "FLT",
+   "SPR",
+   "WIN",
+   "_bfs_flt",
+   "coast",
+   "coast_variants",
+   "g_deceit_level",
+   "g_near_end_game_factor",
+   "g_opening_sticky_mode",
+   "g_opening_target",
+   "g_press_count",
+   "g_press_flag",
+   "g_press_matrix",
+   "g_season",
+   "g_selected_build_candidates",
+   "power",
+   "province",
+   "sc_provinces",
+   "type",
+   "unit_type",
+   "valid_provinces",
+   "win_threshold"
+  ],
+  "branches": 217
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "score_order_candidates_own_power",
+  "line": 1405,
+  "end": 1507,
+  "claimed": "0x4498d0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4498d0"
+  ],
+  "calls": [
+   "_signed_int_div",
+   "append",
+   "bfs_province_for_token",
+   "candidate_set_contains",
+   "extend",
+   "fill",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "len",
+   "list",
+   "lstrip",
+   "max",
+   "range",
+   "sorted",
+   "split",
+   "startswith",
+   "str",
+   "sum",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   10,
+   256,
+   1000
+  ],
+  "strings": [
+   "",
+   "/",
+   "AMY",
+   "F",
+   "FLT",
+   "WIN",
+   "_bfs_flt",
+   "coast",
+   "g_adjustment_build_candidates",
+   "g_season",
+   "province",
+   "type",
+   "unit_type"
+  ],
+  "branches": 22
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "bfs_province_for_token",
+  "line": 1457,
+  "end": 1470,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "items",
+   "lstrip",
+   "split",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "",
+   "/",
+   "FLT"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "heuristics/scoring.py",
+  "name": "keeps_round9",
+  "line": 1245,
+  "end": 1262,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   15
+  ],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/snapshot.py",
+  "name": "snapshot_province_state",
+  "line": 23,
+  "end": 255,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_adjs",
+   "add",
+   "can_reach_by_type",
+   "full",
+   "get",
+   "getattr",
+   "hasattr",
+   "int",
+   "items",
+   "range",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   7,
+   10,
+   256,
+   4294967295
+  ],
+  "strings": [
+   "",
+   "A",
+   "AUT",
+   "FAL",
+   "SPR",
+   "SUM",
+   "coast",
+   "g_alliance_msg_tree",
+   "g_ally_under_attack",
+   "g_best_ally_slot0",
+   "g_num_powers",
+   "num_valid_provinces",
+   "power",
+   "sc_provinces",
+   "type"
+  ],
+  "branches": 77
+ },
+ {
+  "file": "heuristics/snapshot.py",
+  "name": "_adjs",
+  "line": 187,
+  "end": 192,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "can_reach_by_type",
+   "get"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "coast"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "compute_draw_vote",
+  "line": 21,
+  "end": 283,
+  "claimed": "0x4440e0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4440e0",
+   "0x44c9d0"
+  ],
+  "calls": [
+   "_is_non_water",
+   "_new_meta",
+   "_normalise_unit",
+   "_typed_adjacencies",
+   "add",
+   "append",
+   "can_reach",
+   "deque",
+   "frozenset",
+   "get",
+   "get_reachable_edges",
+   "getattr",
+   "int",
+   "items",
+   "popleft",
+   "range",
+   "set",
+   "setdefault",
+   "sorted",
+   "startswith",
+   "str",
+   "upper",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   10
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "F",
+   "FLT",
+   "coast",
+   "committed",
+   "committed_votes",
+   "flag_a",
+   "free_candidates",
+   "fully_committed",
+   "no_order",
+   "power",
+   "resolved",
+   "supporter",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 68
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "post_process_orders",
+  "line": 287,
+  "end": 331,
+  "claimed": "0x411120",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x411120",
+   "0x45fe30"
+  ],
+  "calls": [
+   "clip",
+   "get",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   3,
+   7,
+   10,
+   201,
+   256
+  ],
+  "strings": [
+   "bounced",
+   "dislodged",
+   "dst_province",
+   "g_order_hist_list",
+   "moved",
+   "power",
+   "src_province"
+  ],
+  "branches": 9
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "_legacy_generate_self_proposals",
+  "line": 336,
+  "end": 486,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "add",
+   "append",
+   "debug",
+   "float",
+   "fss",
+   "get",
+   "getLogger",
+   "get_adjacent_provinces",
+   "getattr",
+   "hasattr",
+   "int",
+   "items",
+   "keys",
+   "len",
+   "list",
+   "pop",
+   "range",
+   "set",
+   "setdefault",
+   "sort",
+   "sorted",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   0.001,
+   0.01,
+   0.1,
+   1,
+   7,
+   300.0,
+   500.0
+  ],
+  "strings": [
+   "",
+   " ",
+   "/",
+   "A",
+   "AMY",
+   "F",
+   "FLT",
+   "MTO",
+   "coast",
+   "fleet_coast_adj",
+   "g_alliance_orders",
+   "g_general_orders",
+   "generate_self_proposals: inserted %d proposals (general: %s, alliance: %s)",
+   "power",
+   "sc_provinces",
+   "target",
+   "type",
+   "unit"
+  ],
+  "branches": 31
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "compute_press",
+  "line": 491,
+  "end": 528,
+  "claimed": "0x4401f0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4401f0"
+  ],
+  "calls": [
+   "can_reach_by_type",
+   "fill",
+   "get",
+   "get_unit_adjacencies",
+   "int",
+   "items",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "_new_meta",
+  "line": 44,
+  "end": 54,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "committed",
+   "committed_votes",
+   "flag_a",
+   "free_candidates",
+   "fully_committed",
+   "no_order",
+   "resolved",
+   "supporter"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "_normalise_unit",
+  "line": 65,
+  "end": 71,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "startswith",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "F",
+   "FLT",
+   "coast",
+   "type"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "_typed_adjacencies",
+  "line": 73,
+  "end": 76,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get_reachable_edges"
+  ],
+  "numbers": [],
+  "strings": [
+   ""
+  ],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/strategy.py",
+  "name": "_is_non_water",
+  "line": 78,
+  "end": 81,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "frozenset",
+   "getattr"
+  ],
+  "numbers": [],
+  "strings": [
+   "water_provinces"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "heuristics/win.py",
+  "name": "compute_build_delta",
+  "line": 41,
+  "end": 106,
+  "claimed": "0x40ab10",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40ab10"
+  ],
+  "calls": [
+   "fill",
+   "getattr",
+   "int",
+   "items",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   256
+  ],
+  "strings": [
+   "delta",
+   "flag",
+   "g_num_powers",
+   "power"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "heuristics/win.py",
+  "name": "populate_build_candidates",
+  "line": 109,
+  "end": 171,
+  "claimed": "0x40ab10",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40ab10"
+  ],
+  "calls": [
+   "add",
+   "append",
+   "frozenset",
+   "get",
+   "range",
+   "set",
+   "sorted"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   256
+  ],
+  "strings": [
+   "",
+   "AMY",
+   "FLT",
+   "coast",
+   "province",
+   "unit_type"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "heuristics/win.py",
+  "name": "populate_remove_candidates",
+  "line": 174,
+  "end": 198,
+  "claimed": "0x40ab10",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40ab10"
+  ],
+  "calls": [
+   "add",
+   "get",
+   "range",
+   "set"
+  ],
+  "numbers": [
+   0.0,
+   256
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "heuristics/win.py",
+  "name": "compute_win_builds",
+  "line": 201,
+  "end": 330,
+  "claimed": "0x44bd40",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x404ef0",
+   "0x44bd40",
+   "0x44c618",
+   "0x44c726",
+   "0x44c7fa",
+   "0x44c82c",
+   "0x461010"
+  ],
+  "calls": [
+   "add",
+   "append",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "len",
+   "max",
+   "randrange",
+   "range",
+   "score_order_candidates_own_power",
+   "score_provinces",
+   "set",
+   "sort",
+   "str",
+   "sum",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   18,
+   35.0,
+   42,
+   50,
+   100.0
+  ],
+  "strings": [
+   "",
+   " ",
+   " ) BLD",
+   "( ",
+   "A",
+   "AMY",
+   "FLT",
+   "UNO",
+   "coast",
+   "g_order_commit_count",
+   "power",
+   "province",
+   "type",
+   "unit_type",
+   "win_threshold"
+  ],
+  "branches": 22
+ },
+ {
+  "file": "heuristics/win.py",
+  "name": "compute_win_removes",
+  "line": 333,
+  "end": 377,
+  "claimed": "0x442040",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x442040",
+   "0x4421b4"
+  ],
+  "calls": [
+   "append",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "len",
+   "sort",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [
+   " ",
+   " ) REM",
+   "( ",
+   "A",
+   "AMY",
+   "F",
+   "FLT",
+   "UNO",
+   "g_order_commit_count",
+   "type"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "moves/_constants.py",
+  "name": "_unit_location_token",
+  "line": 57,
+  "end": 64,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "isinstance",
+   "lstrip",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   16896,
+   16897
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_filtered_adj",
+  "line": 47,
+  "end": 55,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "get_unit_adjacencies",
+   "list"
+  ],
+  "numbers": [],
+  "strings": [
+   "A",
+   "AMY",
+   "F",
+   "FLT"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_harmonic_dist_weight",
+  "line": 58,
+  "end": 68,
+  "claimed": "0x445be0",
+  "how": "docstring-cname:ComputeWinterBuilds",
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0,
+   1.0,
+   1.5,
+   30.0
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_topology_base_provinces",
+  "line": 71,
+  "end": 81,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "difference_update",
+   "getattr",
+   "set",
+   "sorted",
+   "values"
+  ],
+  "numbers": [],
+  "strings": [
+   "coast_variants",
+   "shut_provinces",
+   "valid_provinces"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_fleet_tokens_for_province",
+  "line": 84,
+  "end": 100,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "bool",
+   "get",
+   "lstrip",
+   "sorted",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_fleet_state_adjacencies",
+  "line": 103,
+  "end": 129,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_fleet_tokens_for_province",
+   "append",
+   "get",
+   "int"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_convoy_dist_weight",
+  "line": 132,
+  "end": 134,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   1.5,
+   300.0
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "enumerate_convoy_reach",
+  "line": 137,
+  "end": 362,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "BuildOrderSpec",
+   "_convoy_dist_weight",
+   "_fleet_state_adjacencies",
+   "_fleet_tokens_for_province",
+   "_harmonic_dist_weight",
+   "_topology_base_provinces",
+   "append",
+   "clear",
+   "deque",
+   "ensure_outer",
+   "extend",
+   "float",
+   "get",
+   "heappop",
+   "heappush",
+   "insert",
+   "int",
+   "items",
+   "max",
+   "popleft",
+   "set",
+   "setdefault",
+   "sorted",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   11,
+   30,
+   99
+  ],
+  "strings": [
+   "",
+   "AMY",
+   "EC",
+   "FLT",
+   "NC",
+   "NE",
+   "NW",
+   "SC",
+   "SE",
+   "SW",
+   "WC"
+  ],
+  "branches": 42
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "register_convoy_fleet",
+  "line": 364,
+  "end": 387,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "populate_convoy_routes",
+  "line": 390,
+  "end": 418,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_populate_convoy_routes_for_src",
+   "get",
+   "items",
+   "list"
+  ],
+  "numbers": [],
+  "strings": [
+   "A",
+   "power",
+   "type"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_populate_convoy_routes_for_src",
+  "line": 421,
+  "end": 443,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_enumerate_convoy_chains_for_src",
+   "items",
+   "len",
+   "list",
+   "pop"
+  ],
+  "numbers": [],
+  "strings": [
+   "fleet_count",
+   "fleets"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_get_convoy_route",
+  "line": 446,
+  "end": 467,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "list"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "fleet_count",
+   "fleets"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "_enumerate_convoy_chains_for_src",
+  "line": 470,
+  "end": 557,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_filtered_adj",
+   "add",
+   "append",
+   "get",
+   "int",
+   "len",
+   "list",
+   "range",
+   "set",
+   "setdefault"
+  ],
+  "numbers": [
+   1,
+   3
+  ],
+  "strings": [
+   "A",
+   "F",
+   "FLT",
+   "power",
+   "type"
+  ],
+  "branches": 20
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "score_convoy_fleet",
+  "line": 560,
+  "end": 575,
+  "claimed": "0x419790",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x419790"
+  ],
+  "calls": [
+   "bisect_right",
+   "insert",
+   "int"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "build_convoy_orders",
+  "line": 578,
+  "end": 698,
+  "claimed": "0x44b760",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x44b760"
+  ],
+  "calls": [
+   "_get_convoy_route",
+   "_unit_location_token",
+   "append",
+   "assign_support_order",
+   "enumerate",
+   "float",
+   "len",
+   "pop",
+   "range",
+   "register_convoy_fleet",
+   "set",
+   "warning"
+  ],
+  "numbers": [
+   0,
+   1.0,
+   2,
+   3,
+   4,
+   5,
+   6,
+   13,
+   23,
+   26,
+   27,
+   28
+  ],
+  "strings": [
+   "A",
+   "build_convoy_orders called but g_convoy_route is empty \u2014 populate_convoy_routes() was likely not called for power %d. Convoy orders will be skipped."
+  ],
+  "branches": 11
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "ensure_outer",
+  "line": 167,
+  "end": 168,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "setdefault"
+  ],
+  "numbers": [],
+  "strings": [
+   ""
+  ],
+  "branches": 0
+ },
+ {
+  "file": "moves/convoy.py",
+  "name": "insert",
+  "line": 176,
+  "end": 198,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "BuildOrderSpec",
+   "float",
+   "setdefault"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "_find_or_insert",
+  "line": 42,
+  "end": 51,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "bisect_left",
+   "insert",
+   "len"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "_get_ally_trust_for_adj",
+  "line": 54,
+  "end": 92,
+  "claimed": "0x455fd0",
+  "how": "docstring-cname:EnumerateHoldOrders",
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "_typed_unit_adjacencies",
+  "line": 95,
+  "end": 109,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "can_reach_by_type",
+   "get",
+   "get_unit_adjacencies"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "type"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "enumerate_hold_orders",
+  "line": 116,
+  "end": 193,
+  "claimed": "0x455fd0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x455fd0",
+   "0x463690",
+   "0x466c40"
+  ],
+  "calls": [
+   "_build_hold_order_seqs",
+   "_build_reach_matrices",
+   "add_key_weight",
+   "fill",
+   "get",
+   "int",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   30
+  ],
+  "strings": [
+   "A",
+   "power",
+   "type"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "_build_reach_matrices",
+  "line": 196,
+  "end": 253,
+  "claimed": "0x455fd0",
+  "how": "docstring-cname:EnumerateHoldOrders",
+  "mentioned": [],
+  "calls": [
+   "_get_ally_trust_for_adj",
+   "_typed_unit_adjacencies",
+   "fss",
+   "get",
+   "items",
+   "list",
+   "range"
+  ],
+  "numbers": [
+   0,
+   7
+  ],
+  "strings": [
+   "A",
+   "power",
+   "type"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "compute_safe_reach",
+  "line": 256,
+  "end": 327,
+  "claimed": "0x43dfb0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x43dfb0"
+  ],
+  "calls": [
+   "_typed_unit_adjacencies",
+   "fss",
+   "full",
+   "get",
+   "int",
+   "items",
+   "list",
+   "range",
+   "zeros"
+  ],
+  "numbers": [
+   1.0,
+   7,
+   256
+  ],
+  "strings": [
+   "A",
+   "power",
+   "type"
+  ],
+  "branches": 14
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "_build_hold_order_seqs",
+  "line": 334,
+  "end": 428,
+  "claimed": "0x466f80",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x463690",
+   "0x466c40",
+   "0x466f80"
+  ],
+  "calls": [
+   "_build_movement_order_token",
+   "append",
+   "clear",
+   "get",
+   "hasattr",
+   "items",
+   "len",
+   "range"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   7
+  ],
+  "strings": [
+   " )",
+   "( ",
+   "SUB",
+   "UNO",
+   "g_hold_order_seqs",
+   "g_num_powers",
+   "power"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "moves/hold.py",
+  "name": "assign_hold_supports",
+  "line": 435,
+  "end": 459,
+  "claimed": "0x41d270",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4019f0",
+   "0x41d270"
+  ],
+  "calls": [
+   "clear",
+   "randint",
+   "score_convoy_fleet"
+  ],
+  "numbers": [
+   0,
+   23,
+   500,
+   31767,
+   32767
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "moves/support.py",
+  "name": "build_support_opportunities",
+  "line": 37,
+  "end": 154,
+  "claimed": "0x4460a0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4460a0"
+  ],
+  "calls": [
+   "append",
+   "can_reach_by_type",
+   "float",
+   "fss",
+   "get",
+   "get_adjacent_provinces",
+   "int",
+   "items",
+   "list",
+   "range",
+   "resolve_fleet_coast",
+   "sort"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [
+   "",
+   "A",
+   "F",
+   "FLT",
+   "coast",
+   "mover_coast",
+   "mover_prov",
+   "power",
+   "score",
+   "supporter_coast",
+   "supporter_prov",
+   "target_coast",
+   "target_prov",
+   "type"
+  ],
+  "branches": 20
+ },
+ {
+  "file": "moves/support.py",
+  "name": "assign_support_order",
+  "line": 157,
+  "end": 344,
+  "claimed": "0x4412c0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4412c0",
+   "0x441475",
+   "0x44150f",
+   "0x441685"
+  ],
+  "calls": [
+   "can_reach_by_type",
+   "float",
+   "frozenset",
+   "fss",
+   "get",
+   "int"
+  ],
+  "numbers": [
+   0,
+   0.85,
+   1,
+   2,
+   3,
+   6,
+   7,
+   18,
+   19,
+   20
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 38
+ },
+ {
+  "file": "moves/support.py",
+  "name": "build_support_proposals",
+  "line": 347,
+  "end": 595,
+  "claimed": "0x43e370",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x43e370",
+   "0x465f30"
+  ],
+  "calls": [
+   "add",
+   "append",
+   "can_reach_by_type",
+   "get",
+   "getattr",
+   "int",
+   "items",
+   "list",
+   "next",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4,
+   5,
+   6,
+   7,
+   8,
+   13,
+   15,
+   20,
+   31,
+   1000
+  ],
+  "strings": [
+   "",
+   "A",
+   "InnerGameState",
+   "SUB_HANDSHAKE",
+   "XDO_SUP",
+   "coast",
+   "dest",
+   "dst_prov",
+   "from_power",
+   "g_proposal_history_map",
+   "key",
+   "mover_prov",
+   "power",
+   "priority",
+   "province",
+   "score",
+   "src_prov",
+   "supporter_power",
+   "supporter_prov",
+   "target_power",
+   "to_power",
+   "type"
+  ],
+  "branches": 38
+ },
+ {
+  "file": "moves/support.py",
+  "name": "build_order_sup_mto",
+  "line": 598,
+  "end": 768,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x440fce"
+  ],
+  "calls": [
+   "can_reach_by_type",
+   "float",
+   "fss",
+   "get",
+   "int",
+   "items",
+   "register_convoy_fleet"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   4,
+   5,
+   6,
+   7,
+   10,
+   13,
+   14,
+   16,
+   20,
+   24,
+   25,
+   30
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 39
+ },
+ {
+  "file": "moves/support.py",
+  "name": "build_order_sup_hld",
+  "line": 771,
+  "end": 916,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "can_reach_by_type",
+   "float",
+   "fss",
+   "get",
+   "int",
+   "items",
+   "register_convoy_fleet"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   3,
+   5,
+   6,
+   7,
+   10,
+   13,
+   14,
+   16,
+   24,
+   25,
+   30
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 30
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "adjudicate_movement",
+  "line": 663,
+  "end": 665,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "MovementAdjudicator",
+   "run"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "__init__",
+  "line": 48,
+  "end": 71,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "set",
+   "tuple"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "__init__",
+  "line": 77,
+  "end": 87,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "set"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "run",
+  "line": 90,
+  "end": 120,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_build_convoy_subversion",
+   "_build_support_chains",
+   "_cancel_inconsistent_convoys",
+   "_cancel_inconsistent_supports",
+   "_check_futile_convoys",
+   "_check_indomitable_convoys",
+   "_classify_moves",
+   "_direct_attacks_cut_support",
+   "_initialise",
+   "_resolve_attacks_on",
+   "_resolve_circles_of_movement",
+   "_resolve_circles_of_subversion",
+   "_resolve_equal_head_to_heads",
+   "_resolve_strong_head_to_heads",
+   "_resolve_unsubverted_convoys",
+   "min"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_initialise",
+  "line": 123,
+  "end": 140,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add",
+   "append",
+   "set",
+   "setdefault",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_cancel_inconsistent_convoys",
+  "line": 143,
+  "end": 164,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "discard",
+   "get",
+   "sorted"
+  ],
+  "numbers": [
+   1,
+   5,
+   6,
+   9
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_cancel_inconsistent_supports",
+  "line": 167,
+  "end": 186,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "discard",
+   "get",
+   "sorted"
+  ],
+  "numbers": [
+   1,
+   2,
+   3,
+   6,
+   9
+  ],
+  "strings": [],
+  "branches": 7
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_direct_attacks_cut_support",
+  "line": 189,
+  "end": 201,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "discard",
+   "get",
+   "list",
+   "sorted"
+  ],
+  "numbers": [
+   1,
+   3,
+   4
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_build_support_chains",
+  "line": 204,
+  "end": 216,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add",
+   "get",
+   "sorted"
+  ],
+  "numbers": [
+   1,
+   4
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_build_convoy_subversion",
+  "line": 219,
+  "end": 240,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5
+  ],
+  "strings": [],
+  "branches": 12
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_strongest",
+  "line": 243,
+  "end": 258,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "len"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_attack_winner",
+  "line": 260,
+  "end": 269,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_strongest",
+   "get",
+   "len"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_empty_province_winner",
+  "line": 271,
+  "end": 273,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_strongest"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_circle_status",
+  "line": 275,
+  "end": 283,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_strongest"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_fail",
+  "line": 286,
+  "end": 290,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   9
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_move_succeeds",
+  "line": 292,
+  "end": 297,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x409250"
+  ],
+  "calls": [
+   "_fail",
+   "pop"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_standoff",
+  "line": 299,
+  "end": 302,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x4093f0"
+  ],
+  "calls": [
+   "_fail",
+   "add",
+   "pop"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_move_fails",
+  "line": 304,
+  "end": 310,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x404bc0"
+  ],
+  "calls": [
+   "_fail",
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_cut_support_at",
+  "line": 312,
+  "end": 323,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x4095a0"
+  ],
+  "calls": [
+   "discard",
+   "get"
+  ],
+  "numbers": [
+   1,
+   3,
+   4
+  ],
+  "strings": [],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_dislodge",
+  "line": 325,
+  "end": 328,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_break_convoy",
+  "line": 330,
+  "end": 338,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   9
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_next_subversion_key",
+  "line": 340,
+  "end": 342,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "min"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_unsubverted_convoys",
+  "line": 345,
+  "end": 374,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_break_convoy",
+   "_cut_support_at",
+   "_dislodge",
+   "_move_succeeds",
+   "_standoff",
+   "append",
+   "get",
+   "setdefault",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   2
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_supported_reference",
+  "line": 376,
+  "end": 384,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [
+   3,
+   4
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_check_futile_convoys",
+  "line": 387,
+  "end": 427,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_break_convoy",
+   "_cut_support_at",
+   "_dislodge",
+   "_move_succeeds",
+   "_next_subversion_key",
+   "_standoff",
+   "get",
+   "min",
+   "pop"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "strings": [],
+  "branches": 13
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_check_indomitable_convoys",
+  "line": 430,
+  "end": 468,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_break_convoy",
+   "_next_subversion_key",
+   "_supported_reference",
+   "add",
+   "discard",
+   "get",
+   "min"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4
+  ],
+  "strings": [],
+  "branches": 14
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_circles_of_subversion",
+  "line": 471,
+  "end": 503,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_break_convoy",
+   "_fail",
+   "add",
+   "get",
+   "min",
+   "pop",
+   "set"
+  ],
+  "numbers": [
+   0,
+   2,
+   4
+  ],
+  "strings": [],
+  "branches": 13
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_classify_moves",
+  "line": 506,
+  "end": 545,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add",
+   "get",
+   "len",
+   "list",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   6
+  ],
+  "strings": [],
+  "branches": 12
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_circles_of_movement",
+  "line": 548,
+  "end": 593,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_circle_status",
+   "_move_fails",
+   "_move_succeeds",
+   "_standoff",
+   "append",
+   "len",
+   "reversed",
+   "sorted",
+   "step"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "strings": [],
+  "branches": 15
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_strong_head_to_heads",
+  "line": 596,
+  "end": 618,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_dislodge",
+   "_move_fails",
+   "_move_succeeds",
+   "_standoff",
+   "sorted"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_equal_head_to_heads",
+  "line": 621,
+  "end": 637,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_dislodge",
+   "_move_succeeds",
+   "_standoff",
+   "sorted"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "_resolve_attacks_on",
+  "line": 640,
+  "end": 660,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_attack_winner",
+   "_cut_support_at",
+   "_dislodge",
+   "_empty_province_winner",
+   "_move_succeeds",
+   "_resolve_attacks_on",
+   "_standoff",
+   "get"
+  ],
+  "numbers": [
+   1,
+   2,
+   6
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "monte_carlo/adjudicator.py",
+  "name": "step",
+  "line": 569,
+  "end": 570,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "len"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "_float32",
+  "line": 26,
+  "end": 28,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "float32"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "snapshot_order_entry",
+  "line": 47,
+  "end": 63,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int",
+   "tuple"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   30
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "restore_order_entry",
+  "line": 66,
+  "end": 101,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int",
+   "isinstance",
+   "len",
+   "min"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   23,
+   26,
+   27,
+   28
+  ],
+  "strings": [],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "candidate_orders_key",
+  "line": 104,
+  "end": 117,
+  "claimed": "0x465cf0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x465cf0"
+  ],
+  "calls": [
+   "append",
+   "int",
+   "isinstance",
+   "sorted",
+   "tuple"
+  ],
+  "numbers": [
+   5
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "candidate_record_key",
+  "line": 120,
+  "end": 137,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "candidate_orders_key",
+   "get",
+   "int"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "_orders_key",
+   "orders",
+   "power"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "evaluate_order_score",
+  "line": 140,
+  "end": 658,
+  "claimed": "0x437600",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40e890",
+   "0x437600",
+   "0x437bfa",
+   "0x438831",
+   "0x438839"
+  ],
+  "calls": [
+   "_float32",
+   "can_reach_by_type",
+   "float",
+   "frozenset",
+   "get",
+   "get_unit_adjacencies",
+   "getattr",
+   "int",
+   "items",
+   "max",
+   "min",
+   "range"
+  ],
+  "numbers": [
+   0.0,
+   0.05,
+   0.1,
+   0.15,
+   0.2,
+   0.25,
+   0.3,
+   0.33,
+   0.35,
+   0.4,
+   0.5,
+   0.75,
+   0.8,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   20,
+   21,
+   22,
+   24,
+   100.0,
+   256,
+   500.0
+  ],
+  "strings": [
+   "",
+   "FAL",
+   "SPR",
+   "coast",
+   "fleet_adj_matrix",
+   "home_centers",
+   "num_valid_provinces",
+   "power",
+   "type",
+   "water_provinces"
+  ],
+  "branches": 120
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "insert_candidate_record",
+  "line": 661,
+  "end": 723,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x424850"
+  ],
+  "calls": [
+   "bisect_left",
+   "candidate_record_key",
+   "get",
+   "insert",
+   "isinstance",
+   "len",
+   "setdefault",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   30,
+   10000
+  ],
+  "strings": [
+   "_candidate_key_map",
+   "_candidate_keys",
+   "base_score",
+   "max_rank",
+   "min_rank",
+   "output_score",
+   "pareto_flag",
+   "processed",
+   "round_count",
+   "running_avg",
+   "score",
+   "trial_scores",
+   "weight"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "_early_game_order_adjacency_bonus",
+  "line": 738,
+  "end": 784,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "can_reach_by_type",
+   "get",
+   "int",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   6,
+   7,
+   160,
+   256
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/evaluation.py",
+  "name": "evaluate_order_proposal",
+  "line": 787,
+  "end": 1157,
+  "claimed": "0x44e070",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x433a20",
+   "0x44e070",
+   "0x44ee24",
+   "0x44ee60",
+   "0x44f133",
+   "0x460770",
+   "0x4607f0"
+  ],
+  "calls": [
+   "_early_game_order_adjacency_bonus",
+   "append",
+   "build_support_proposals",
+   "can_reach_by_type",
+   "candidate_orders_key",
+   "debug",
+   "evaluate_order_score",
+   "float",
+   "fss",
+   "get",
+   "get_unit_adjacencies",
+   "getattr",
+   "insert_candidate_record",
+   "int",
+   "isEnabledFor",
+   "items",
+   "join",
+   "len",
+   "range",
+   "setdefault",
+   "snapshot_order_entry",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   31,
+   50,
+   110,
+   150,
+   250,
+   256,
+   500,
+   750,
+   1000,
+   4000
+  ],
+  "strings": [
+   "",
+   ", ",
+   ":",
+   "A",
+   "CTO",
+   "CVY",
+   "EVAL_DBG[GER] score=%.1f orders=[%s]",
+   "HLD",
+   "MTO",
+   "NUL",
+   "SUP_HLD",
+   "SUP_MTO",
+   "_candidate_key_map",
+   "_id_to_prov",
+   "albert_power_idx",
+   "alliance_maximum_base",
+   "coast",
+   "conviction_bonus",
+   "deviation",
+   "early_game_bonus",
+   "final_dim_score",
+   "g_other_score",
+   "g_ring_convoy_score",
+   "g_support_trust_adj",
+   "heat_scores",
+   "orders",
+   "other_score",
+   "power",
+   "pressure_cost",
+   "rank_penalty",
+   "ring_convoy_score",
+   "sc_count",
+   "score",
+   "trust_adjustment",
+   "type",
+   "\u2192"
+  ],
+  "branches": 73
+ },
+ {
+  "file": "monte_carlo/generation.py",
+  "name": "_initial_build_heat_seed",
+  "line": 21,
+  "end": 41,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "frozenset",
+   "get",
+   "getattr",
+   "int",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   256,
+   500,
+   1000,
+   5000
+  ],
+  "strings": [
+   "g_press_flag"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/generation.py",
+  "name": "_diffuse_integer_heat",
+  "line": 44,
+  "end": 58,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "_signed_int_div",
+   "asarray",
+   "copy",
+   "get",
+   "int",
+   "range",
+   "sum",
+   "zeros"
+  ],
+  "numbers": [
+   5,
+   256
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/generation.py",
+  "name": "_populate_candidate_scores_from_heat",
+  "line": 61,
+  "end": 84,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1,
+   18
+  ],
+  "strings": [
+   "win_threshold"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/generation.py",
+  "name": "_sum_influence_heat",
+  "line": 87,
+  "end": 105,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "frozenset",
+   "get",
+   "sum"
+  ],
+  "numbers": [
+   0.0
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/generation.py",
+  "name": "generate_orders",
+  "line": 108,
+  "end": 246,
+  "claimed": "0x4466e0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4466e0",
+   "0x47b370"
+  ],
+  "calls": [
+   "_diffuse_integer_heat",
+   "_init_scoring_state",
+   "_initial_build_heat_seed",
+   "_populate_candidate_scores_from_heat",
+   "_safe_pow",
+   "_sum_influence_heat",
+   "apply_influence_scores",
+   "astype",
+   "compute_alliance_score",
+   "fill",
+   "float",
+   "getattr",
+   "items",
+   "range",
+   "set_opening_targets",
+   "sum",
+   "tuple",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   0.3,
+   1,
+   7,
+   100.0,
+   256,
+   500.0,
+   5000
+  ],
+  "strings": [
+   "power",
+   "valid_provinces"
+  ],
+  "branches": 9
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_live_unit_adjacencies",
+  "line": 66,
+  "end": 78,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "can_reach_by_type",
+   "get",
+   "get_unit_adjacencies",
+   "int",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "type"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "trial_evaluate_orders",
+  "line": 81,
+  "end": 87,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "deepcopy"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_step3_designation_trust",
+  "line": 90,
+  "end": 153,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int",
+   "len",
+   "read_slot"
+  ],
+  "numbers": [
+   0,
+   2,
+   7,
+   9
+  ],
+  "strings": [],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_step3_support_filter",
+  "line": 156,
+  "end": 205,
+  "claimed": "0x404fd0",
+  "how": "docstring-cname:ScoreSupportOpp",
+  "mentioned": [],
+  "calls": [
+   "_step3_designation_trust",
+   "float",
+   "int",
+   "setdefault"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   7,
+   13,
+   256
+  ],
+  "strings": [],
+  "branches": 9
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_accumulate_other_score",
+  "line": 208,
+  "end": 246,
+  "claimed": "0x404fd0",
+  "how": "docstring-cname:ScoreSupportOpp",
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   13
+  ],
+  "strings": [
+   "A",
+   "F",
+   "FLT",
+   "power",
+   "type"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_step4_xdo_constraint",
+  "line": 249,
+  "end": 289,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_negotiated_province_context",
+  "line": 292,
+  "end": 342,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add_record",
+   "dict",
+   "get",
+   "getattr",
+   "int",
+   "isinstance",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   5,
+   9
+  ],
+  "strings": [
+   "dest_prov",
+   "g_xdo_order_move_by_power",
+   "province"
+  ],
+  "branches": 14
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_resolve_own_occupied_destination",
+  "line": 345,
+  "end": 388,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_source_build_order_sup_hld",
+   "int",
+   "next",
+   "score_convoy_fleet"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   6,
+   13,
+   20
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_dedupe_step5_fleet_candidates",
+  "line": 391,
+  "end": 409,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add",
+   "append",
+   "int",
+   "set"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_step1_source_dedup",
+  "line": 412,
+  "end": 423,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int",
+   "len"
+  ],
+  "numbers": [
+   1,
+   500
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_step6_target_filter",
+  "line": 426,
+  "end": 476,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "append",
+   "float",
+   "get",
+   "int",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   256,
+   5000
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_convoy_swap",
+  "line": 479,
+  "end": 549,
+  "claimed": "0x453cac",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x453cac"
+  ],
+  "calls": [
+   "frozenset",
+   "fss",
+   "get",
+   "int",
+   "randint"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   5.0,
+   6,
+   7,
+   13,
+   14,
+   20,
+   23,
+   24,
+   25,
+   60,
+   100,
+   32767
+  ],
+  "strings": [
+   "type"
+  ],
+  "branches": 13
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_post_phase_move_support_allowed",
+  "line": 552,
+  "end": 574,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   2,
+   13,
+   20
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_post_phase_hold_support_allowed",
+  "line": 577,
+  "end": 597,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   13
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_post_phase_mto",
+  "line": 600,
+  "end": 634,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_unit_location_token",
+   "append",
+   "float",
+   "fss",
+   "get",
+   "resolve_fleet_coast"
+  ],
+  "numbers": [
+   0,
+   1.0,
+   2,
+   3,
+   6,
+   7,
+   13
+  ],
+  "strings": [
+   "A",
+   "F",
+   "FLT",
+   "type"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_post_phase_support_sweep",
+  "line": 637,
+  "end": 719,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_apply_convoy_swap",
+   "_build_post_phase_mto",
+   "_post_phase_hold_support_allowed",
+   "_post_phase_move_support_allowed",
+   "_source_build_order_sup_hld",
+   "_source_build_order_sup_mto",
+   "can_reach_by_type",
+   "fss",
+   "get",
+   "int",
+   "items",
+   "range"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   2,
+   6
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 17
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_candidate_tree_score",
+  "line": 722,
+  "end": 732,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "fss",
+   "int"
+  ],
+  "numbers": [],
+  "strings": [
+   "A",
+   "AMY"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_reset_trial_proximity_score",
+  "line": 735,
+  "end": 752,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_recompute_trial_support_demand",
+  "line": 755,
+  "end": 805,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "asarray",
+   "astype",
+   "max",
+   "maximum",
+   "sum",
+   "where",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   10,
+   16
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_secondary_exploit_enabled",
+  "line": 808,
+  "end": 823,
+  "claimed": "0x427960",
+  "how": "docstring-cname:CAL_BOARD",
+  "mentioned": [],
+  "calls": [
+   "float",
+   "int"
+  ],
+  "numbers": [
+   1,
+   6.0,
+   65
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_select_secondary_exploit_target",
+  "line": 826,
+  "end": 869,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_secondary_exploit_enabled",
+   "int",
+   "randrange"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   50,
+   100
+  ],
+  "strings": [],
+  "branches": 12
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_remove_first_convoy_candidate",
+  "line": 872,
+  "end": 884,
+  "claimed": "0x411cf0",
+  "how": "docstring-cname:MoveCandidate",
+  "mentioned": [],
+  "calls": [
+   "enumerate",
+   "int",
+   "pop"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_insert_order_candidate",
+  "line": 887,
+  "end": 902,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "bisect_right",
+   "dict",
+   "insert",
+   "int"
+  ],
+  "numbers": [],
+  "strings": [
+   "score"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_proposal_support_trust_allowed",
+  "line": 905,
+  "end": 980,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "designation",
+   "int",
+   "len",
+   "trust_for"
+  ],
+  "numbers": [
+   0,
+   1,
+   9
+  ],
+  "strings": [],
+  "branches": 15
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_proposal_support_order",
+  "line": 983,
+  "end": 1028,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "fss",
+   "get",
+   "int"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   10,
+   13,
+   24,
+   25,
+   30
+  ],
+  "strings": [
+   "A",
+   "AMY",
+   "type"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_apply_proposal_support_candidate",
+  "line": 1031,
+  "end": 1088,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_build_proposal_support_order",
+   "_proposal_support_trust_allowed",
+   "can_reach_by_type",
+   "get",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1,
+   3,
+   4
+  ],
+  "strings": [
+   "",
+   "A",
+   "coast",
+   "dst_prov",
+   "power",
+   "target_power",
+   "type",
+   "unit_prov",
+   "via_prov"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "process_turn",
+  "line": 1091,
+  "end": 2512,
+  "claimed": "0x453220",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4153b0",
+   "0x41d270",
+   "0x45162d",
+   "0x4516f1",
+   "0x4516fb",
+   "0x451bb0",
+   "0x4531a8",
+   "0x453220",
+   "0x4536b5",
+   "0x4536bf",
+   "0x453a2c",
+   "0x453f34",
+   "0x460be0"
+  ],
+  "calls": [
+   "_accumulate_other_score",
+   "_apply_convoy_swap",
+   "_apply_post_phase_support_sweep",
+   "_apply_proposal_support_candidate",
+   "_apply_step1_source_dedup",
+   "_apply_step3_support_filter",
+   "_apply_step4_xdo_constraint",
+   "_apply_step6_target_filter",
+   "_build_negotiated_province_context",
+   "_build_order_hld",
+   "_build_order_mto",
+   "_candidate_tree_score",
+   "_dedupe_step5_fleet_candidates",
+   "_get_convoy_route",
+   "_insert_order_candidate",
+   "_populate_convoy_routes_for_src",
+   "_recompute_trial_support_demand",
+   "_remove_first_convoy_candidate",
+   "_reset_per_trial_state",
+   "_reset_trial_proximity_score",
+   "_resolve_own_occupied_destination",
+   "_select_secondary_exploit_target",
+   "_source_build_order_sup_mto",
+   "_unit_location_token",
+   "add",
+   "all",
+   "any",
+   "append",
+   "assign_hold_supports",
+   "assign_support_order",
+   "bool",
+   "build_convoy_orders",
+   "can_reach_by_type",
+   "clear",
+   "count_nonzero",
+   "debug",
+   "dispatch_single_order",
+   "evaluate_order_proposal",
+   "float",
+   "fss",
+   "full",
+   "get",
+   "getLogger",
+   "get_reachable_edges",
+   "getattr",
+   "hasattr",
+   "info",
+   "int",
+   "isEnabledFor",
+   "items",
+   "len",
+   "list",
+   "max",
+   "pop",
+   "randint",
+   "randrange",
+   "range",
+   "register_convoy_fleet",
+   "resolve_fleet_coast",
+   "round",
+   "score_convoy_fleet",
+   "sort",
+   "str",
+   "upper",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   13,
+   15,
+   17,
+   18,
+   19,
+   20,
+   23,
+   24,
+   25,
+   30,
+   35,
+   40,
+   50,
+   60,
+   65,
+   75,
+   80,
+   84,
+   89,
+   100,
+   150,
+   256,
+   260,
+   500,
+   32287,
+   32763,
+   32767
+  ],
+  "strings": [
+   "",
+   "-",
+   ".0f",
+   "/",
+   "A",
+   "AMY",
+   "AUT",
+   "CTO",
+   "CVY",
+   "ENG",
+   "F",
+   "FLT",
+   "FRA",
+   "GER",
+   "HLD",
+   "HOLD_DBG[%s] after Phase2: unit_orders=%s",
+   "HOLD_DBG[%s] entering Phase2: fleet_cands_own=%s  unit_ot_pre_phase2=%s  final_score_set_nonzero=%d",
+   "HOLD_DBG[%s] trial=0 after Phase1c: gen_orders=%d ali_orders=%d  unit_ot_after_dispatch=%s",
+   "HOLD_DBG[%s] unit@%s SELF-SELECTED HOLD (src scored highest)  top_cands=%s  filtered=%d\u2192%d",
+   "HOLD_DBG[%s] unit@%s\u2192%s TRUST-GATE REJECTED (trust_final=lo=%d hi=%d  in_reachable=%s)  top_cands=%s",
+   "ITA",
+   "MC_DBG[GER] Phase1f: sc_provs=%s  ordered_provs=%s  own_units=%s  support_cands=%s  g_convoy_fleet_cands_before=%d",
+   "MC_DBG[GER] unit=%s@%-4s scored_mode=%s cands=%s",
+   "MC_DBG[GER] unit@%-4s \u2192 %-4s  accepted=%s  trust_final=(%d,%d)",
+   "MC_DBG[p%d] Phase2 g_convoy_fleet_candidates=%s",
+   "MC_DBG[p%d] trial=0  final_score_set nonzero: %s",
+   "MTO",
+   "NOT_IN_CANDS",
+   "Port of BuildOrder_HLD (Source/moves/BuildOrder_HLD.c).\n\n        The port previously wrote only col 0 at all eight emission sites.  C\n        writes six fields; the load-bearing ones are col 13 = 1\n        (g_ProvinceBaseScore) and col 6 = final_score_set[power][src]\n        (g_ConvoyChainScore), the order-score channel EvaluateOrderScore reads\n        at evaluation.py:539.  Without col 6 a held unit contributed 0 where C\n        contributes fss(self), suppressing holds as an order class (the port\n        emitted 0 holds against Albert's 21).\n        ",
+   "Port of BuildOrder_MTO \u2014 write MTO into g_order_table.\n\n        Decompile-verified (decompiled.txt).  Signature:\n          __thiscall BuildOrder_MTO(this, power, src_province, dst_province, coast)\n\n        Recovered callees:\n          ClearConvoyState()        \u2014 empty callback (Source/utils/clear.c)\n          BuildOrder_CTO_Ring(...)  \u2014 builds CTO ring chain; decompile-verified (BuildOrder_CTO.c:67)\n          RegisterConvoyFleet(...)  \u2014 decompile-verified (RegisterConvoyFleet.c); called at end of fn\n        ",
+   "Port of FUN_00460be0 = ResetPerTrialState.\n\n        C operations (see Source/monte_carlo/ResetPerTrialState.c):\n        (1) Walk active unit list (this+0x2450/54): clear node+0x20 per unit.\n        (2) Walk retreat unit list (this+0x245c/60): same.\n        (3) Walk and free all BST nodes at this+0x2478 (lines 52-60).\n        (4) Reset BST sentinel: sentinel[1]=sentinel, *sentinel=sentinel,\n            sentinel[2]=sentinel (lines 61, 63, 64).\n        (5) this+0x247c = 0  \u2014 BST _Mysize counter (line 62).\n        (6) this+0x2480 = 0  \u2014 waive count (line 65).\n        Python: (3)+(4)+(5) are all implicit in list.clear(); tracked\n        explicitly via g_build_order_list_size for offset parity.\n        ",
+   "RUS",
+   "SUP",
+   "TUR",
+   "_id_to_prov",
+   "albert_power_idx",
+   "coast",
+   "dst_prov",
+   "fleet_coast_adj",
+   "g_alliance_orders",
+   "g_convoy_active_flag",
+   "g_convoy_dst_list",
+   "g_convoy_dst_to_src",
+   "g_convoy_source_score",
+   "g_deal_list",
+   "g_general_orders",
+   "g_other_score",
+   "g_press_proposals_cap",
+   "g_proposal_history_map",
+   "g_retreat_order_list",
+   "g_ring_coast_a",
+   "g_ring_coast_b",
+   "g_ring_coast_c",
+   "g_ring_convoy_enabled",
+   "g_ring_convoy_score",
+   "g_ring_prov_a",
+   "g_ring_prov_b",
+   "g_ring_prov_c",
+   "g_support_trust_adj",
+   "g_trial_map",
+   "g_trial_scale",
+   "g_unit_count",
+   "g_unit_presence",
+   "in_cands",
+   "num_provinces",
+   "order_type",
+   "power",
+   "province",
+   "score",
+   "src_prov",
+   "target_power",
+   "type",
+   "unit_prov",
+   "via_prov"
+  ],
+  "branches": 244
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_variant_base",
+  "line": 2517,
+  "end": 2529,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "getattr",
+   "int",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "_variant_base_lookup",
+   "coast_variants"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_staged_unit_order",
+  "line": 2532,
+  "end": 2562,
+  "claimed": "0x40b4b0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40b4b0"
+  ],
+  "calls": [
+   "base",
+   "get",
+   "int",
+   "isinstance",
+   "len",
+   "max",
+   "tuple"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   23,
+   26,
+   27,
+   28
+  ],
+  "strings": [],
+  "branches": 11
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_adjudicate_staged_orders",
+  "line": 2565,
+  "end": 2600,
+  "claimed": "0x40b560",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40b560"
+  ],
+  "calls": [
+   "_AdjudicatorUnit",
+   "_adjudicate_movement",
+   "_staged_unit_order",
+   "get",
+   "int",
+   "items",
+   "setdefault",
+   "sorted",
+   "tuple"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "_adjudication_cache"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_alliance_candidate_batches",
+  "line": 2603,
+  "end": 2770,
+  "claimed": "0x40b560",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40b560"
+  ],
+  "calls": [
+   "_adjudicate_staged_orders",
+   "_live_unit_adjacencies",
+   "_variant_base",
+   "add",
+   "adjacencies",
+   "defaultdict",
+   "enumerate",
+   "fss",
+   "get",
+   "int",
+   "isinstance",
+   "items",
+   "len",
+   "nonzero",
+   "range",
+   "set",
+   "sorted",
+   "tolist",
+   "tuple",
+   "zeros",
+   "zeros_like",
+   "zip"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   2,
+   3
+  ],
+  "strings": [
+   "A",
+   "F",
+   "FLT",
+   "orders",
+   "power",
+   "type"
+  ],
+  "branches": 44
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_update_ally_order_score",
+  "line": 2773,
+  "end": 3114,
+  "claimed": "0x442770",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x424850",
+   "0x442770"
+  ],
+  "calls": [
+   "_build_alliance_candidate_batches",
+   "_rank_candidates_for_power",
+   "append",
+   "asarray",
+   "candidate_orders_key",
+   "candidate_record_key",
+   "empty",
+   "evaluate_alliance_score",
+   "evaluate_alliance_scores_batch",
+   "get",
+   "getattr",
+   "int",
+   "isinstance",
+   "items",
+   "len",
+   "min",
+   "range",
+   "set",
+   "setdefault",
+   "sorted",
+   "sum",
+   "tuple",
+   "zeros",
+   "zip"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4,
+   8,
+   30,
+   256
+  ],
+  "strings": [
+   "_candidate_key_map",
+   "alliance_maximum_base",
+   "alliance_score",
+   "alliance_score_avg",
+   "base_score",
+   "conviction_bonus",
+   "early_game_bonus",
+   "final_dim_score",
+   "g_candidate_record_list",
+   "g_last_alliance_maximum_base",
+   "g_last_alliance_maximum_bases",
+   "g_n_trials_completed",
+   "heat_scores",
+   "other_score",
+   "power",
+   "rank_penalty",
+   "ring_convoy_score",
+   "round_count",
+   "score",
+   "skip_flag",
+   "trial_scores",
+   "water_provinces"
+  ],
+  "branches": 38
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_refresh_order_table",
+  "line": 3117,
+  "end": 3236,
+  "claimed": "0x424490",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x419fa0",
+   "0x424490"
+  ],
+  "calls": [
+   "_passes_sc_gate",
+   "append",
+   "deepcopy",
+   "enumerate",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "isinstance",
+   "len",
+   "list",
+   "randint",
+   "range",
+   "sort"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   6,
+   20,
+   23,
+   30,
+   50,
+   1000,
+   32767
+  ],
+  "strings": [
+   "Return False when C breaks to the first-tree-element fallback.",
+   "albert_power_idx",
+   "g_press_flag",
+   "g_war_mode_flag",
+   "orders",
+   "power",
+   "weight"
+  ],
+  "branches": 23
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "update_score_state",
+  "line": 3239,
+  "end": 3275,
+  "claimed": "0x44c8e0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x424490",
+   "0x442770",
+   "0x44c8e0"
+  ],
+  "calls": [
+   "_refresh_order_table",
+   "_update_ally_order_score",
+   "len",
+   "range"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 6
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "check_time_limit",
+  "line": 3280,
+  "end": 3302,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "getattr",
+   "int",
+   "time"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "g_turn_deadline",
+   "mtl_expired"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "read_slot",
+  "line": 108,
+  "end": 121,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int",
+   "len"
+  ],
+  "numbers": [
+   0,
+   9
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "add_record",
+  "line": 307,
+  "end": 317,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "isinstance"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "dest_prov",
+   "province"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "designation",
+  "line": 922,
+  "end": 925,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int",
+   "len"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "trust_for",
+  "line": 927,
+  "end": 936,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   9
+  ],
+  "strings": [],
+  "branches": 4
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_reset_per_trial_state",
+  "line": 1179,
+  "end": 1204,
+  "claimed": "0x460be0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x460be0"
+  ],
+  "calls": [
+   "clear",
+   "getattr"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "g_retreat_order_list",
+   "order_type"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_order_hld",
+  "line": 1206,
+  "end": 1235,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_unit_location_token",
+   "float",
+   "fss",
+   "get",
+   "register_convoy_fleet"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   3,
+   6,
+   7,
+   13,
+   24,
+   25
+  ],
+  "strings": [
+   "",
+   "A",
+   "AMY",
+   "coast",
+   "type"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_build_order_mto",
+  "line": 1237,
+  "end": 1335,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_unit_location_token",
+   "append",
+   "assign_support_order",
+   "float",
+   "fss",
+   "get",
+   "hasattr",
+   "int",
+   "register_convoy_fleet",
+   "resolve_fleet_coast"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   3,
+   5,
+   6,
+   7,
+   13,
+   17,
+   20,
+   24,
+   25
+  ],
+  "strings": [
+   "",
+   "A",
+   "AMY",
+   "F",
+   "FLT",
+   "g_convoy_dst_to_src",
+   "type"
+  ],
+  "branches": 14
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "base",
+  "line": 2540,
+  "end": 2542,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "adjacencies",
+  "line": 2643,
+  "end": 2648,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_live_unit_adjacencies",
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "_passes_sc_gate",
+  "line": 3170,
+  "end": 3186,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0,
+   1,
+   4,
+   6,
+   20,
+   50
+  ],
+  "strings": [],
+  "branches": 9
+ },
+ {
+  "file": "monte_carlo/trial.py",
+  "name": "add",
+  "line": 2676,
+  "end": 2679,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "F",
+   "FLT"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "dispatch/alliance.py",
+  "name": "check_order_alliance",
+  "line": 28,
+  "end": 249,
+  "claimed": "0x41d360",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x401050",
+   "0x41d360",
+   "0x465930",
+   "0x47a948"
+  ],
+  "calls": [
+   "debug",
+   "get",
+   "int",
+   "next",
+   "range"
+  ],
+  "numbers": [
+   -80050,
+   -80040,
+   -80030,
+   -80020,
+   -80010,
+   -80003,
+   -80002,
+   -80001,
+   0,
+   1,
+   10
+  ],
+  "strings": [
+   "__size__",
+   "check_order_alliance: counter-list mismatch prov=%d dest_power=%d",
+   "check_order_alliance: duplicate other-unit order prov=%d promising_power=%d dest_power=%d",
+   "check_order_alliance: duplicate own-unit order prov=%d promising_power=%d",
+   "check_order_alliance: promise-diff conflict prov=%d dest_power=%d",
+   "check_order_alliance: promise-same conflict prov=%d ordering=%d",
+   "check_order_alliance: slot-A trust conflict prov=%d ally=%d trust=%d",
+   "check_order_alliance: slot-B trust conflict prov=%d ally=%d trust=%d",
+   "check_order_alliance: slot-C trust conflict prov=%d ally=%d trust=%d",
+   "dest_prov",
+   "order_color",
+   "size"
+  ],
+  "branches": 33
+ },
+ {
+  "file": "dispatch/legality.py",
+  "name": "_is_legal_mto",
+  "line": 19,
+  "end": 55,
+  "claimed": "0x460b30",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x460ac0",
+   "0x460b30",
+   "0x47a948"
+  ],
+  "calls": [
+   "can_reach",
+   "can_reach_by_type"
+  ],
+  "numbers": [],
+  "strings": [
+   ""
+  ],
+  "branches": 1
+ },
+ {
+  "file": "dispatch/legality.py",
+  "name": "is_convoy_reachable",
+  "line": 58,
+  "end": 142,
+  "claimed": "0x4619f0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4619f0"
+  ],
+  "calls": [
+   "add",
+   "can_reach_by_type",
+   "discard",
+   "get",
+   "iter",
+   "next",
+   "set",
+   "str"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "",
+   "A",
+   "AMY",
+   "F",
+   "coast",
+   "type"
+  ],
+  "branches": 12
+ },
+ {
+  "file": "dispatch/orders.py",
+  "name": "_destination_score",
+  "line": 64,
+  "end": 85,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "get",
+   "items",
+   "lstrip",
+   "split",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "",
+   "/",
+   "F",
+   "FLT"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "dispatch/orders.py",
+  "name": "_register_convoy_destination",
+  "line": 88,
+  "end": 96,
+  "claimed": "0x41c340",
+  "how": "docstring-cname:ConvoyList_Insert",
+  "mentioned": [],
+  "calls": [
+   "append"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "dispatch/orders.py",
+  "name": "parse_destination_with_coast",
+  "line": 99,
+  "end": 138,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "isinstance",
+   "len",
+   "split",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "",
+   "/",
+   "coast",
+   "province"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "dispatch/orders.py",
+  "name": "_format_order_seq",
+  "line": 141,
+  "end": 173,
+  "claimed": "0x45ffa0",
+  "how": "docstring-cname:Format",
+  "mentioned": [],
+  "calls": [
+   "get",
+   "parse_destination_with_coast",
+   "str"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   " - ",
+   " C ",
+   " H",
+   " S ",
+   " VIA",
+   "/",
+   "CTO",
+   "CVY",
+   "HLD",
+   "MTO",
+   "SUP",
+   "coast",
+   "target",
+   "target_coast",
+   "target_dest",
+   "target_unit",
+   "type",
+   "unit"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "dispatch/orders.py",
+  "name": "dispatch_single_order",
+  "line": 176,
+  "end": 450,
+  "claimed": "0x44cc50",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x44cc50"
+  ],
+  "calls": [
+   "_destination_score",
+   "_format_order_seq",
+   "_register_convoy_destination",
+   "_unit_location_token",
+   "append",
+   "assign_support_order",
+   "build_order_sup_hld",
+   "build_order_sup_mto",
+   "debug",
+   "enumerate",
+   "float",
+   "get",
+   "int",
+   "isinstance",
+   "len",
+   "list",
+   "parse_destination_with_coast",
+   "register_convoy_fleet",
+   "split",
+   "startswith",
+   "str",
+   "upper",
+   "warning"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   13,
+   17,
+   23,
+   24,
+   25,
+   26,
+   256,
+   16896
+  ],
+  "strings": [
+   "",
+   " - ",
+   " C ",
+   " H",
+   " S ",
+   " VIA",
+   "/",
+   "A",
+   "AMY",
+   "CTO",
+   "CVY",
+   "CVY target_unit %r is not an army \u2014 convoy orders require an army unit",
+   "Dispatched order: %s",
+   "HLD",
+   "MTO",
+   "SUP",
+   "Serialized existing order: %s",
+   "Unknown DAIDE dispatch token branch: ",
+   "coast",
+   "convoy_legs",
+   "province",
+   "src_prov",
+   "target",
+   "target_coast",
+   "target_dest",
+   "target_src_prov",
+   "target_unit",
+   "type",
+   "unit"
+  ],
+  "branches": 46
+ },
+ {
+  "file": "dispatch/validator.py",
+  "name": "validate_and_dispatch_order",
+  "line": 38,
+  "end": 381,
+  "claimed": "0x422a90",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40dfe0",
+   "0x41d360",
+   "0x422a90",
+   "0x423083",
+   "0x423fb5",
+   "0x426140",
+   "0x460b30",
+   "0x4619f0"
+  ],
+  "calls": [
+   "_is_legal_mto",
+   "check_order_alliance",
+   "debug",
+   "destination_parts",
+   "dispatch_single_order",
+   "get",
+   "get_unit_power",
+   "is_convoy_reachable",
+   "isinstance",
+   "len",
+   "lstrip",
+   "split",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   -100065,
+   -100055,
+   -100020,
+   -100010,
+   -100005,
+   -100001,
+   -90001,
+   -85001,
+   0,
+   1,
+   2
+  ],
+  "strings": [
+   "",
+   "/",
+   "?",
+   "A",
+   "AMY",
+   "BLD",
+   "CTO",
+   "CVY",
+   "F",
+   "FLT",
+   "HLD",
+   "MTO",
+   "SUP",
+   "WVE",
+   "coast",
+   "power",
+   "province",
+   "target",
+   "target_coast",
+   "target_dest",
+   "target_unit",
+   "type",
+   "unit",
+   "validate_and_dispatch_order: CTO convoy-legality failed %r \u2192 %r",
+   "validate_and_dispatch_order: CVY army not found or not AMY at %r",
+   "validate_and_dispatch_order: CVY convoy-reachability failed %r \u2192 %r",
+   "validate_and_dispatch_order: MTO adjacency check failed %r \u2192 %r",
+   "validate_and_dispatch_order: SUP convoy-legality failed %r \u2192 %r",
+   "validate_and_dispatch_order: SUP supporter %r not adjacent to %r",
+   "validate_and_dispatch_order: malformed unit string %r",
+   "validate_and_dispatch_order: no unit at province %r (id %d)",
+   "validate_and_dispatch_order: power mismatch at %r: unit.power=%d own=%d",
+   "validate_and_dispatch_order: supported unit not found at %r",
+   "validate_and_dispatch_order: unknown order type %r",
+   "validate_and_dispatch_order: unknown province %r"
+  ],
+  "branches": 81
+ },
+ {
+  "file": "dispatch/validator.py",
+  "name": "destination_parts",
+  "line": 91,
+  "end": 108,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "isinstance",
+   "len",
+   "lstrip",
+   "split",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "",
+   "/",
+   "coast",
+   "province"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_candidate_rank_threshold",
+  "line": 39,
+  "end": 66,
+  "claimed": "0x424850",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x424850"
+  ],
+  "calls": [
+   "float",
+   "float32",
+   "int"
+  ],
+  "numbers": [
+   0,
+   0.05,
+   0.078,
+   0.6,
+   1,
+   5.0,
+   8,
+   500,
+   3000.0
+  ],
+  "strings": [],
+  "branches": 3
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_phase_handler",
+  "line": 69,
+  "end": 93,
+  "claimed": "0x40df20",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40df20"
+  ],
+  "calls": [
+   "float",
+   "hasattr",
+   "int",
+   "range",
+   "zeros"
+  ],
+  "numbers": [
+   4,
+   7,
+   21
+  ],
+  "strings": [
+   "g_trust_snapshot"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_analyze_position",
+  "line": 96,
+  "end": 107,
+  "claimed": "0x4119d0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4119d0"
+  ],
+  "calls": [
+   "fill",
+   "get",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   7
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_move_analysis_unit_adjacencies",
+  "line": 110,
+  "end": 129,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "list",
+   "lstrip",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "F",
+   "FLT",
+   "coast",
+   "type"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_build_move_pressure_matrices",
+  "line": 132,
+  "end": 218,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_move_analysis_unit_adjacencies",
+   "any",
+   "append",
+   "full",
+   "get",
+   "int",
+   "items",
+   "range",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   6,
+   7,
+   256
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 27
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_move_analysis",
+  "line": 221,
+  "end": 409,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x435fe6",
+   "0x436427"
+  ],
+  "calls": [
+   "_build_move_pressure_matrices",
+   "_split_lt",
+   "any",
+   "copy",
+   "debug",
+   "float",
+   "getattr",
+   "int",
+   "len",
+   "range",
+   "setattr"
+  ],
+  "numbers": [
+   0,
+   0.55,
+   1,
+   2,
+   3,
+   5,
+   7,
+   2147483648,
+   4294967295
+  ],
+  "strings": [
+   "Best ally (%d) severely pressured by power (%d)",
+   "Enemy set to single original enemy: power %d",
+   "FAL",
+   "Seems (%d) and (%d) have applied little pressure to each other",
+   "Seems (%d) and (%d) have applied no pressure to each other",
+   "Seems (%d) and (%d) have bounced and still may have a viable alliance",
+   "albert_power_idx",
+   "g_best_ally_slot0",
+   "g_best_ally_slot1",
+   "g_best_ally_slot2",
+   "g_triple_front_flag"
+  ],
+  "branches": 55
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_post_process_orders",
+  "line": 412,
+  "end": 415,
+  "claimed": "0x411120",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x411120"
+  ],
+  "calls": [
+   "post_process_orders"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_compute_press",
+  "line": 418,
+  "end": 421,
+  "claimed": "0x4401f0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4401f0"
+  ],
+  "calls": [
+   "compute_press"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_cleanup_turn",
+  "line": 424,
+  "end": 437,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [],
+  "calls": [
+   "normalize_influence_matrix"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_prepare_draw_vote_set",
+  "line": 440,
+  "end": 492,
+  "claimed": "0x44c9d0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x44c9d0"
+  ],
+  "calls": [
+   "add",
+   "compute_draw_vote",
+   "debug",
+   "getattr",
+   "info",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "Draw vote: will accept DRW proposals (voting YES) [draw_vote=%s, unknown_flag=%s, request_draw=%s, static_map=%s]",
+   "Draw vote: will reject DRW proposals (no vote sent)",
+   "g_draw_flag_baed29",
+   "g_request_draw_flag",
+   "g_static_map_flag"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_rank_candidates_for_power",
+  "line": 495,
+  "end": 781,
+  "claimed": "0x424850",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40e680",
+   "0x40f260",
+   "0x40fb70",
+   "0x410330",
+   "0x412540",
+   "0x414e10",
+   "0x419fa0",
+   "0x424850",
+   "0x425626",
+   "0x465870"
+  ],
+  "calls": [
+   "_candidate_rank_threshold",
+   "_safe_pow",
+   "all",
+   "any",
+   "append",
+   "enumerate",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "len",
+   "max",
+   "min",
+   "sort",
+   "sum",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   0.5,
+   0.666,
+   1,
+   1.75,
+   1.8,
+   2,
+   3,
+   6,
+   7,
+   10,
+   20,
+   50,
+   90.0,
+   100.0,
+   2500,
+   10000.0,
+   1000000
+  ],
+  "strings": [
+   "final_dim_score",
+   "g_n_trials_completed",
+   "max_rank",
+   "min_rank",
+   "other_score",
+   "output_score",
+   "pareto_flag",
+   "power",
+   "power_idx",
+   "processed",
+   "rank_penalty",
+   "running_avg",
+   "score",
+   "trial_scores",
+   "weight"
+  ],
+  "branches": 48
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_game_phase",
+  "line": 784,
+  "end": 789,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get_phase",
+   "getattr",
+   "hasattr"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "current_short_phase",
+   "get_phase"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_game_status",
+  "line": 792,
+  "end": 794,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "getattr"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "status"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "bot/analysis.py",
+  "name": "_split_lt",
+  "line": 322,
+  "end": 325,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0,
+   4294967295
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_begin_turn_timing",
+  "line": 83,
+  "end": 92,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "getattr",
+   "int",
+   "time"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "g_move_time_limit_sec"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_refresh_opening_turn_flag",
+  "line": 95,
+  "end": 106,
+  "claimed": "0x45953f",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45953f",
+   "0x45955e"
+  ],
+  "calls": [
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "g_opening_turn_pending"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_insert_base_broadcast_node",
+  "line": 109,
+  "end": 137,
+  "claimed": "0x459548",
+  "how": "docstring-cname:GenerateAndSubmitOrders",
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "len",
+   "max",
+   "range",
+   "send_alliance_press",
+   "set"
+  ],
+  "numbers": [
+   0,
+   7,
+   30
+  ],
+  "strings": [
+   "SUB",
+   "albert_power_idx",
+   "base_sub",
+   "g_press_proposals_cap",
+   "history_flag",
+   "order_candidates",
+   "participant_powers",
+   "received_flag",
+   "score_vector",
+   "sent",
+   "sublist3",
+   "tokens",
+   "trial_count",
+   "type_flag",
+   "watermark"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_normalize_broadcast_nodes",
+  "line": 140,
+  "end": 170,
+  "claimed": "0x457890",
+  "how": "docstring-cname:BuildAndSendSUB",
+  "mentioned": [],
+  "calls": [
+   "get",
+   "getattr",
+   "int",
+   "max",
+   "pop"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   30
+  ],
+  "strings": [
+   "SUB",
+   "clause_set_a",
+   "flag",
+   "g_broadcast_list",
+   "g_press_proposals_cap",
+   "history_flag",
+   "key",
+   "order_candidates",
+   "received_flag",
+   "score_vector",
+   "sent",
+   "sublist3",
+   "tokens",
+   "trial_count",
+   "type_flag"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_prepare_broadcast_nodes_for_movement",
+  "line": 173,
+  "end": 177,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_insert_base_broadcast_node",
+   "_normalize_broadcast_nodes"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_prepare_proposal_orders_for_turn",
+  "line": 180,
+  "end": 193,
+  "claimed": "0x455fd0",
+  "how": "docstring-cname:EnumerateHoldOrders",
+  "mentioned": [],
+  "calls": [
+   "_destroy_candidate_tree",
+   "fill",
+   "get",
+   "range"
+  ],
+  "numbers": [
+   0,
+   7
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_reset_send_gof_order_state",
+  "line": 196,
+  "end": 204,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "clear",
+   "getattr",
+   "values"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "dislodged_unit_info",
+   "order_type"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_run_send_gof_candidate_pass",
+  "line": 207,
+  "end": 355,
+  "claimed": "0x411120",
+  "how": "docstring-cname:PostProcessOrders",
+  "mentioned": [
+   "0x456c03"
+  ],
+  "calls": [
+   "_normalize_broadcast_nodes",
+   "_prepare_proposal_orders_for_turn",
+   "_reset_send_gof_order_state",
+   "check_time_limit",
+   "clear",
+   "compute_safe_reach",
+   "enumerate_hold_orders",
+   "exception",
+   "get",
+   "getattr",
+   "int",
+   "max",
+   "pop",
+   "process_turn",
+   "range",
+   "score_order_candidates_all_powers",
+   "score_provinces",
+   "set",
+   "snapshot_province_state",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   10,
+   30,
+   260
+  ],
+  "strings": [
+   "AUT",
+   "FAL",
+   "SPR",
+   "SUM",
+   "_candidate_key_map",
+   "_candidate_keys",
+   "g_deal_list",
+   "g_press_proposals_cap",
+   "g_proposal_history",
+   "g_support_opportunities_set",
+   "g_trial_scale",
+   "g_unit_count",
+   "mover_coast",
+   "mover_prov",
+   "power",
+   "score_order_candidates_all_powers raised; continuing with empty final_score_set",
+   "score_provinces raised; continuing with default scores",
+   "supporter_coast",
+   "supporter_prov",
+   "target_coast",
+   "target_prov"
+  ],
+  "branches": 23
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_initialize_press_session",
+  "line": 371,
+  "end": 391,
+  "claimed": "0x41b410",
+  "how": "docstring-cname:ParseHSTResponse",
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "index",
+   "process_hst"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "LVL 0",
+   "LVL 100",
+   "g_minimal_press_mode",
+   "g_press_session_initialized"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "generate_and_submit_orders",
+  "line": 393,
+  "end": 627,
+  "claimed": "0x4592a0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4325a0",
+   "0x4466e0",
+   "0x4592a0"
+  ],
+  "calls": [
+   "_analyze_position",
+   "_await_press_and_send_gof",
+   "_begin_turn_timing",
+   "_cleanup_turn",
+   "_compute_press",
+   "_deviate_move",
+   "_friendly",
+   "_hostility",
+   "_init_position_for_orders",
+   "_initialize_press_session",
+   "_insert_base_broadcast_node",
+   "_move_analysis",
+   "_phase_handler",
+   "_post_friendly_update",
+   "_post_process_orders",
+   "_prepare_draw_vote_set",
+   "_refresh_opening_turn_flag",
+   "_send_gof_pass",
+   "_stabbed",
+   "_submit_draw_vote",
+   "cancel_prior_press",
+   "clear",
+   "compute_build_delta",
+   "debug",
+   "fill",
+   "generate_orders",
+   "getattr",
+   "hasattr",
+   "index",
+   "info",
+   "int",
+   "pop",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   7,
+   30
+  ],
+  "strings": [
+   " (Spring of year ",
+   ")",
+   "AUT",
+   "Alliance block active",
+   "DeceitLevel = ",
+   "FAL",
+   "Game-over flag set \u2014 skipping order generation",
+   "SPR",
+   "Stale pending orders found \u2014 cancelling (reconnect path)",
+   "WIN",
+   "g_alliance_debug",
+   "g_game_over",
+   "g_minimal_press_mode",
+   "g_pending_orders_A",
+   "g_pending_orders_B",
+   "g_position_orders_initialized"
+  ],
+  "branches": 37
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_send_gof_pass",
+  "line": 629,
+  "end": 729,
+  "claimed": "0x456b50",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x441f73",
+   "0x456b50",
+   "0x45745e",
+   "0x4574c6",
+   "0x45aa40"
+  ],
+  "calls": [
+   "_await_press_and_send_gof",
+   "_build_and_send_sub",
+   "_format_retreat_commands",
+   "_populate_retreat_orders",
+   "_run_send_gof_candidate_pass",
+   "_schedule_set_orders",
+   "_submit_adjustment_orders",
+   "_validate_orders",
+   "clear",
+   "compute_win_builds",
+   "compute_win_removes",
+   "exception",
+   "getattr",
+   "info",
+   "int",
+   "len",
+   "populate_build_candidates",
+   "populate_remove_candidates",
+   "randrange",
+   "score_order_candidates_own_power",
+   "score_provinces"
+  ],
+  "numbers": [
+   0,
+   1,
+   6000
+  ],
+  "strings": [
+   "AUT",
+   "FAL",
+   "Failed to submit retreat orders to game engine",
+   "Retreat orders for %s: %s",
+   "SPR",
+   "SUM",
+   "WIN",
+   "delta",
+   "flag",
+   "g_press_instant"
+  ],
+  "branches": 14
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_rerun_send_gof",
+  "line": 731,
+  "end": 739,
+  "claimed": "0x457520",
+  "how": "docstring-cname:EvaluateOrderProposalsAndSendGOF",
+  "mentioned": [],
+  "calls": [
+   "_game_phase",
+   "_send_gof_pass",
+   "getattr",
+   "int"
+  ],
+  "numbers": [
+   0,
+   7
+  ],
+  "strings": [
+   "albert_power_idx"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_validate_orders",
+  "line": 742,
+  "end": 775,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "get_all_possible_orders",
+   "len",
+   "list",
+   "set",
+   "split",
+   "warning"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "strings": [
+   "/",
+   "ORDER VALIDATION: %r not in legal orders for %s (sample legal: %s)",
+   "WAIVE"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/client/_orders.py",
+  "name": "_submit_adjustment_orders",
+  "line": 778,
+  "end": 817,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_schedule_set_orders",
+   "_validate_orders",
+   "append",
+   "info",
+   "len",
+   "range",
+   "replace",
+   "split",
+   "warning"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4
+  ],
+  "strings": [
+   "",
+   " ",
+   " B",
+   " D",
+   "(",
+   ")",
+   "A",
+   "Adjustment orders for %s: %s",
+   "Adjustment: no builds/removes/waives for %s",
+   "Adjustment: unknown action %r in %r",
+   "Adjustment: unparseable entry %r",
+   "BLD",
+   "F",
+   "FLT",
+   "REM",
+   "WAIVE"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/gof.py",
+  "name": "_build_gof_seq",
+  "line": 31,
+  "end": 131,
+  "claimed": "0x464460",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x442040",
+   "0x44bd40",
+   "0x460110",
+   "0x463690",
+   "0x464460",
+   "0x465aa0",
+   "0x466540",
+   "0x466c40"
+  ],
+  "calls": [
+   "_build_movement_order_token",
+   "_build_retreat_order_token",
+   "append",
+   "get",
+   "getattr",
+   "items",
+   "len",
+   "range"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   " )",
+   " WVE )",
+   "( ",
+   "AUT",
+   "FAL",
+   "GOF",
+   "InnerGameState",
+   "SPR",
+   "SUM",
+   "UNO",
+   "albert_power_idx",
+   "g_season",
+   "power"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "bot/gof.py",
+  "name": "_send_gof",
+  "line": 134,
+  "end": 147,
+  "claimed": "0x443ed0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x443ed0",
+   "0x45aa40"
+  ],
+  "calls": [
+   "_build_gof_seq",
+   "send_dm"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "GOF",
+   "InnerGameState"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "bot/gof.py",
+  "name": "_evaluate_order_proposals_and_send_gof",
+  "line": 152,
+  "end": 233,
+  "claimed": "0x457520",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x405090",
+   "0x457520"
+  ],
+  "calls": [
+   "_send_gof",
+   "cal_move",
+   "callback",
+   "clear",
+   "dispatch_scheduled_press",
+   "extend",
+   "get",
+   "getattr",
+   "hasattr",
+   "int",
+   "isinstance",
+   "issubset",
+   "list",
+   "normalize_influence_matrix",
+   "set",
+   "sorted"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "InnerGameState",
+   "board_satisfied",
+   "g_dmz_order_list",
+   "g_pos_analysis_list",
+   "g_send_gof_callback",
+   "owner_power",
+   "participant_powers",
+   "power",
+   "press_entries",
+   "processed",
+   "processed_flag",
+   "role_b_set",
+   "role_c_set",
+   "tokens"
+  ],
+  "branches": 16
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_refresh_order_dip_owner",
+  "line": 33,
+  "end": 67,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "add",
+   "fill",
+   "get",
+   "get_adjacent_provinces",
+   "getattr",
+   "int",
+   "items",
+   "len",
+   "min",
+   "set",
+   "setdefault"
+  ],
+  "numbers": [
+   0,
+   1,
+   2
+  ],
+  "strings": [
+   "home_centers",
+   "num_valid_provinces",
+   "sc_provinces"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_init_position_for_orders",
+  "line": 72,
+  "end": 139,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_refresh_order_dip_owner",
+   "clear",
+   "enumerate_convoy_reach",
+   "fill",
+   "getattr",
+   "hasattr",
+   "int",
+   "len",
+   "pop",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   7,
+   18,
+   256
+  ],
+  "strings": [
+   "_candidate_key_map",
+   "_candidate_keys",
+   "g_move_history_matrix",
+   "sc_provinces",
+   "win_threshold"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_build_position_urgency",
+  "line": 142,
+  "end": 171,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float",
+   "get",
+   "int",
+   "items",
+   "lstrip",
+   "str",
+   "upper",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   256,
+   10000.0
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "F",
+   "coast",
+   "power",
+   "type"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_init_scoring_state",
+  "line": 174,
+  "end": 276,
+  "claimed": "0x4466e0",
+  "how": "docstring-cname:GenerateOrders",
+  "mentioned": [
+   "0x41a180"
+  ],
+  "calls": [
+   "_build_position_urgency",
+   "append",
+   "fill",
+   "float",
+   "getattr",
+   "int",
+   "mean",
+   "range",
+   "sorted",
+   "zeros"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   7,
+   10.0
+  ],
+  "strings": [
+   "g_ally_trust_score",
+   "g_ally_trust_score_hi",
+   "sc_provinces"
+  ],
+  "branches": 20
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_build_movement_order_token",
+  "line": 279,
+  "end": 442,
+  "claimed": "0x463690",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45fca0",
+   "0x45ffa0",
+   "0x463690",
+   "0x465870",
+   "0x466330",
+   "0x466480",
+   "0x466c40"
+  ],
+  "calls": [
+   "_target_unit_tok",
+   "append",
+   "get",
+   "int",
+   "items",
+   "join",
+   "len",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   26,
+   27,
+   28
+  ],
+  "strings": [
+   "",
+   " ",
+   " )",
+   " CTO ",
+   " CVY ",
+   " HLD",
+   " MTO ",
+   " SUP ",
+   " VIA ",
+   "( ",
+   "A",
+   "AMY",
+   "FLT",
+   "FUN_0045ffa0 applied to target unit at target_prov.",
+   "InnerGameState",
+   "UNO",
+   "coast",
+   "power",
+   "str | None",
+   "type"
+  ],
+  "branches": 24
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_build_retreat_order_token",
+  "line": 445,
+  "end": 509,
+  "claimed": "0x460110",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45fca0",
+   "0x45ffa0",
+   "0x460110",
+   "0x465870",
+   "0x465aa0",
+   "0x466330",
+   "0x466480",
+   "0x466540"
+  ],
+  "calls": [
+   "get",
+   "items",
+   "len",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   8
+  ],
+  "strings": [
+   "",
+   " ",
+   " )",
+   " DSB",
+   " RTO ",
+   "( ",
+   "A",
+   "AMY",
+   "FLT",
+   "InnerGameState",
+   "UNO",
+   "dest_coast",
+   "dest_province",
+   "order_type",
+   "power",
+   "province",
+   "str | None",
+   "unit_coast",
+   "unit_type"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_populate_retreat_orders",
+  "line": 522,
+  "end": 712,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x40dda0"
+  ],
+  "calls": [
+   "add",
+   "any",
+   "append",
+   "enumerate",
+   "get",
+   "getattr",
+   "int",
+   "isinstance",
+   "items",
+   "len",
+   "lstrip",
+   "partition",
+   "randint",
+   "range",
+   "set",
+   "sort",
+   "sorted",
+   "split",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   7,
+   8,
+   23,
+   500,
+   31767,
+   32767
+  ],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "F",
+   "FLT",
+   "Game",
+   "InnerGameState",
+   "coast",
+   "dest_coast",
+   "dest_prov",
+   "dest_province",
+   "destinations",
+   "dislodged_unit_info",
+   "g_num_powers",
+   "num_valid_provinces",
+   "order_type",
+   "power",
+   "powers",
+   "province",
+   "retreats",
+   "type",
+   "unit_coast",
+   "unit_type"
+  ],
+  "branches": 38
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_format_retreat_commands",
+  "line": 715,
+  "end": 746,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "append",
+   "get",
+   "items"
+  ],
+  "numbers": [
+   0,
+   1,
+   7,
+   8
+  ],
+  "strings": [
+   "",
+   " ",
+   " D",
+   " R ",
+   "/",
+   "???",
+   "A",
+   "AMY",
+   "F",
+   "InnerGameState",
+   "dest_coast",
+   "dest_province",
+   "order_type",
+   "province",
+   "unit_coast",
+   "unit_type"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "get_sub_list",
+  "line": 749,
+  "end": 817,
+  "claimed": "0x466060",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x465940",
+   "0x466060"
+  ],
+  "calls": [
+   "append",
+   "enumerate",
+   "isinstance",
+   "len",
+   "list",
+   "split"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "(",
+   ")",
+   "str | list[str]"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_build_order_seq_from_table",
+  "line": 823,
+  "end": 912,
+  "claimed": "0x44cc50",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x44cc50",
+   "0x45ffa0"
+  ],
+  "calls": [
+   "_unit_string_at",
+   "get",
+   "int",
+   "items",
+   "lstrip",
+   "str",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "strings": [
+   "",
+   " ",
+   "/",
+   "A",
+   "AMY",
+   "CTO",
+   "CVY",
+   "F",
+   "Format FUN_0045ffa0's live unit token for text dispatch.",
+   "HLD",
+   "MTO",
+   "SUP",
+   "coast",
+   "target",
+   "target_coast",
+   "target_dest",
+   "target_unit",
+   "type",
+   "unit"
+  ],
+  "branches": 17
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_target_unit_tok",
+  "line": 358,
+  "end": 371,
+  "claimed": "0x45ffa0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45ffa0"
+  ],
+  "calls": [
+   "get",
+   "len",
+   "str"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "",
+   " ",
+   " )",
+   "( ",
+   "A",
+   "AMY",
+   "FLT",
+   "UNO",
+   "coast",
+   "power",
+   "str | None",
+   "type"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "bot/orders.py",
+  "name": "_unit_string_at",
+  "line": 845,
+  "end": 855,
+  "claimed": "0x45ffa0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45ffa0"
+  ],
+  "calls": [
+   "get",
+   "lstrip",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   " ",
+   "/",
+   "A",
+   "AMY",
+   "F",
+   "coast",
+   "type"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_rand_stride",
+  "line": 38,
+  "end": 45,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "randrange",
+   "range"
+  ],
+  "numbers": [
+   0,
+   4,
+   20,
+   100
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_int64_words",
+  "line": 48,
+  "end": 55,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   32,
+   2147483648,
+   4294967295,
+   4294967296,
+   18446744073709551615
+  ],
+  "strings": [],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_stab_ally_slot_remove",
+  "line": 58,
+  "end": 76,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0,
+   1,
+   2
+  ],
+  "strings": [],
+  "branches": 8
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_get_best_ally_slots",
+  "line": 84,
+  "end": 88,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   1,
+   3
+  ],
+  "strings": [
+   "g_best_ally_slot"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_set_best_ally_slots",
+  "line": 91,
+  "end": 98,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "append",
+   "array",
+   "enumerate",
+   "int",
+   "len",
+   "setattr"
+  ],
+  "numbers": [
+   1,
+   3
+  ],
+  "strings": [
+   "g_best_ally_slot"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_destroy_inner_list",
+  "line": 101,
+  "end": 129,
+  "claimed": "0x401950",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x401950"
+  ],
+  "calls": [
+   "_destroy_inner_list",
+   "clear",
+   "hasattr",
+   "isinstance"
+  ],
+  "numbers": [],
+  "strings": [
+   "clear"
+  ],
+  "branches": 5
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "free_list",
+  "line": 132,
+  "end": 159,
+  "claimed": "0x465fa0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x465fa0"
+  ],
+  "calls": [
+   "clear",
+   "hasattr",
+   "isinstance"
+  ],
+  "numbers": [],
+  "strings": [
+   "clear"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_destroy_candidate_tree",
+  "line": 162,
+  "end": 201,
+  "claimed": "0x410cf0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x410cf0"
+  ],
+  "calls": [
+   "clear",
+   "free_list",
+   "get",
+   "hasattr",
+   "isinstance"
+  ],
+  "numbers": [],
+  "strings": [
+   "clear",
+   "orders",
+   "sub_list",
+   "token_list",
+   "tokens"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_stab_clear_ally_list",
+  "line": 204,
+  "end": 229,
+  "claimed": "0x401950",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x401950"
+  ],
+  "calls": [
+   "_destroy_inner_list",
+   "get",
+   "getattr",
+   "hasattr",
+   "isinstance",
+   "len",
+   "set"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "__setitem__"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_stabbed",
+  "line": 232,
+  "end": 427,
+  "claimed": "0x42c730",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x42c730"
+  ],
+  "calls": [
+   "_get_best_ally_slots",
+   "_in_list",
+   "_set_best_ally_slots",
+   "_stab_ally_slot_remove",
+   "_stab_clear_ally_list",
+   "build_alliance_msg",
+   "get",
+   "getattr",
+   "info",
+   "int",
+   "isinstance",
+   "items",
+   "range",
+   "values",
+   "zeros"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   4,
+   6,
+   7,
+   10,
+   30
+  ],
+  "strings": [
+   "Enemy desired because of stab",
+   "FAL",
+   "SPR",
+   "SUM",
+   "We have been stabbed by (%d) during the turn",
+   "albert_power_idx",
+   "dest_prov",
+   "dst_prov",
+   "dst_province",
+   "g_ally_counter_list",
+   "g_ally_promise_list",
+   "g_num_powers",
+   "g_order_hist_list",
+   "order_type",
+   "power",
+   "province",
+   "sup_dst",
+   "target_dest",
+   "type_id"
+  ],
+  "branches": 40
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_deviate_move",
+  "line": 430,
+  "end": 742,
+  "claimed": "0x43a000",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x43a000",
+   "0x43a175",
+   "0x43bad4"
+  ],
+  "calls": [
+   "_apply_deviate_neutral",
+   "_apply_deviate_stab",
+   "_exact_snapshot",
+   "_positive_trust",
+   "_protected",
+   "_spr_designates",
+   "_sum_designates",
+   "any",
+   "build_alliance_msg",
+   "can_reach_by_type",
+   "get",
+   "getattr",
+   "info",
+   "int",
+   "isinstance",
+   "len",
+   "map",
+   "object",
+   "range",
+   "str",
+   "values"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   6,
+   7,
+   10,
+   256
+  ],
+  "strings": [
+   "",
+   "A",
+   "F",
+   "FAL",
+   "Power (%d) did not make his expected move this turn",
+   "Power (%d) did not make his expected support order this turn",
+   "SPR",
+   "We have unduly pressured by (%d) during this turn",
+   "_hi",
+   "albert_power_idx",
+   "dest_prov",
+   "dst_prov",
+   "dst_province",
+   "expected_dest",
+   "g_AttackMap",
+   "g_ally_counter_list",
+   "g_ally_promise_list",
+   "g_num_powers",
+   "g_order_hist_list",
+   "g_retreat_list",
+   "g_spr_desig_a",
+   "g_spr_desig_b",
+   "g_spr_desig_c",
+   "g_sum_desig_a",
+   "g_sum_desig_b",
+   "g_target_flag",
+   "g_xdo_mto_opp_score",
+   "g_xdo_sup_attacker_score",
+   "moved",
+   "order_type",
+   "power",
+   "province",
+   "src_coast",
+   "src_province",
+   "sup_dst",
+   "sup_src",
+   "unit_type"
+  ],
+  "branches": 72
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_apply_deviate_stab",
+  "line": 745,
+  "end": 807,
+  "claimed": "0x43bad4",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x43b0b2",
+   "0x43bad4"
+  ],
+  "calls": [
+   "_apply_deviate_consequences",
+   "build_alliance_msg",
+   "info",
+   "int",
+   "range"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   10,
+   12
+  ],
+  "strings": [
+   "AUT",
+   "FAL",
+   "SPR",
+   "SUM",
+   "WIN",
+   "We have been stabbed by (%d) during the retreat phase",
+   "We have been stabbed by (%d) during the turn"
+  ],
+  "branches": 11
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_apply_deviate_neutral",
+  "line": 810,
+  "end": 833,
+  "claimed": "0x43a000",
+  "how": "docstring-cname:DEVIATE_MOVE",
+  "mentioned": [],
+  "calls": [
+   "_apply_deviate_consequences",
+   "build_alliance_msg",
+   "info"
+  ],
+  "numbers": [
+   1,
+   11,
+   13
+  ],
+  "strings": [
+   "We have been attacked by (%d) during the retreat phase",
+   "We have been attacked by (%d) during the turn"
+  ],
+  "branches": 2
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_apply_deviate_consequences",
+  "line": 836,
+  "end": 873,
+  "claimed": "0x43a000",
+  "how": "docstring-cname:DEVIATE_MOVE",
+  "mentioned": [],
+  "calls": [
+   "_get_best_ally_slots",
+   "_set_best_ally_slots",
+   "_stab_ally_slot_remove",
+   "_stab_clear_ally_list",
+   "getattr"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "g_ally_counter_list",
+   "g_ally_promise_list",
+   "g_opening_enemy",
+   "g_opening_sticky_mode"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_friendly",
+  "line": 876,
+  "end": 879,
+  "claimed": "0x42dc40",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x42dc40"
+  ],
+  "calls": [
+   "friendly"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_hostility",
+  "line": 882,
+  "end": 1209,
+  "claimed": "0x42ee90",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x4113d0",
+   "0x42ee90",
+   "0x42f95f"
+  ],
+  "calls": [
+   "_int64_words",
+   "_rand_stride",
+   "_send_ally_press_by_power",
+   "_update_relation_history",
+   "build_alliance_msg",
+   "cal_board",
+   "compute_order_dip_flags",
+   "debug",
+   "fill",
+   "float",
+   "get",
+   "getattr",
+   "int",
+   "range",
+   "set"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3.0,
+   4,
+   5.0,
+   7,
+   9,
+   14,
+   15,
+   17.0,
+   25,
+   30,
+   31,
+   40,
+   50,
+   60,
+   61,
+   75,
+   10000,
+   4294967295
+  ],
+  "strings": [
+   "FAL",
+   "HOSTILITY: attempting peace with power %d",
+   "HOSTILITY: changed our minds about attacking power %d",
+   "HOSTILITY: enemy now desired (DeceitLevel=%d, threshold=%d)",
+   "HOSTILITY: good mutual enemy with best ally %d \u2192 power %d",
+   "SPR",
+   "WIN",
+   "albert_power_idx",
+   "g_history_counter",
+   "g_near_end_game_factor"
+  ],
+  "branches": 87
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_post_friendly_update",
+  "line": 1212,
+  "end": 1217,
+  "claimed": "0x40d8c0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40d8c0"
+  ],
+  "calls": [
+   "compute_influence_matrix",
+   "getattr"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "albert_power_idx"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_in_list",
+  "line": 308,
+  "end": 334,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "isinstance",
+   "values"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "dest_prov",
+   "dst_prov",
+   "province"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_positive_trust",
+  "line": 456,
+  "end": 459,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 2
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_exact_snapshot",
+  "line": 461,
+  "end": 468,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "getattr",
+   "int",
+   "len"
+  ],
+  "numbers": [
+   0
+  ],
+  "strings": [
+   "_hi"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_spr_designates",
+  "line": 470,
+  "end": 474,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_exact_snapshot",
+   "any"
+  ],
+  "numbers": [],
+  "strings": [
+   "g_spr_desig_a",
+   "g_spr_desig_b",
+   "g_spr_desig_c"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_sum_designates",
+  "line": 476,
+  "end": 480,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_exact_snapshot",
+   "any"
+  ],
+  "numbers": [],
+  "strings": [
+   "g_sum_desig_a",
+   "g_sum_desig_b"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "bot/strategy.py",
+  "name": "_protected",
+  "line": 482,
+  "end": 498,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "isinstance",
+   "values"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "dest_prov",
+   "dst_prov",
+   "province"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "state.py",
+  "name": "_albert_province_order",
+  "line": 17,
+  "end": 42,
+  "claimed": "0x45af40",
+  "how": "docstring-cname:ParseNOWUnit",
+  "mentioned": [],
+  "calls": [
+   "enumerate",
+   "get",
+   "int",
+   "partition",
+   "sorted",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   8,
+   16,
+   80,
+   87,
+   255,
+   256,
+   65535
+  ],
+  "strings": [
+   "/"
+  ],
+  "branches": 4
+ },
+ {
+  "file": "state.py",
+  "name": "_order_result_flags",
+  "line": 45,
+  "end": 69,
+  "claimed": "0x45fe30",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x45fe30"
+  ],
+  "calls": [
+   "add",
+   "lower",
+   "set",
+   "split",
+   "str",
+   "strip"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ],
+  "strings": [
+   ":",
+   "bounce",
+   "bounced",
+   "cut",
+   "dislodged",
+   "disrupted",
+   "moved",
+   "no convoy",
+   "void"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "state.py",
+  "name": "_parse_retreat_order",
+  "line": 72,
+  "end": 105,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "len",
+   "split",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   7,
+   8
+  ],
+  "strings": [
+   "/",
+   "D",
+   "F",
+   "R",
+   "dst_province",
+   "endgame_flag",
+   "order_type",
+   "power",
+   "src_province",
+   "sup_dst",
+   "sup_src",
+   "unit_type"
+  ],
+  "branches": 7
+ },
+ {
+  "file": "state.py",
+  "name": "_parse_movement_order",
+  "line": 108,
+  "end": 177,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_order_result_flags",
+   "get",
+   "len",
+   "partition",
+   "split",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "strings": [
+   "",
+   "-",
+   "/",
+   "A",
+   "C",
+   "F",
+   "H",
+   "S",
+   "VIA",
+   "dst_province",
+   "endgame_flag",
+   "order_type",
+   "power",
+   "src_coast",
+   "src_province",
+   "sup_dst",
+   "sup_src",
+   "unit_type"
+  ],
+  "branches": 20
+ },
+ {
+  "file": "state.py",
+  "name": "key",
+  "line": 29,
+  "end": 40,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "int",
+   "partition",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   8,
+   16,
+   80,
+   87,
+   255,
+   256,
+   65535
+  ],
+  "strings": [
+   "/"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "state.py",
+  "name": "__init__",
+  "line": 240,
+  "end": 1355,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x40bf00",
+   "0x40d4d0",
+   "0x40df20",
+   "0x40e700",
+   "0x40e8c0",
+   "0x410980",
+   "0x410cf0",
+   "0x411cf0",
+   "0x419300",
+   "0x419790",
+   "0x41c340",
+   "0x41d360",
+   "0x425e03",
+   "0x425e3d",
+   "0x425ead",
+   "0x44150f",
+   "0x443ed0",
+   "0x44bd40",
+   "0x45953f",
+   "0x45955e",
+   "0x45a090",
+   "0x465d90"
+  ],
+  "calls": [
+   "fill_diagonal",
+   "frozenset",
+   "full",
+   "set",
+   "zeros"
+  ],
+  "numbers": [
+   0.0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   10.0,
+   15,
+   18,
+   21,
+   22,
+   24,
+   30,
+   50,
+   62,
+   256,
+   300,
+   400,
+   500,
+   600,
+   700,
+   1000
+  ],
+  "strings": [
+   "",
+   "SPR"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "synchronize_from_game",
+  "line": 1357,
+  "end": 1790,
+  "claimed": null,
+  "how": null,
+  "mentioned": [
+   "0x419300",
+   "0x431310",
+   "0x463000"
+  ],
+  "calls": [
+   "_albert_province_order",
+   "_apply_sco_hook",
+   "_load",
+   "_order_result_flags",
+   "_phase_results",
+   "abut_list",
+   "abuts",
+   "add",
+   "append",
+   "area_type",
+   "clear",
+   "dict",
+   "endswith",
+   "enumerate",
+   "fill",
+   "float",
+   "frozenset",
+   "get",
+   "get_centers",
+   "get_current_phase",
+   "get_phase",
+   "get_units",
+   "getattr",
+   "hasattr",
+   "int",
+   "isinstance",
+   "items",
+   "keys",
+   "len",
+   "list",
+   "lstrip",
+   "max",
+   "parser",
+   "pop",
+   "range",
+   "set",
+   "setdefault",
+   "sort",
+   "sorted",
+   "split",
+   "startswith",
+   "str",
+   "strip",
+   "tuple",
+   "update",
+   "upper"
+  ],
+  "numbers": [
+   0.0,
+   1.0,
+   2,
+   7,
+   9
+  ],
+  "strings": [
+   "",
+   " ",
+   "(unit type, base province id) -> result list for a phase.",
+   "*",
+   "-",
+   "/",
+   "/EC",
+   "/NC",
+   "/SC",
+   "/WC",
+   "A",
+   "AUSTRIA",
+   "AUT",
+   "ENGLAND",
+   "F",
+   "FAL",
+   "FRANCE",
+   "GERMANY",
+   "ITALY",
+   "LAND",
+   "M",
+   "R",
+   "RUSSIA",
+   "S",
+   "SHUT",
+   "SPR",
+   "SUM",
+   "TURKEY",
+   "WATER",
+   "WIN",
+   "_adjudication_cache",
+   "coast",
+   "get_current_phase",
+   "get_phase",
+   "homes",
+   "order_history",
+   "order_type",
+   "power",
+   "powers",
+   "result_history",
+   "retreats",
+   "scs",
+   "src_province",
+   "type",
+   "unit_type"
+  ],
+  "branches": 101
+ },
+ {
+  "file": "state.py",
+  "name": "_apply_sco_hook",
+  "line": 1792,
+  "end": 1813,
+  "claimed": "0x40e700",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x40e700",
+   "0x465d90"
+  ],
+  "calls": [
+   "items",
+   "sorted",
+   "str",
+   "tuple"
+  ],
+  "numbers": [
+   0,
+   1,
+   2
+  ],
+  "strings": [],
+  "branches": 5
+ },
+ {
+  "file": "state.py",
+  "name": "get_unit_type",
+  "line": 1815,
+  "end": 1816,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [],
+  "strings": [
+   "type"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "has_unit",
+  "line": 1818,
+  "end": 1819,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "has_own_unit",
+  "line": 1821,
+  "end": 1822,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_unit_power",
+  "line": 1824,
+  "end": 1825,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_unit_adjacencies",
+  "line": 1827,
+  "end": 1828,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_adjacent_provinces",
+  "line": 1830,
+  "end": 1832,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_power_units",
+  "line": 1834,
+  "end": 1836,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "items"
+  ],
+  "numbers": [
+   1
+  ],
+  "strings": [
+   "power"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "state.py",
+  "name": "get_unit_owner",
+  "line": 1838,
+  "end": 1840,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [],
+  "strings": [
+   "power"
+  ],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_power_rec",
+  "line": 1842,
+  "end": 1854,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "frozenset",
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "can_reach",
+  "line": 1856,
+  "end": 1857,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "can_reach_by_type",
+  "line": 1859,
+  "end": 1910,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "debug",
+   "get",
+   "items",
+   "startswith",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "/",
+   "A",
+   "AMY",
+   "ARMY",
+   "F",
+   "FLEET",
+   "FLT",
+   "can_reach_by_type: src=%d dst=%d type=%s adj=%s"
+  ],
+  "branches": 12
+ },
+ {
+  "file": "state.py",
+  "name": "get_reachable_edges",
+  "line": 1912,
+  "end": 1951,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "append",
+   "can_reach_by_type",
+   "extend",
+   "get",
+   "int",
+   "items",
+   "sorted",
+   "str",
+   "upper"
+  ],
+  "numbers": [],
+  "strings": [
+   "",
+   "A",
+   "AMY",
+   "ARMY",
+   "F",
+   "FLEET",
+   "FLT"
+  ],
+  "branches": 10
+ },
+ {
+  "file": "state.py",
+  "name": "resolve_fleet_coast",
+  "line": 1953,
+  "end": 1980,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "get",
+   "items"
+  ],
+  "numbers": [
+   0,
+   17920,
+   17922,
+   17924,
+   17926,
+   17928,
+   17930,
+   17932,
+   17934
+  ],
+  "strings": [
+   "/EC",
+   "/NC",
+   "/NE",
+   "/NW",
+   "/SC",
+   "/SE",
+   "/SW",
+   "/WC"
+  ],
+  "branches": 3
+ },
+ {
+  "file": "state.py",
+  "name": "get_max_threatening_adj_scs",
+  "line": 1982,
+  "end": 2021,
+  "claimed": "0x433ce0",
+  "how": "docstring-address",
+  "mentioned": [
+   "0x433ce0",
+   "0x433efb"
+  ],
+  "calls": [
+   "can_reach_by_type",
+   "get",
+   "get_unit_power",
+   "get_unit_type",
+   "int",
+   "str"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "",
+   "coast"
+  ],
+  "branches": 8
+ },
+ {
+  "file": "state.py",
+  "name": "candidate_set_contains",
+  "line": 2023,
+  "end": 2024,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   0
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "fss",
+  "line": 2026,
+  "end": 2035,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float"
+  ],
+  "numbers": [],
+  "strings": [
+   "F",
+   "FLT"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "state.py",
+  "name": "key_weight",
+  "line": 2037,
+  "end": 2040,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [],
+  "strings": [
+   "F",
+   "FLT"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "state.py",
+  "name": "add_key_weight",
+  "line": 2042,
+  "end": 2046,
+  "claimed": "0x442770",
+  "how": "docstring-cname:UpdateAllyOrderScore",
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [],
+  "strings": [
+   "F",
+   "FLT"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "state.py",
+  "name": "get_candidate_score",
+  "line": 2048,
+  "end": 2049,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "float"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_enemy_reach",
+  "line": 2051,
+  "end": 2052,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "get_trial_order_table",
+  "line": 2054,
+  "end": 2055,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "state.py",
+  "name": "_phase_results",
+  "line": 1744,
+  "end": 1765,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "dict",
+   "get",
+   "items",
+   "len",
+   "list",
+   "lstrip",
+   "split",
+   "str",
+   "strip",
+   "upper"
+  ],
+  "numbers": [
+   0,
+   1,
+   2
+  ],
+  "strings": [
+   "*",
+   "/",
+   "A"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "state.py",
+  "name": "_load",
+  "line": 1767,
+  "end": 1785,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "_order_result_flags",
+   "_phase_results",
+   "append",
+   "get",
+   "int",
+   "isinstance",
+   "items",
+   "parser",
+   "update"
+  ],
+  "numbers": [
+   0,
+   1
+  ],
+  "strings": [
+   "order_type",
+   "src_province",
+   "unit_type"
+  ],
+  "branches": 6
+ },
+ {
+  "file": "rng.py",
+  "name": "seed",
+  "line": 19,
+  "end": 22,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "int"
+  ],
+  "numbers": [
+   1,
+   4294967295
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "rng.py",
+  "name": "getstate",
+  "line": 25,
+  "end": 27,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   1
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "rng.py",
+  "name": "setstate",
+  "line": 30,
+  "end": 32,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "seed"
+  ],
+  "numbers": [],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "rng.py",
+  "name": "raw_rand",
+  "line": 35,
+  "end": 39,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [],
+  "numbers": [
+   1,
+   16,
+   32767,
+   214013,
+   2531011,
+   4294967295
+  ],
+  "strings": [],
+  "branches": 0
+ },
+ {
+  "file": "rng.py",
+  "name": "randrange",
+  "line": 42,
+  "end": 47,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "ValueError",
+   "int",
+   "raw_rand"
+  ],
+  "numbers": [
+   0,
+   23
+  ],
+  "strings": [
+   "empty range for randrange()"
+  ],
+  "branches": 1
+ },
+ {
+  "file": "rng.py",
+  "name": "randint",
+  "line": 50,
+  "end": 63,
+  "claimed": null,
+  "how": null,
+  "mentioned": [],
+  "calls": [
+   "ValueError",
+   "int",
+   "randrange",
+   "raw_rand"
+  ],
+  "numbers": [
+   0,
+   1,
+   32767
+  ],
+  "strings": [
+   "empty range for randint()"
+  ],
+  "branches": 3
+ }
+]

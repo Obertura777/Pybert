@@ -1,0 +1,2677 @@
+{
+ "AppendOrder": {
+  "file": "Source/bot/AppendOrder.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "BaseBot": {
+  "file": "Source/bot/BaseBot.c",
+  "status": "matched",
+  "address": "0x45ebb0",
+  "score": 0.545,
+  "runner_up": 0.286,
+  "refs": 7,
+  "top": [
+   [
+    "0x45ebb0",
+    0.545
+   ],
+   [
+    "0x40c040",
+    0.286
+   ],
+   [
+    "0x45d020",
+    0.222
+   ]
+  ]
+ },
+ "BuildAndSendSUB": {
+  "file": "Source/bot/BuildAndSendSUB.c",
+  "status": "matched",
+  "address": "0x457890",
+  "score": 0.357,
+  "runner_up": 0.132,
+  "refs": 64,
+  "top": [
+   [
+    "0x457890",
+    0.357
+   ],
+   [
+    "0x433510",
+    0.132
+   ],
+   [
+    "0x431940",
+    0.129
+   ]
+  ]
+ },
+ "BuildHostilityRecord": {
+  "file": "Source/bot/BuildHostilityRecord.c",
+  "status": "matched",
+  "address": "0x4222a0",
+  "score": 0.75,
+  "runner_up": 0.5,
+  "refs": 4,
+  "top": [
+   [
+    "0x4222a0",
+    0.75
+   ],
+   [
+    "0x4223c0",
+    0.5
+   ],
+   [
+    "0x40fa10",
+    0.25
+   ]
+  ]
+ },
+ "ComputeOrderDipFlags": {
+  "file": "Source/bot/ComputeOrderDipFlags.c",
+  "status": "matched",
+  "address": "0x4113d0",
+  "score": 0.444,
+  "runner_up": 0.192,
+  "refs": 10,
+  "top": [
+   [
+    "0x4113d0",
+    0.444
+   ],
+   [
+    "0x4325a0",
+    0.192
+   ],
+   [
+    "0x41e2d0",
+    0.15
+   ]
+  ]
+ },
+ "DEVIATE_MOVE": {
+  "file": "Source/bot/DEVIATE_MOVE.c",
+  "status": "ambiguous",
+  "address": "0x439ed0",
+  "score": 0.262,
+  "runner_up": 0.145,
+  "refs": 53,
+  "top": [
+   [
+    "0x439ed0",
+    0.262
+   ],
+   [
+    "0x42d0b0",
+    0.145
+   ],
+   [
+    "0x42db50",
+    0.105
+   ]
+  ]
+ },
+ "EvaluateOrderProposalsAndSendGOF": {
+  "file": "Source/bot/EvaluateOrderProposalsAndSendGOF.c",
+  "status": "matched",
+  "address": "0x457520",
+  "score": 0.393,
+  "runner_up": 0.2,
+  "refs": 12,
+  "top": [
+   [
+    "0x457520",
+    0.393
+   ],
+   [
+    "0x4117d0",
+    0.2
+   ],
+   [
+    "0x4222a0",
+    0.154
+   ]
+  ]
+ },
+ "FRIENDLY": {
+  "file": "Source/bot/FRIENDLY.c",
+  "status": "ambiguous",
+  "address": "0x42db50",
+  "score": 0.293,
+  "runner_up": 0.125,
+  "refs": 23,
+  "top": [
+   [
+    "0x42db50",
+    0.293
+   ],
+   [
+    "0x45d020",
+    0.125
+   ],
+   [
+    "0x40c4c0",
+    0.115
+   ]
+  ]
+ },
+ "GenerateAndSubmitOrders": {
+  "file": "Source/bot/GenerateAndSubmitOrders.c",
+  "status": "matched",
+  "address": "0x4592a0",
+  "score": 0.319,
+  "runner_up": 0.085,
+  "refs": 72,
+  "top": [
+   [
+    "0x4592a0",
+    0.319
+   ],
+   [
+    "0x457890",
+    0.085
+   ],
+   [
+    "0x4216f0",
+    0.069
+   ]
+  ]
+ },
+ "GenerateOrders": {
+  "file": "Source/bot/GenerateOrders.c",
+  "status": "ambiguous",
+  "address": "0x4466e0",
+  "score": 0.093,
+  "runner_up": 0.071,
+  "refs": 24,
+  "top": [
+   [
+    "0x4466e0",
+    0.093
+   ],
+   [
+    "0x44a040",
+    0.071
+   ],
+   [
+    "0x44a840",
+    0.065
+   ]
+  ]
+ },
+ "HOSTILITY": {
+  "file": "Source/bot/HOSTILITY.c",
+  "status": "matched",
+  "address": "0x42ee90",
+  "score": 0.381,
+  "runner_up": 0.22,
+  "refs": 36,
+  "top": [
+   [
+    "0x42ee90",
+    0.381
+   ],
+   [
+    "0x41e2d0",
+    0.22
+   ],
+   [
+    "0x438b30",
+    0.212
+   ]
+  ]
+ },
+ "InitPositionForOrders": {
+  "file": "Source/bot/InitPositionForOrders.c",
+  "status": "matched",
+  "address": "0x44d7b0",
+  "score": 0.31,
+  "runner_up": 0.102,
+  "refs": 27,
+  "top": [
+   [
+    "0x44d7b0",
+    0.31
+   ],
+   [
+    "0x457520",
+    0.102
+   ],
+   [
+    "0x43d910",
+    0.098
+   ]
+  ]
+ },
+ "MOVE_ANALYSIS": {
+  "file": "Source/bot/MOVE_ANALYSIS.c",
+  "status": "ambiguous",
+  "address": "0x435210",
+  "score": 0.177,
+  "runner_up": 0.136,
+  "refs": 25,
+  "top": [
+   [
+    "0x435210",
+    0.177
+   ],
+   [
+    "0x42d0b0",
+    0.136
+   ],
+   [
+    "0x45e470",
+    0.129
+   ]
+  ]
+ },
+ "STABBED": {
+  "file": "Source/bot/STABBED.c",
+  "status": "ambiguous",
+  "address": "0x42d0b0",
+  "score": 0.25,
+  "runner_up": 0.131,
+  "refs": 28,
+  "top": [
+   [
+    "0x42d0b0",
+    0.25
+   ],
+   [
+    "0x420100",
+    0.131
+   ],
+   [
+    "0x41df20",
+    0.125
+   ]
+  ]
+ },
+ "SerializeOrders": {
+  "file": "Source/bot/SerializeOrders.c",
+  "status": "ambiguous",
+  "address": "0x403430",
+  "score": 0.429,
+  "runner_up": 0.333,
+  "refs": 3,
+  "top": [
+   [
+    "0x403430",
+    0.429
+   ],
+   [
+    "0x410b70",
+    0.333
+   ],
+   [
+    "0x40fa80",
+    0.333
+   ]
+  ]
+ },
+ "SetGamePhase": {
+  "file": "Source/bot/SetGamePhase.c",
+  "status": "matched",
+  "address": "0x40df20",
+  "score": 0.75,
+  "runner_up": 0.143,
+  "refs": 3,
+  "top": [
+   [
+    "0x40df20",
+    0.75
+   ],
+   [
+    "0x40d7e0",
+    0.143
+   ],
+   [
+    "0x44a840",
+    0.091
+   ]
+  ]
+ },
+ "SetOwnPower": {
+  "file": "Source/bot/SetOwnPower.c",
+  "status": "ambiguous",
+  "address": "0x410b70",
+  "score": 0.25,
+  "runner_up": 0.25,
+  "refs": 4,
+  "top": [
+   [
+    "0x410b70",
+    0.25
+   ],
+   [
+    "0x40fa80",
+    0.25
+   ],
+   [
+    "0x40f920",
+    0.25
+   ]
+  ]
+ },
+ "SnapshotProvinceState": {
+  "file": "Source/bot/SnapshotProvinceState.c",
+  "status": "ambiguous",
+  "address": "0x4340d0",
+  "score": 0.154,
+  "runner_up": 0.103,
+  "refs": 33,
+  "top": [
+   [
+    "0x4340d0",
+    0.154
+   ],
+   [
+    "0x439ed0",
+    0.103
+   ],
+   [
+    "0x45e470",
+    0.103
+   ]
+  ]
+ },
+ "analyze_position": {
+  "file": "Source/bot/analyze_position.c",
+  "status": "ambiguous",
+  "address": "0x4119d0",
+  "score": 0.5,
+  "runner_up": 0.5,
+  "refs": 2,
+  "top": [
+   [
+    "0x4119d0",
+    0.5
+   ],
+   [
+    "0x410b70",
+    0.5
+   ],
+   [
+    "0x40fa80",
+    0.5
+   ]
+  ]
+ },
+ "send_GOF": {
+  "file": "Source/bot/send_GOF.c",
+  "status": "ambiguous",
+  "address": "0x456b50",
+  "score": 0.175,
+  "runner_up": 0.122,
+  "refs": 38,
+  "top": [
+   [
+    "0x456b50",
+    0.175
+   ],
+   [
+    "0x411740",
+    0.122
+   ],
+   [
+    "0x433510",
+    0.111
+   ]
+  ]
+ },
+ "BuildAllianceMsg": {
+  "file": "Source/communications/BuildAllianceMsg.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "CAL_MOVE": {
+  "file": "Source/communications/CAL_MOVE.c",
+  "status": "matched",
+  "address": "0x4222a0",
+  "score": 0.5,
+  "runner_up": 0.333,
+  "refs": 3,
+  "top": [
+   [
+    "0x4222a0",
+    0.5
+   ],
+   [
+    "0x40fa10",
+    0.333
+   ],
+   [
+    "0x446680",
+    0.25
+   ]
+  ]
+ },
+ "CAL_VALUE": {
+  "file": "Source/communications/CAL_VALUE.c",
+  "status": "ambiguous",
+  "address": "0x426350",
+  "score": 0.359,
+  "runner_up": 0.303,
+  "refs": 30,
+  "top": [
+   [
+    "0x426350",
+    0.359
+   ],
+   [
+    "0x438e60",
+    0.303
+   ],
+   [
+    "0x431310",
+    0.163
+   ]
+  ]
+ },
+ "CANCEL": {
+  "file": "Source/communications/CANCEL.c",
+  "status": "ambiguous",
+  "address": "0x41df20",
+  "score": 0.219,
+  "runner_up": 0.214,
+  "refs": 13,
+  "top": [
+   [
+    "0x41df20",
+    0.219
+   ],
+   [
+    "0x45d020",
+    0.214
+   ],
+   [
+    "0x44c9d0",
+    0.211
+   ]
+  ]
+ },
+ "CCD_Handler": {
+  "file": "Source/communications/CCD_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.125,
+  "runner_up": 0.1,
+  "refs": 4,
+  "top": [
+   [
+    "0x45f670",
+    0.125
+   ],
+   [
+    "0x45eed0",
+    0.1
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "CancelPriorPress": {
+  "file": "Source/communications/CancelPriorPress.c",
+  "status": "matched",
+  "address": "0x40e8e0",
+  "score": 0.3,
+  "runner_up": 0.182,
+  "refs": 4,
+  "top": [
+   [
+    "0x40e8e0",
+    0.3
+   ],
+   [
+    "0x40de30",
+    0.182
+   ],
+   [
+    "0x49f600",
+    0.167
+   ]
+  ]
+ },
+ "CheckTimeLimit": {
+  "file": "Source/communications/CheckTimeLimit.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "DMZ": {
+  "file": "Source/communications/DMZ.c",
+  "status": "matched",
+  "address": "0x420100",
+  "score": 0.386,
+  "runner_up": 0.225,
+  "refs": 20,
+  "top": [
+   [
+    "0x420100",
+    0.386
+   ],
+   [
+    "0x421040",
+    0.225
+   ],
+   [
+    "0x41df20",
+    0.179
+   ]
+  ]
+ },
+ "EvaluatePress": {
+  "file": "Source/communications/EvaluatePress.c",
+  "status": "matched",
+  "address": "0x42fc40",
+  "score": 0.345,
+  "runner_up": 0.176,
+  "refs": 15,
+  "top": [
+   [
+    "0x42fc40",
+    0.345
+   ],
+   [
+    "0x4a7880",
+    0.176
+   ],
+   [
+    "0x42cd70",
+    0.138
+   ]
+  ]
+ },
+ "ExecuteThennAction": {
+  "file": "Source/communications/ExecuteThennAction.c",
+  "status": "matched",
+  "address": "0x439c30",
+  "score": 0.394,
+  "runner_up": 0.154,
+  "refs": 14,
+  "top": [
+   [
+    "0x439c30",
+    0.394
+   ],
+   [
+    "0x4113d0",
+    0.154
+   ],
+   [
+    "0x45e9f0",
+    0.125
+   ]
+  ]
+ },
+ "HLO_Dispatch": {
+  "file": "Source/communications/HLO_Dispatch.c",
+  "status": "ambiguous",
+  "address": "0x45abf0",
+  "score": 0.273,
+  "runner_up": 0.118,
+  "refs": 7,
+  "top": [
+   [
+    "0x45abf0",
+    0.273
+   ],
+   [
+    "0x4629e0",
+    0.118
+   ],
+   [
+    "0x4613d0",
+    0.118
+   ]
+  ]
+ },
+ "HUH": {
+  "file": "Source/communications/HUH.c",
+  "status": "matched",
+  "address": "0x45bd80",
+  "score": 0.4,
+  "runner_up": 0.167,
+  "refs": 2,
+  "top": [
+   [
+    "0x45bd80",
+    0.4
+   ],
+   [
+    "0x45c8f0",
+    0.167
+   ],
+   [
+    "0x45c870",
+    0.167
+   ]
+  ]
+ },
+ "InboundDAIDEDispatcher": {
+  "file": "Source/communications/InboundDAIDEDispatcher.c",
+  "status": "matched",
+  "address": "0x45f1f0",
+  "score": 0.34,
+  "runner_up": 0.125,
+  "refs": 18,
+  "top": [
+   [
+    "0x45f1f0",
+    0.34
+   ],
+   [
+    "0x45e310",
+    0.125
+   ],
+   [
+    "0x42cd70",
+    0.125
+   ]
+  ]
+ },
+ "MAP_Handler": {
+  "file": "Source/communications/MAP_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.143,
+  "runner_up": 0.021,
+  "refs": 3,
+  "top": [
+   [
+    "0x45f670",
+    0.143
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "MDF_Handler": {
+  "file": "Source/communications/MDF_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.143,
+  "runner_up": 0.021,
+  "refs": 3,
+  "top": [
+   [
+    "0x45f670",
+    0.143
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "NOTDispatcher": {
+  "file": "Source/communications/NOTDispatcher.c",
+  "status": "ambiguous",
+  "address": "0x45eed0",
+  "score": 0.222,
+  "runner_up": 0.2,
+  "refs": 4,
+  "top": [
+   [
+    "0x45eed0",
+    0.222
+   ],
+   [
+    "0x4937e8",
+    0.2
+   ],
+   [
+    "0x489243",
+    0.2
+   ]
+  ]
+ },
+ "NOT_CCD_Handler": {
+  "file": "Source/communications/NOT_CCD_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45eed0",
+  "score": 0.111,
+  "runner_up": 0.021,
+  "refs": 3,
+  "top": [
+   [
+    "0x45eed0",
+    0.111
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "NOT_TME_Handler": {
+  "file": "Source/communications/NOT_TME_Handler.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "NOT_XDO": {
+  "file": "Source/communications/NOT_XDO.c",
+  "status": "ambiguous",
+  "address": "0x420dd0",
+  "score": 0.304,
+  "runner_up": 0.273,
+  "refs": 10,
+  "top": [
+   [
+    "0x420dd0",
+    0.304
+   ],
+   [
+    "0x45d020",
+    0.273
+   ],
+   [
+    "0x45ebb0",
+    0.25
+   ]
+  ]
+ },
+ "NOWHandler": {
+  "file": "Source/communications/NOWHandler.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "ORD_Handler": {
+  "file": "Source/communications/ORD_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.143,
+  "runner_up": 0.021,
+  "refs": 3,
+  "top": [
+   [
+    "0x45f670",
+    0.143
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "OUT_Handler": {
+  "file": "Source/communications/OUT_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.125,
+  "runner_up": 0.043,
+  "refs": 4,
+  "top": [
+   [
+    "0x45f670",
+    0.125
+   ],
+   [
+    "0x45f1f0",
+    0.043
+   ]
+  ]
+ },
+ "PCE": {
+  "file": "Source/communications/PCE.c",
+  "status": "matched",
+  "address": "0x41daf0",
+  "score": 0.359,
+  "runner_up": 0.189,
+  "refs": 17,
+  "top": [
+   [
+    "0x41daf0",
+    0.359
+   ],
+   [
+    "0x438b30",
+    0.189
+   ],
+   [
+    "0x45d020",
+    0.167
+   ]
+  ]
+ },
+ "PROPOSE": {
+  "file": "Source/communications/PROPOSE.c",
+  "status": "matched",
+  "address": "0x431940",
+  "score": 0.535,
+  "runner_up": 0.347,
+  "refs": 25,
+  "top": [
+   [
+    "0x431940",
+    0.535
+   ],
+   [
+    "0x431fe0",
+    0.347
+   ],
+   [
+    "0x42c970",
+    0.214
+   ]
+  ]
+ },
+ "ParseHSTResponse": {
+  "file": "Source/communications/ParseHSTResponse.c",
+  "status": "ambiguous",
+  "address": "0x41b410",
+  "score": 0.275,
+  "runner_up": 0.132,
+  "refs": 16,
+  "top": [
+   [
+    "0x41b410",
+    0.275
+   ],
+   [
+    "0x438b30",
+    0.132
+   ],
+   [
+    "0x45ebb0",
+    0.13
+   ]
+  ]
+ },
+ "ParseNOW": {
+  "file": "Source/communications/ParseNOW.c",
+  "status": "matched",
+  "address": "0x463fb0",
+  "score": 0.448,
+  "runner_up": 0.25,
+  "refs": 13,
+  "top": [
+   [
+    "0x463fb0",
+    0.448
+   ],
+   [
+    "0x4613d0",
+    0.25
+   ],
+   [
+    "0x465470",
+    0.182
+   ]
+  ]
+ },
+ "ParseNOWUnit": {
+  "file": "Source/communications/ParseNOWUnit.c",
+  "status": "matched",
+  "address": "0x462bc0",
+  "score": 0.5,
+  "runner_up": 0.227,
+  "refs": 15,
+  "top": [
+   [
+    "0x462bc0",
+    0.5
+   ],
+   [
+    "0x4629e0",
+    0.227
+   ],
+   [
+    "0x4613d0",
+    0.227
+   ]
+  ]
+ },
+ "ProposeDMZ": {
+  "file": "Source/communications/ProposeDMZ.c",
+  "status": "matched",
+  "address": "0x432960",
+  "score": 0.447,
+  "runner_up": 0.147,
+  "refs": 28,
+  "top": [
+   [
+    "0x432960",
+    0.447
+   ],
+   [
+    "0x45c970",
+    0.147
+   ],
+   [
+    "0x4325a0",
+    0.14
+   ]
+  ]
+ },
+ "QueueIncomingMessage": {
+  "file": "Source/communications/QueueIncomingMessage.c",
+  "status": "matched",
+  "address": "0x45e930",
+  "score": 0.333,
+  "runner_up": 0,
+  "refs": 2,
+  "top": [
+   [
+    "0x45e930",
+    0.333
+   ]
+  ]
+ },
+ "RECEIVE_MSG": {
+  "file": "Source/communications/RECEIVE_MSG.c",
+  "status": "ambiguous",
+  "address": "0x45d020",
+  "score": 0.5,
+  "runner_up": 0.5,
+  "refs": 5,
+  "top": [
+   [
+    "0x45d020",
+    0.5
+   ],
+   [
+    "0x45cba0",
+    0.5
+   ],
+   [
+    "0x40c040",
+    0.4
+   ]
+  ]
+ },
+ "RECEIVE_PROPOSAL": {
+  "file": "Source/communications/RECEIVE_PROPOSAL.c",
+  "status": "matched",
+  "address": "0x431fe0",
+  "score": 0.488,
+  "runner_up": 0.362,
+  "refs": 23,
+  "top": [
+   [
+    "0x431fe0",
+    0.488
+   ],
+   [
+    "0x431940",
+    0.362
+   ],
+   [
+    "0x42c970",
+    0.225
+   ]
+  ]
+ },
+ "REMOVE_DMZ": {
+  "file": "Source/communications/REMOVE_DMZ.c",
+  "status": "ambiguous",
+  "address": "0x421040",
+  "score": 0.265,
+  "runner_up": 0.222,
+  "refs": 14,
+  "top": [
+   [
+    "0x421040",
+    0.265
+   ],
+   [
+    "0x420100",
+    0.222
+   ],
+   [
+    "0x41df20",
+    0.176
+   ]
+  ]
+ },
+ "RESPOND": {
+  "file": "Source/communications/RESPOND.c",
+  "status": "matched",
+  "address": "0x4216f0",
+  "score": 0.457,
+  "runner_up": 0.226,
+  "refs": 35,
+  "top": [
+   [
+    "0x4216f0",
+    0.457
+   ],
+   [
+    "0x431940",
+    0.226
+   ],
+   [
+    "0x438b30",
+    0.192
+   ]
+  ]
+ },
+ "RegisterAllowedPressToken": {
+  "file": "Source/communications/RegisterAllowedPressToken.c",
+  "status": "matched",
+  "address": "0x418ed0",
+  "score": 0.667,
+  "runner_up": 0,
+  "refs": 3,
+  "top": [
+   [
+    "0x418ed0",
+    0.667
+   ]
+  ]
+ },
+ "SCO_Handler": {
+  "file": "Source/communications/SCO_Handler.c",
+  "status": "ambiguous",
+  "address": "0x45f670",
+  "score": 0.143,
+  "runner_up": 0.021,
+  "refs": 3,
+  "top": [
+   [
+    "0x45f670",
+    0.143
+   ],
+   [
+    "0x45f1f0",
+    0.021
+   ]
+  ]
+ },
+ "ScheduledPressDispatch": {
+  "file": "Source/communications/ScheduledPressDispatch.c",
+  "status": "ambiguous",
+  "address": "0x418db0",
+  "score": 0.294,
+  "runner_up": 0.24,
+  "refs": 7,
+  "top": [
+   [
+    "0x418db0",
+    0.294
+   ],
+   [
+    "0x4424e0",
+    0.24
+   ],
+   [
+    "0x4a7840",
+    0.2
+   ]
+  ]
+ },
+ "SendAlliancePress": {
+  "file": "Source/communications/SendAlliancePress.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "SendAllyPressByPower": {
+  "file": "Source/communications/SendAllyPressByPower.c",
+  "status": "matched",
+  "address": "0x421570",
+  "score": 0.5,
+  "runner_up": 0.136,
+  "refs": 10,
+  "top": [
+   [
+    "0x421570",
+    0.5
+   ],
+   [
+    "0x418db0",
+    0.136
+   ],
+   [
+    "0x40e8e0",
+    0.118
+   ]
+  ]
+ },
+ "SendDM": {
+  "file": "Source/communications/SendDM.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "UpdateRelationHistory": {
+  "file": "Source/communications/UpdateRelationHistory.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "XDO": {
+  "file": "Source/communications/XDO.c",
+  "status": "ambiguous",
+  "address": "0x420630",
+  "score": 0.213,
+  "runner_up": 0.182,
+  "refs": 19,
+  "top": [
+   [
+    "0x420630",
+    0.213
+   ],
+   [
+    "0x420dd0",
+    0.182
+   ],
+   [
+    "0x421040",
+    0.143
+   ]
+  ]
+ },
+ "YESDispatcher": {
+  "file": "Source/communications/YESDispatcher.c",
+  "status": "ambiguous",
+  "address": "0x45db40",
+  "score": 0.267,
+  "runner_up": 0.2,
+  "refs": 4,
+  "top": [
+   [
+    "0x45db40",
+    0.267
+   ],
+   [
+    "0x4937e8",
+    0.2
+   ],
+   [
+    "0x489243",
+    0.2
+   ]
+  ]
+ },
+ "YES_DRW_Handler": {
+  "file": "Source/communications/YES_DRW_Handler.c",
+  "status": "ambiguous",
+  "address": "0x40de30",
+  "score": 0.1,
+  "runner_up": 0.091,
+  "refs": 2,
+  "top": [
+   [
+    "0x40de30",
+    0.1
+   ],
+   [
+    "0x44c9d0",
+    0.091
+   ],
+   [
+    "0x41ed30",
+    0.059
+   ]
+  ]
+ },
+ "YES_OBS_Handler": {
+  "file": "Source/communications/YES_OBS_Handler.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "YES_TME_Handler": {
+  "file": "Source/communications/YES_TME_Handler.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "_eval_aly": {
+  "file": "Source/communications/_eval_aly.c",
+  "status": "matched",
+  "address": "0x41e2d0",
+  "score": 0.462,
+  "runner_up": 0.235,
+  "refs": 21,
+  "top": [
+   [
+    "0x41e2d0",
+    0.462
+   ],
+   [
+    "0x4325a0",
+    0.235
+   ],
+   [
+    "0x41f090",
+    0.207
+   ]
+  ]
+ },
+ "_eval_dmz": {
+  "file": "Source/communications/_eval_dmz.c",
+  "status": "ambiguous",
+  "address": "0x41f090",
+  "score": 0.32,
+  "runner_up": 0.293,
+  "refs": 17,
+  "top": [
+   [
+    "0x41f090",
+    0.32
+   ],
+   [
+    "0x41e2d0",
+    0.293
+   ],
+   [
+    "0x4113d0",
+    0.269
+   ]
+  ]
+ },
+ "_eval_drw": {
+  "file": "Source/communications/_eval_drw.c",
+  "status": "ambiguous",
+  "address": "0x41ed30",
+  "score": 0.333,
+  "runner_up": 0.278,
+  "refs": 8,
+  "top": [
+   [
+    "0x41ed30",
+    0.333
+   ],
+   [
+    "0x41ea20",
+    0.278
+   ],
+   [
+    "0x422960",
+    0.222
+   ]
+  ]
+ },
+ "_eval_not_dmz": {
+  "file": "Source/communications/_eval_not_dmz.c",
+  "status": "ambiguous",
+  "address": "0x41f5a0",
+  "score": 0.175,
+  "runner_up": 0.16,
+  "refs": 14,
+  "top": [
+   [
+    "0x41f5a0",
+    0.175
+   ],
+   [
+    "0x41ea20",
+    0.16
+   ],
+   [
+    "0x41ed30",
+    0.154
+   ]
+  ]
+ },
+ "_eval_not_pce": {
+  "file": "Source/communications/_eval_not_pce.c",
+  "status": "ambiguous",
+  "address": "0x40d310",
+  "score": 0.25,
+  "runner_up": 0.167,
+  "refs": 6,
+  "top": [
+   [
+    "0x40d310",
+    0.25
+   ],
+   [
+    "0x40fa10",
+    0.167
+   ],
+   [
+    "0x446680",
+    0.143
+   ]
+  ]
+ },
+ "_eval_pce": {
+  "file": "Source/communications/_eval_pce.c",
+  "status": "ambiguous",
+  "address": "0x40d1a0",
+  "score": 0.286,
+  "runner_up": 0.121,
+  "refs": 7,
+  "top": [
+   [
+    "0x40d1a0",
+    0.286
+   ],
+   [
+    "0x41fcc0",
+    0.121
+   ],
+   [
+    "0x40d0a0",
+    0.111
+   ]
+  ]
+ },
+ "_eval_single_xdo": {
+  "file": "Source/communications/_eval_single_xdo.c",
+  "status": "matched",
+  "address": "0x42c040",
+  "score": 0.441,
+  "runner_up": 0.156,
+  "refs": 19,
+  "top": [
+   [
+    "0x42c040",
+    0.441
+   ],
+   [
+    "0x42cd70",
+    0.156
+   ],
+   [
+    "0x45ebb0",
+    0.115
+   ]
+  ]
+ },
+ "_eval_slo": {
+  "file": "Source/communications/_eval_slo.c",
+  "status": "ambiguous",
+  "address": "0x41ea20",
+  "score": 0.312,
+  "runner_up": 0.294,
+  "refs": 6,
+  "top": [
+   [
+    "0x41ea20",
+    0.312
+   ],
+   [
+    "0x41ed30",
+    0.294
+   ],
+   [
+    "0x422960",
+    0.286
+   ]
+  ]
+ },
+ "_eval_sub_xdo": {
+  "file": "Source/communications/_eval_sub_xdo.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "register_received_press": {
+  "file": "Source/communications/register_received_press.c",
+  "status": "matched",
+  "address": "0x431310",
+  "score": 0.467,
+  "runner_up": 0.147,
+  "refs": 17,
+  "top": [
+   [
+    "0x431310",
+    0.467
+   ],
+   [
+    "0x433510",
+    0.147
+   ],
+   [
+    "0x438e60",
+    0.141
+   ]
+  ]
+ },
+ "ClearOrderList": {
+  "file": "Source/dispatch/ClearOrderList.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "DispatchSingleOrder": {
+  "file": "Source/dispatch/DispatchSingleOrder.c",
+  "status": "ambiguous",
+  "address": "0x44cc50",
+  "score": 0.341,
+  "runner_up": 0.273,
+  "refs": 17,
+  "top": [
+   [
+    "0x44cc50",
+    0.341
+   ],
+   [
+    "0x44b760",
+    0.273
+   ],
+   [
+    "0x45ebb0",
+    0.125
+   ]
+  ]
+ },
+ "IsLegalMove": {
+  "file": "Source/dispatch/IsLegalMove.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "ApplyInfluenceScores": {
+  "file": "Source/heuristics/ApplyInfluenceScores.c",
+  "status": "ambiguous",
+  "address": "0x4060c0",
+  "score": 0.13,
+  "runner_up": 0.128,
+  "refs": 17,
+  "top": [
+   [
+    "0x4060c0",
+    0.13
+   ],
+   [
+    "0x436470",
+    0.128
+   ],
+   [
+    "0x409790",
+    0.111
+   ]
+  ]
+ },
+ "CAL_BOARD": {
+  "file": "Source/heuristics/CAL_BOARD.c",
+  "status": "ambiguous",
+  "address": "0x42ee90",
+  "score": 0.157,
+  "runner_up": 0.152,
+  "refs": 53,
+  "top": [
+   [
+    "0x42ee90",
+    0.157
+   ],
+   [
+    "0x427620",
+    0.152
+   ],
+   [
+    "0x41e2d0",
+    0.113
+   ]
+  ]
+ },
+ "ComputeBuildDelta": {
+  "file": "Source/heuristics/ComputeBuildDelta.c",
+  "status": "matched",
+  "address": "0x40ab10",
+  "score": 0.5,
+  "runner_up": 0.222,
+  "refs": 5,
+  "top": [
+   [
+    "0x40ab10",
+    0.5
+   ],
+   [
+    "0x460be0",
+    0.222
+   ],
+   [
+    "0x41ad70",
+    0.2
+   ]
+  ]
+ },
+ "ComputeDrawVote": {
+  "file": "Source/heuristics/ComputeDrawVote.c",
+  "status": "ambiguous",
+  "address": "0x4440e0",
+  "score": 0.185,
+  "runner_up": 0.15,
+  "refs": 15,
+  "top": [
+   [
+    "0x4440e0",
+    0.185
+   ],
+   [
+    "0x464f20",
+    0.15
+   ],
+   [
+    "0x404bc0",
+    0.15
+   ]
+  ]
+ },
+ "ComputeInfluenceMatrix": {
+  "file": "Source/heuristics/ComputeInfluenceMatrix.c",
+  "status": "matched",
+  "address": "0x40d8c0",
+  "score": 0.583,
+  "runner_up": 0.037,
+  "refs": 7,
+  "top": [
+   [
+    "0x40d8c0",
+    0.583
+   ],
+   [
+    "0x4325a0",
+    0.037
+   ],
+   [
+    "0x438b30",
+    0.03
+   ]
+  ]
+ },
+ "ComputePress": {
+  "file": "Source/heuristics/ComputePress.c",
+  "status": "ambiguous",
+  "address": "0x4401f0",
+  "score": 0.444,
+  "runner_up": 0.4,
+  "refs": 4,
+  "top": [
+   [
+    "0x4401f0",
+    0.444
+   ],
+   [
+    "0x409790",
+    0.4
+   ],
+   [
+    "0x401f40",
+    0.4
+   ]
+  ]
+ },
+ "ComputeWinBuilds_Populate": {
+  "file": "Source/heuristics/ComputeWinBuilds_Populate.c",
+  "status": "matched",
+  "address": "0x442040",
+  "score": 0.3,
+  "runner_up": 0.167,
+  "refs": 7,
+  "top": [
+   [
+    "0x442040",
+    0.3
+   ],
+   [
+    "0x430b90",
+    0.167
+   ],
+   [
+    "0x419590",
+    0.167
+   ]
+  ]
+ },
+ "ComputeWinterBuilds": {
+  "file": "Source/heuristics/ComputeWinterBuilds.c",
+  "status": "matched",
+  "address": "0x445d10",
+  "score": 0.409,
+  "runner_up": 0.15,
+  "refs": 15,
+  "top": [
+   [
+    "0x445d10",
+    0.409
+   ],
+   [
+    "0x445c50",
+    0.15
+   ],
+   [
+    "0x440900",
+    0.133
+   ]
+  ]
+ },
+ "EvaluateAllianceScore": {
+  "file": "Source/heuristics/EvaluateAllianceScore.c",
+  "status": "ambiguous",
+  "address": "0x43bd20",
+  "score": 0.283,
+  "runner_up": 0.121,
+  "refs": 46,
+  "top": [
+   [
+    "0x43bd20",
+    0.283
+   ],
+   [
+    "0x442770",
+    0.121
+   ],
+   [
+    "0x43d910",
+    0.089
+   ]
+  ]
+ },
+ "EvaluateProvinceScore": {
+  "file": "Source/heuristics/EvaluateProvinceScore.c",
+  "status": "ambiguous",
+  "address": "0x433ce0",
+  "score": 0.233,
+  "runner_up": 0.226,
+  "refs": 16,
+  "top": [
+   [
+    "0x433ce0",
+    0.233
+   ],
+   [
+    "0x448760",
+    0.226
+   ],
+   [
+    "0x445d10",
+    0.185
+   ]
+  ]
+ },
+ "InitScoringState": {
+  "file": "Source/heuristics/InitScoringState.c",
+  "status": "matched",
+  "address": "0x445580",
+  "score": 0.333,
+  "runner_up": 0.167,
+  "refs": 14,
+  "top": [
+   [
+    "0x445580",
+    0.333
+   ],
+   [
+    "0x41afd0",
+    0.167
+   ],
+   [
+    "0x413ad0",
+    0.167
+   ]
+  ]
+ },
+ "NormalizeInfluenceMatrix": {
+  "file": "Source/heuristics/NormalizeInfluenceMatrix.c",
+  "status": "matched",
+  "address": "0x40cdc0",
+  "score": 0.444,
+  "runner_up": 0.005,
+  "refs": 4,
+  "top": [
+   [
+    "0x40cdc0",
+    0.444
+   ],
+   [
+    "0x447460",
+    0.005
+   ]
+  ]
+ },
+ "PostProcessOrders": {
+  "file": "Source/heuristics/PostProcessOrders.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "PrepareDrawVoteSet": {
+  "file": "Source/heuristics/PrepareDrawVoteSet.c",
+  "status": "matched",
+  "address": "0x44c9d0",
+  "score": 0.5,
+  "runner_up": 0.333,
+  "refs": 8,
+  "top": [
+   [
+    "0x44c9d0",
+    0.5
+   ],
+   [
+    "0x45d020",
+    0.333
+   ],
+   [
+    "0x40c4c0",
+    0.273
+   ]
+  ]
+ },
+ "ScoreOrderCandidates": {
+  "file": "Source/heuristics/ScoreOrderCandidates.c",
+  "status": "matched",
+  "address": "0x4559c0",
+  "score": 0.342,
+  "runner_up": 0.118,
+  "refs": 33,
+  "top": [
+   [
+    "0x4559c0",
+    0.342
+   ],
+   [
+    "0x42fc40",
+    0.118
+   ],
+   [
+    "0x438e60",
+    0.113
+   ]
+  ]
+ },
+ "ScoreOrderCandidates_AllPowers": {
+  "file": "Source/heuristics/ScoreOrderCandidates_AllPowers.c",
+  "status": "ambiguous",
+  "address": "0x44a040",
+  "score": 0.175,
+  "runner_up": 0.111,
+  "refs": 34,
+  "top": [
+   [
+    "0x44a040",
+    0.175
+   ],
+   [
+    "0x4460a0",
+    0.111
+   ],
+   [
+    "0x44a840",
+    0.103
+   ]
+  ]
+ },
+ "ScoreOrderCandidates_OwnPower": {
+  "file": "Source/heuristics/ScoreOrderCandidates_OwnPower.c",
+  "status": "ambiguous",
+  "address": "0x41cd70",
+  "score": 0.238,
+  "runner_up": 0.143,
+  "refs": 7,
+  "top": [
+   [
+    "0x41cd70",
+    0.238
+   ],
+   [
+    "0x410b70",
+    0.143
+   ],
+   [
+    "0x40fa80",
+    0.143
+   ]
+  ]
+ },
+ "ScoreProvinces": {
+  "file": "Source/heuristics/ScoreProvinces.c",
+  "status": "ambiguous",
+  "address": "0x447460",
+  "score": 0.17,
+  "runner_up": 0.132,
+  "refs": 64,
+  "top": [
+   [
+    "0x447460",
+    0.17
+   ],
+   [
+    "0x448760",
+    0.132
+   ],
+   [
+    "0x445d10",
+    0.111
+   ]
+  ]
+ },
+ "g_BuildCandidateList": {
+  "file": "Source/heuristics/g_BuildCandidateList.c",
+  "status": "matched",
+  "address": "0x433ae0",
+  "score": 0.667,
+  "runner_up": 0.143,
+  "refs": 7,
+  "top": [
+   [
+    "0x433ae0",
+    0.667
+   ],
+   [
+    "0x410b70",
+    0.143
+   ],
+   [
+    "0x40fa80",
+    0.143
+   ]
+  ]
+ },
+ "EvaluateOrderProposal": {
+  "file": "Source/monte_carlo/EvaluateOrderProposal.c",
+  "status": "ambiguous",
+  "address": "0x44e070",
+  "score": 0.249,
+  "runner_up": 0.1,
+  "refs": 62,
+  "top": [
+   [
+    "0x44e070",
+    0.249
+   ],
+   [
+    "0x43e370",
+    0.1
+   ],
+   [
+    "0x44d7b0",
+    0.088
+   ]
+  ]
+ },
+ "EvaluateOrderScore": {
+  "file": "Source/monte_carlo/EvaluateOrderScore.c",
+  "status": "ambiguous",
+  "address": "0x437600",
+  "score": 0.162,
+  "runner_up": 0.129,
+  "refs": 43,
+  "top": [
+   [
+    "0x437600",
+    0.162
+   ],
+   [
+    "0x440900",
+    0.129
+   ],
+   [
+    "0x440d90",
+    0.096
+   ]
+  ]
+ },
+ "InsertCandidateRecord": {
+  "file": "Source/monte_carlo/InsertCandidateRecord.c",
+  "status": "matched",
+  "address": "0x44d6c0",
+  "score": 1.0,
+  "runner_up": 0.333,
+  "refs": 3,
+  "top": [
+   [
+    "0x44d6c0",
+    1.0
+   ],
+   [
+    "0x40ee50",
+    0.333
+   ],
+   [
+    "0x430370",
+    0.25
+   ]
+  ]
+ },
+ "InsertOrderCandidate": {
+  "file": "Source/monte_carlo/InsertOrderCandidate.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "ProcessTurn": {
+  "file": "Source/monte_carlo/ProcessTurn.c",
+  "status": "ambiguous",
+  "address": "0x44f5c0",
+  "score": 0.286,
+  "runner_up": 0.083,
+  "refs": 146,
+  "top": [
+   [
+    "0x44f5c0",
+    0.286
+   ],
+   [
+    "0x440900",
+    0.083
+   ],
+   [
+    "0x4418e0",
+    0.083
+   ]
+  ]
+ },
+ "RefreshOrderTable": {
+  "file": "Source/monte_carlo/RefreshOrderTable.c",
+  "status": "matched",
+  "address": "0x424490",
+  "score": 0.593,
+  "runner_up": 0.225,
+  "refs": 17,
+  "top": [
+   [
+    "0x424490",
+    0.593
+   ],
+   [
+    "0x424850",
+    0.225
+   ],
+   [
+    "0x41ad70",
+    0.143
+   ]
+  ]
+ },
+ "RegisterProposalOrders": {
+  "file": "Source/monte_carlo/RegisterProposalOrders.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "RemoveOrderCandidate": {
+  "file": "Source/monte_carlo/RemoveOrderCandidate.c",
+  "status": "ambiguous",
+  "address": "0x417450",
+  "score": 0.5,
+  "runner_up": 0.5,
+  "refs": 10,
+  "top": [
+   [
+    "0x417450",
+    0.5
+   ],
+   [
+    "0x417190",
+    0.5
+   ],
+   [
+    "0x416330",
+    0.5
+   ]
+  ]
+ },
+ "ResetPerTrialState": {
+  "file": "Source/monte_carlo/ResetPerTrialState.c",
+  "status": "ambiguous",
+  "address": "0x410b70",
+  "score": 0.5,
+  "runner_up": 0.5,
+  "refs": 2,
+  "top": [
+   [
+    "0x410b70",
+    0.5
+   ],
+   [
+    "0x40fa80",
+    0.5
+   ],
+   [
+    "0x40f920",
+    0.5
+   ]
+  ]
+ },
+ "TrialEvaluateOrders": {
+  "file": "Source/monte_carlo/TrialEvaluateOrders.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "UpdateAllyOrderScore": {
+  "file": "Source/monte_carlo/UpdateAllyOrderScore.c",
+  "status": "matched",
+  "address": "0x442770",
+  "score": 0.388,
+  "runner_up": 0.15,
+  "refs": 43,
+  "top": [
+   [
+    "0x442770",
+    0.388
+   ],
+   [
+    "0x424490",
+    0.15
+   ],
+   [
+    "0x43bd20",
+    0.127
+   ]
+  ]
+ },
+ "UpdateScoreState": {
+  "file": "Source/monte_carlo/UpdateScoreState.c",
+  "status": "matched",
+  "address": "0x44c8e0",
+  "score": 0.571,
+  "runner_up": 0.333,
+  "refs": 4,
+  "top": [
+   [
+    "0x44c8e0",
+    0.571
+   ],
+   [
+    "0x4119d0",
+    0.333
+   ],
+   [
+    "0x4a76e0",
+    0.286
+   ]
+  ]
+ },
+ "AssignHoldSupports": {
+  "file": "Source/moves/AssignHoldSupports.c",
+  "status": "ambiguous",
+  "address": "0x410b70",
+  "score": 0.5,
+  "runner_up": 0.5,
+  "refs": 2,
+  "top": [
+   [
+    "0x410b70",
+    0.5
+   ],
+   [
+    "0x40fa80",
+    0.5
+   ],
+   [
+    "0x40f920",
+    0.5
+   ]
+  ]
+ },
+ "AssignSupportOrder": {
+  "file": "Source/moves/AssignSupportOrder.c",
+  "status": "ambiguous",
+  "address": "0x4412c0",
+  "score": 0.259,
+  "runner_up": 0.132,
+  "refs": 21,
+  "top": [
+   [
+    "0x4412c0",
+    0.259
+   ],
+   [
+    "0x448760",
+    0.132
+   ],
+   [
+    "0x445d10",
+    0.121
+   ]
+  ]
+ },
+ "BuildConvoyOrders": {
+  "file": "Source/moves/BuildConvoyOrders.c",
+  "status": "matched",
+  "address": "0x44b760",
+  "score": 0.407,
+  "runner_up": 0.196,
+  "refs": 13,
+  "top": [
+   [
+    "0x44b760",
+    0.407
+   ],
+   [
+    "0x44cc50",
+    0.196
+   ],
+   [
+    "0x409790",
+    0.143
+   ]
+  ]
+ },
+ "BuildOrderSpec": {
+  "file": "Source/moves/BuildOrderSpec.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "BuildOrder_CTO": {
+  "file": "Source/moves/BuildOrder_CTO.c",
+  "status": "matched",
+  "address": "0x461560",
+  "score": 0.667,
+  "runner_up": 0.5,
+  "refs": 4,
+  "top": [
+   [
+    "0x461560",
+    0.667
+   ],
+   [
+    "0x4610b0",
+    0.5
+   ],
+   [
+    "0x4054c0",
+    0.5
+   ]
+  ]
+ },
+ "BuildOrder_CTO_Chain": {
+  "file": "Source/moves/BuildOrder_CTO_Chain.C",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "BuildOrder_CVY": {
+  "file": "Source/moves/BuildOrder_CVY.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "BuildOrder_HLD": {
+  "file": "Source/moves/BuildOrder_HLD.c",
+  "status": "ambiguous",
+  "address": "0x44b760",
+  "score": 0.111,
+  "runner_up": 0.068,
+  "refs": 5,
+  "top": [
+   [
+    "0x44b760",
+    0.111
+   ],
+   [
+    "0x44cc50",
+    0.068
+   ],
+   [
+    "0x440900",
+    0.025
+   ]
+  ]
+ },
+ "BuildOrder_MTO": {
+  "file": "Source/moves/BuildOrder_MTO.c",
+  "status": "ambiguous",
+  "address": "0x44b760",
+  "score": 0.1,
+  "runner_up": 0.083,
+  "refs": 8,
+  "top": [
+   [
+    "0x44b760",
+    0.1
+   ],
+   [
+    "0x4a7ac0",
+    0.083
+   ],
+   [
+    "0x44cc50",
+    0.064
+   ]
+  ]
+ },
+ "BuildOrder_RTO": {
+  "file": "Source/moves/BuildOrder_RTO.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "BuildOrder_SUP_HLD": {
+  "file": "Source/moves/BuildOrder_SUP_HLD.c",
+  "status": "matched",
+  "address": "0x440900",
+  "score": 0.357,
+  "runner_up": 0.234,
+  "refs": 21,
+  "top": [
+   [
+    "0x440900",
+    0.357
+   ],
+   [
+    "0x440d90",
+    0.234
+   ],
+   [
+    "0x445d10",
+    0.194
+   ]
+  ]
+ },
+ "BuildOrder_SUP_MTO": {
+  "file": "Source/moves/BuildOrder_SUP_MTO.c",
+  "status": "ambiguous",
+  "address": "0x440d90",
+  "score": 0.311,
+  "runner_up": 0.261,
+  "refs": 22,
+  "top": [
+   [
+    "0x440d90",
+    0.311
+   ],
+   [
+    "0x440900",
+    0.261
+   ],
+   [
+    "0x445d10",
+    0.188
+   ]
+  ]
+ },
+ "BuildSupportOpportunities": {
+  "file": "Source/moves/BuildSupportOpportunities.c",
+  "status": "ambiguous",
+  "address": "0x4460a0",
+  "score": 0.308,
+  "runner_up": 0.222,
+  "refs": 8,
+  "top": [
+   [
+    "0x4460a0",
+    0.308
+   ],
+   [
+    "0x409790",
+    0.222
+   ],
+   [
+    "0x401f40",
+    0.222
+   ]
+  ]
+ },
+ "BuildSupportProposals": {
+  "file": "Source/moves/BuildSupportProposals.c",
+  "status": "matched",
+  "address": "0x43e370",
+  "score": 0.449,
+  "runner_up": 0.136,
+  "refs": 23,
+  "top": [
+   [
+    "0x43e370",
+    0.449
+   ],
+   [
+    "0x438b30",
+    0.136
+   ],
+   [
+    "0x462bc0",
+    0.128
+   ]
+  ]
+ },
+ "ComputeSafeReach": {
+  "file": "Source/moves/ComputeSafeReach.c",
+  "status": "ambiguous",
+  "address": "0x409790",
+  "score": 0.667,
+  "runner_up": 0.667,
+  "refs": 2,
+  "top": [
+   [
+    "0x409790",
+    0.667
+   ],
+   [
+    "0x401f40",
+    0.667
+   ],
+   [
+    "0x410b70",
+    0.5
+   ]
+  ]
+ },
+ "ConcatTokenList": {
+  "file": "Source/moves/ConcatTokenList.c",
+  "status": "matched",
+  "address": "0x466c40",
+  "score": 0.385,
+  "runner_up": 0.273,
+  "refs": 8,
+  "top": [
+   [
+    "0x466c40",
+    0.385
+   ],
+   [
+    "0x4661a0",
+    0.273
+   ],
+   [
+    "0x465c70",
+    0.222
+   ]
+  ]
+ },
+ "ConvoyList_Insert": {
+  "file": "Source/moves/ConvoyList_Insert.c",
+  "status": "matched",
+  "address": "0x41c340",
+  "score": 1.0,
+  "runner_up": 0.5,
+  "refs": 2,
+  "top": [
+   [
+    "0x41c340",
+    1.0
+   ],
+   [
+    "0x410b70",
+    0.5
+   ],
+   [
+    "0x40fa80",
+    0.5
+   ]
+  ]
+ },
+ "EnumerateConvoyReach": {
+  "file": "Source/moves/EnumerateConvoyReach.c",
+  "status": "ambiguous",
+  "address": "0x433ae0",
+  "score": 0.267,
+  "runner_up": 0.2,
+  "refs": 11,
+  "top": [
+   [
+    "0x433ae0",
+    0.267
+   ],
+   [
+    "0x41aa20",
+    0.2
+   ],
+   [
+    "0x4060c0",
+    0.176
+   ]
+  ]
+ },
+ "EnumerateHoldOrders": {
+  "file": "Source/moves/EnumerateHoldOrders.c",
+  "status": "matched",
+  "address": "0x43d910",
+  "score": 0.341,
+  "runner_up": 0.182,
+  "refs": 15,
+  "top": [
+   [
+    "0x43d910",
+    0.341
+   ],
+   [
+    "0x45c970",
+    0.182
+   ],
+   [
+    "0x409790",
+    0.125
+   ]
+  ]
+ },
+ "MoveCandidate": {
+  "file": "Source/moves/MoveCandidate.c",
+  "status": "ambiguous",
+  "address": "0x418a90",
+  "score": 0.571,
+  "runner_up": 0.571,
+  "refs": 11,
+  "top": [
+   [
+    "0x418a90",
+    0.571
+   ],
+   [
+    "0x417710",
+    0.571
+   ],
+   [
+    "0x411cf0",
+    0.571
+   ]
+  ]
+ },
+ "RegisterConvoyFleet": {
+  "file": "Source/moves/RegisterConvoyFleet.c",
+  "status": "matched",
+  "address": "0x437510",
+  "score": 0.5,
+  "runner_up": 0.333,
+  "refs": 5,
+  "top": [
+   [
+    "0x437510",
+    0.5
+   ],
+   [
+    "0x409790",
+    0.333
+   ],
+   [
+    "0x401f40",
+    0.333
+   ]
+  ]
+ },
+ "ScoreConvoyFleet": {
+  "file": "Source/moves/ScoreConvoyFleet.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "ScoreSupportOpp": {
+  "file": "Source/moves/ScoreSupportOpp.c",
+  "status": "matched",
+  "address": "0x404fd0",
+  "score": 0.667,
+  "runner_up": 0.286,
+  "refs": 3,
+  "top": [
+   [
+    "0x404fd0",
+    0.667
+   ],
+   [
+    "0x419a70",
+    0.286
+   ],
+   [
+    "0x404e10",
+    0.25
+   ]
+  ]
+ },
+ "SerializeOrderToDAIDE": {
+  "file": "Source/moves/SerializeOrderToDAIDE.c",
+  "status": "ambiguous",
+  "address": "0x460110",
+  "score": 0.333,
+  "runner_up": 0.276,
+  "refs": 10,
+  "top": [
+   [
+    "0x460110",
+    0.333
+   ],
+   [
+    "0x463690",
+    0.276
+   ],
+   [
+    "0x45c970",
+    0.235
+   ]
+  ]
+ },
+ "Container_Destroy": {
+  "file": "Source/utils/Container_Destroy.c",
+  "status": "ambiguous",
+  "address": "0x41af00",
+  "score": 0.4,
+  "runner_up": 0.4,
+  "refs": 7,
+  "top": [
+   [
+    "0x41af00",
+    0.4
+   ],
+   [
+    "0x41ad70",
+    0.4
+   ],
+   [
+    "0x41a950",
+    0.273
+   ]
+  ]
+ },
+ "ERR": {
+  "file": "Source/utils/ERR.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "FloatToInt64": {
+  "file": "Source/utils/FloatToInt64.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "GameBoard_GetPowerRec": {
+  "file": "Source/utils/GameBoard_GetPowerRec.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "GetProvinceToken": {
+  "file": "Source/utils/GetProvinceToken.c",
+  "status": "matched",
+  "address": "0x4273a0",
+  "score": 0.5,
+  "runner_up": 0.25,
+  "refs": 4,
+  "top": [
+   [
+    "0x4273a0",
+    0.5
+   ],
+   [
+    "0x45d450",
+    0.25
+   ],
+   [
+    "0x45d370",
+    0.25
+   ]
+  ]
+ },
+ "Iterator_GetData": {
+  "file": "Source/utils/Iterator_GetData.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "PackScoreU64": {
+  "file": "Source/utils/PackScoreU64.c",
+  "status": "too-few-refs",
+  "refs": 0
+ },
+ "ParseDestinationWithCoast": {
+  "file": "Source/utils/ParseDestinationWithCoast.c",
+  "status": "matched",
+  "address": "0x45fc30",
+  "score": 0.667,
+  "runner_up": 0.2,
+  "refs": 2,
+  "top": [
+   [
+    "0x45fc30",
+    0.667
+   ],
+   [
+    "0x45fd80",
+    0.2
+   ],
+   [
+    "0x45e9f0",
+    0.2
+   ]
+  ]
+ },
+ "ParseOrderToken": {
+  "file": "Source/utils/ParseOrderToken.c",
+  "status": "ambiguous",
+  "address": "0x4629e0",
+  "score": 0.385,
+  "runner_up": 0.286,
+  "refs": 6,
+  "top": [
+   [
+    "0x4629e0",
+    0.385
+   ],
+   [
+    "0x4613d0",
+    0.286
+   ],
+   [
+    "0x45fc30",
+    0.286
+   ]
+  ]
+ },
+ "SEND_LOG": {
+  "file": "Source/utils/SEND_LOG.c",
+  "status": "too-few-refs",
+  "refs": 1
+ },
+ "TokenList_BuildOffsets": {
+  "file": "Source/utils/TokenList_BuildOffsets.c",
+  "status": "matched",
+  "address": "0x465c70",
+  "score": 0.4,
+  "runner_up": 0.25,
+  "refs": 4,
+  "top": [
+   [
+    "0x465c70",
+    0.4
+   ],
+   [
+    "0x4661a0",
+    0.25
+   ],
+   [
+    "0x466160",
+    0.25
+   ]
+  ]
+ },
+ "UnitList_FindOrInsert": {
+  "file": "Source/utils/UnitList_FindOrInsert.c",
+  "status": "matched",
+  "address": "0x407720",
+  "score": 1.0,
+  "runner_up": 0.167,
+  "refs": 6,
+  "top": [
+   [
+    "0x407720",
+    1.0
+   ],
+   [
+    "0x4944a0",
+    0.167
+   ],
+   [
+    "0x410b70",
+    0.167
+   ]
+  ]
+ },
+ "clear": {
+  "file": "Source/utils/clear.c",
+  "status": "too-few-refs",
+  "refs": 0
+ }
+}

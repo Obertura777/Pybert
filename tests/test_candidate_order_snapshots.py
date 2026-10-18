@@ -384,9 +384,10 @@ def test_pass_a_main_complex_path_matches_decompiled_formula():
 
     evaluate_order_score(0, state)
 
-    # pow(10 / 10, 0.3)*0.1 + (1-1)*0.25 + 2*0.15
+    # 0.85 ** (10 / 10) * 0.1 + (1-1)*0.25 + 2*0.15  (Albert.exe 0x437786:
+    # base 0.85, integer exponent field17/10 — not pow(field17/10, 0.3))
     assert math.isclose(
-        state.g_order_table[province, _F_MOVE_PROB], 0.4, rel_tol=1e-7
+        state.g_order_table[province, _F_MOVE_PROB], 0.385, rel_tol=1e-6
     )
 
 
@@ -426,9 +427,9 @@ def test_pass_a_main_non_sc_complex_path_includes_field_14_term():
 
     evaluate_order_score(0, state)
 
-    # pow(10/10,.3)*.15 + .1 + (1-1)*.25 + field14(2)*.15
+    # 0.85 ** (10/10) * .15 + .1 + (1-1)*.25 + field14(2)*.15  (0x437786)
     assert math.isclose(
-        state.g_order_table[province, _F_MOVE_PROB], 0.55, rel_tol=1e-7
+        state.g_order_table[province, _F_MOVE_PROB], 0.5275, rel_tol=1e-6
     )
 
 

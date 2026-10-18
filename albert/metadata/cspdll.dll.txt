@@ -1,0 +1,125 @@
+# cspdll.dll
+sha256 e1135db1c8dee181c26a428639fdc98b72ab09fe459262f251723cbcc6d742ca
+size 49152
+machine 0x14c  timestamp 1286624717 (2010-10-09 11:45:17 UTC)
+image_base 0x10000000  entry 0x100070f5
+linker 6.0  subsystem 2
+
+## Sections
+.text    va 0x10001000 vsize 0x6198 raw 0x7000
+.rdata   va 0x10008000 vsize 0xa52 raw 0x1000
+.data    va 0x10009000 vsize 0x1b58 raw 0x2000
+.reloc   va 0x1000b000 vsize 0x706 raw 0x1000
+
+## Imports
+KERNEL32.dll
+  0x10008000 FormatMessageA
+  0x10008004 Sleep
+  0x10008008 CreateThread
+  0x1000800c CreateEventA
+  0x10008010 CloseHandle
+  0x10008014 GetLastError
+  0x10008018 CreateSemaphoreA
+  0x1000801c CreateMutexA
+  0x10008020 WaitForSingleObject
+  0x10008024 SetEvent
+  0x10008028 ReleaseMutex
+  0x1000802c ReleaseSemaphore
+  0x10008030 WaitForMultipleObjects
+  0x10008034 LocalFree
+  0x10008038 GetTickCount
+  0x1000803c GetCurrentThreadId
+  0x10008040 QueryPerformanceCounter
+USER32.dll
+  0x100080a8 MessageBoxA
+WS2_32.dll
+  0x100080b0 bind
+  0x100080b4 closesocket
+  0x100080b8 connect
+  0x100080bc gethostbyname
+  0x100080c0 gethostname
+  0x100080c4 inet_addr
+  0x100080c8 ioctlsocket
+  0x100080cc listen
+  0x100080d0 ntohs
+  0x100080d4 accept
+  0x100080d8 send
+  0x100080dc socket
+  0x100080e0 WSACleanup
+  0x100080e4 WSACloseEvent
+  0x100080e8 WSACreateEvent
+  0x100080ec WSAEnumNetworkEvents
+  0x100080f0 WSAEventSelect
+  0x100080f4 WSAGetLastError
+  0x100080f8 WSAStartup
+  0x100080fc WSASocketA
+  0x10008100 recv
+  0x10008104 htons
+MSVCRT.dll
+  0x10008048 _adjust_fdiv
+  0x1000804c _initterm
+  0x10008050 ftell
+  0x10008054 remove
+  0x10008058 rename
+  0x1000805c vfprintf
+  0x10008060 fgets
+  0x10008064 strcspn
+  0x10008068 strrchr
+  0x1000806c strncpy
+  0x10008070 strchr
+  0x10008074 _stricmp
+  0x10008078 fclose
+  0x1000807c fflush
+  0x10008080 fwrite
+  0x10008084 fopen
+  0x10008088 atoi
+  0x1000808c strncmp
+  0x10008090 _itoa
+  0x10008094 sprintf
+  0x10008098 malloc
+  0x1000809c free
+  0x100080a0 realloc
+
+## Exports
+  0x10004370 ord 1 dcsp_client_connect
+  0x10004400 ord 2 dcsp_client_receive_message
+  0x10004410 ord 3 dcsp_client_receive_message_vb
+  0x10004420 ord 4 dcsp_client_send_message
+  0x10003dc0 ord 5 dcsp_configure
+  0x10004190 ord 6 dcsp_convert_address
+  0x10004260 ord 7 dcsp_convert_message_format
+  0x10004720 ord 8 dcsp_server_close
+  0x10004510 ord 9 dcsp_server_listen
+  0x100045a0 ord 10 dcsp_server_receive_message
+  0x10004660 ord 11 dcsp_server_send_message
+  0x10004440 ord 12 dcsp_server_set_rm
+  0x100044c0 ord 13 dcsp_server_use_default_address
+  0x10003f00 ord 14 dcsp_start
+  0x10004150 ord 15 dcsp_stop
+  0x10009128 ord 16 g_tsck_func_table
+  0x10006290 ord 17 vos_avl_compare_ntistr
+  0x10006240 ord 18 vos_avl_compare_ntstr
+  0x100061b0 ord 19 vos_avl_compare_s16
+  0x10006200 ord 20 vos_avl_compare_s32
+  0x10006170 ord 21 vos_avl_compare_s8
+  0x100061e0 ord 22 vos_avl_compare_u16
+  0x10006220 ord 23 vos_avl_compare_u32
+  0x10006190 ord 24 vos_avl_compare_u8
+  0x10005d20 ord 25 vos_avl_find
+  0x10005b00 ord 26 vos_avl_insert
+  0x10005d80 ord 27 vos_avl_next
+  0x10005e20 ord 28 vos_avl_node_empty
+  0x10005dd0 ord 29 vos_avl_prev
+  0x10005be0 ord 30 vos_avl_remove
+  0x10006e80 ord 31 vos_trace_branch
+  0x10006bf0 ord 32 vos_trace_clear_globals
+  0x10006da0 ord 33 vos_trace_entry
+  0x10006df0 ord 34 vos_trace_exit
+  0x100068f0 ord 35 vos_trace_initialise
+  0x10006f50 ord 36 vos_trace_pop_function
+  0x10006d10 ord 37 vos_trace_prolog
+  0x10006ee0 ord 38 vos_trace_push_function
+  0x10006b60 ord 39 vos_trace_set_globals
+  0x10006f70 ord 40 vos_trace_terminate
+  0x10006a90 ord 41 vos_trace_thread_start
+  0x10006b20 ord 42 vos_trace_thread_stop

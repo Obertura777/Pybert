@@ -53,8 +53,8 @@ def test_cleanup_turn_uses_full_split_trust_divisor():
 
     _cleanup_turn(state)
 
-    assert state.g_influence_matrix[0, 1] < 1.0
-    assert state.g_influence_matrix[0, 2] > 99.0
+    assert state.g_influence_matrix_norm[0, 1] < 1.0
+    assert state.g_influence_matrix_norm[0, 2] > 99.0
 
 
 def test_opening_target_uses_sc_controller_not_live_unit_type():

@@ -1,0 +1,85 @@
+// sub_462690 @ 0x462690
+// hopper name: sub_462690
+// referenced by: called
+// source: REA batch_decompile (Hopper) evidence ev_06c2a82957024defebbb838e2588454e9b17c066babec8d06687ed96047429d4
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_462690() {
+    decomp_var_c = ebx;
+    decomp_var_10 = ebp;
+    decomp_var_14 = esi;
+    esp = esp - 0x18;
+    decomp_var_18 = edi;
+    edi = arg_4;
+    esi = ecx;
+    ebp = *esi[0x1];
+    if (edi == 0x0 || edi != esi) {
+            sub_47a948();
+    }
+    ebx = arg_8;
+    if (ebx != ebp) goto .l4;
+    goto loc_4626b7;
+
+.l4:
+    if (edi == 0x0 || edi != arg_c) {
+            sub_47a948();
+    }
+    if (ebx != arg_10) {
+            sub_40e210();
+            esp = esp - 0xc;
+            eax = sub_4622a0(&var_8, edi, ebx, decomp_var_18, decomp_var_14, decomp_var_10, decomp_var_c, var_8, decomp_var_4, saved_fp, arg_0, arg_4, arg_8, arg_c, arg_10, arg_14, arg_18, arg_1c);
+            ebx = arg_8;
+            edi = arg_4;
+            continue;
+    }
+    break;
+
+loc_4626b7:
+    eax = arg_c;
+    ebp = esi[0x1];
+    if (eax == 0x0 || eax != esi) {
+            sub_47a948();
+    }
+    if (arg_10 != ebp) goto .l2;
+    goto loc_4626d1;
+    eax = arg_0;
+    *eax = edi;
+    eax[0x1] = ebx;
+    return eax;
+
+.l2:
+    goto loc_462710;
+
+loc_4626d1:
+    sub_461f40(*(esi[0x1] + 0x4));
+    eax = esi[0x1];
+    eax[0x1] = eax;
+    eax = esi[0x1];
+    esi[0x2] = 0x0;
+    *eax = eax;
+    eax = esi[0x1];
+    eax[0x2] = eax;
+    ecx = *esi[0x1];
+    eax = arg_0;
+    *eax = esi;
+    eax[0x1] = ecx;
+    return eax;
+
+loc_462710:
+    if (edi == 0x0 || edi != arg_c) {
+            sub_47a948();
+    }
+    if (ebx != arg_10) {
+            sub_40e210();
+            esp = esp - 0xc;
+            eax = sub_4622a0(&var_8, edi, ebx, decomp_var_18, decomp_var_14, decomp_var_10, decomp_var_c, var_8, decomp_var_4, saved_fp, arg_0, arg_4, arg_8, arg_c, arg_10, arg_14, arg_18, arg_1c);
+            ebx = arg_8;
+            edi = arg_4;
+            continue;
+    }
+    break;
+    eax = arg_0;
+    *eax = edi;
+    eax[0x1] = ebx;
+    return eax;
+}

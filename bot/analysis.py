@@ -426,7 +426,7 @@ def _cleanup_turn(state: InnerGameState) -> None:
     (g_ally_trust_score + 1), injects _safe_pow noise, and row-normalises to 100.
 
     Was mislabelled 'Per-turn cleanup'; corrected per _index.md.
-    Writes g_influence_matrix (consumed by compute_influence_matrix ranking).
+    Writes g_influence_matrix_norm (DAT_00b82db8), read by ScoreProvinces' blend.
 
     Decompile: decompiled.txt lines 460-593.
     Phases match GenerateOrders Phase 4-5 but operate on Raw/trust-adjusted copy.

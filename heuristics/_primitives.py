@@ -275,6 +275,28 @@ def _safe_pow(base: float, exp: float) -> float:
         return float('inf')
 
 
+INFLUENCE_NOISE_SCALE = 100.0     # DAT_004afa00
+INFLUENCE_NOISE_EXPONENT = 1.2    # DAT_004af9f8
+INFLUENCE_NOISE_WEIGHT = 500.0    # DAT_004af9f0
+
+
+def _inject_influence_noise(matrix, num_powers: int) -> None:
+    """Shared noise step of ComputeInfluenceMatrix (0x40d8c0), NormalizeInfluenceMatrix
+    (0x40cdc0) and GenerateOrders (0x4466e0).
+
+    Albert.exe, e.g. 0x40da50-0x40da97:
+        sum[r] = FloatToInt64(sum(matrix[r, :]))                (0x47b5f6, per ROW)
+        matrix[r, c] += 500 * pow(100 * matrix[r, c] / (sum[c] + 1), 1.2)
+    The divisor is indexed by the inner (column) counter, and pow is _CIpow(st1, st0).
+    Ghidra prints the call as a bare `_safe_pow()`, which hid every operand.
+    """
+    row_sum = [_float_to_int64(float(np.sum(matrix[r, :num_powers]))) for r in range(num_powers)]
+    for r in range(num_powers):
+        for c in range(num_powers):
+            base = INFLUENCE_NOISE_SCALE * float(matrix[r, c]) / float(row_sum[c] + 1)
+            matrix[r, c] += _safe_pow(base, INFLUENCE_NOISE_EXPONENT) * INFLUENCE_NOISE_WEIGHT
+
+
 def _float_to_int64(value: float) -> int:
     """Port of FloatToInt64 / PackScoreU64 (Source/utils/FloatToInt64.c).
 

@@ -278,6 +278,13 @@ class InnerGameState:
         # (consistent with g_enemy_presence and g_enemy_reach_score upgrades).
         self.g_target_flag = np.zeros((7, 256), dtype=np.int64)
         
+        # Five distinct 21x21 double matrices in C, laid out contiguously:
+        #   g_influence_matrix_raw  DAT_00b81228  GenerateOrders' pre-noise copy of B
+        #   g_influence_matrix      DAT_00b81ff0  ComputeInfluenceMatrix; read by CAL_BOARD
+        #   g_influence_matrix_norm DAT_00b82db8  NormalizeInfluenceMatrix; ScoreProvinces blend
+        #   g_alliance_score        DAT_00b83b80  GenerateOrders, from raw
+        #   g_influence_matrix_b    DAT_00b84948  GenerateOrders' noised, normalised matrix
+        # Each has exactly one writer; do not alias them.
         self.g_influence_matrix_raw = np.zeros((7, 7), dtype=np.float64)
         self.g_influence_matrix = np.zeros((7, 7), dtype=np.float64)
         self.g_alliance_score = np.zeros((7, 7), dtype=np.float64)
@@ -809,9 +816,8 @@ class InnerGameState:
         self.g_stabbed_flag: int = 0
         # DAT_00baed69 — 1 = another power is close to solo victory
         # (already defined as g_other_power_lead_flag above)
-        # g_influence_matrix_alt is the same array as g_influence_matrix (alias)
-        # DAT_00b81ff0 — trust-adjusted, noise-perturbed, row-normalised influence matrix
-        # (self.g_influence_matrix already declared above)
+        # DAT_00b81ff0 (g_influence_matrix) — ComputeInfluenceMatrix's trust-adjusted,
+        # noise-perturbed, row-normalised matrix; declared above.
 
         # Own power index (0-based); set at turn start by AlbertBot from power_name.
         # C: *(byte *)(state->inner + 0x2424)
@@ -1304,8 +1310,11 @@ class InnerGameState:
         self.g_diplomacy_state_b  = np.zeros(7, dtype=np.int32)
         # DAT_0062480c — power index of the committed strategic enemy
         self.g_committed_enemy: int = -1
-        # DAT_00b84948[pow*21+other] — second influence scratch matrix (zeroed each turn)
+        # DAT_00b84948[pow*21+other] — GenerateOrders' noised, row-normalised matrix (zeroed each turn)
         self.g_influence_matrix_b = np.zeros((7, 7), dtype=np.float64)
+        # DAT_00b82db8[pow*21+other] — NormalizeInfluenceMatrix (0x40cdc0) output;
+        # its only reader is ScoreProvinces' 6:1 blend (0x448fe2)
+        self.g_influence_matrix_norm = np.zeros((7, 7), dtype=np.float64)
         # DAT_004d53d8[power*2] — lo-word: 1 = PCE proposal sent to this power this turn
         # DAT_004d53dc[power*2] — hi-word companion (always 0 after write)
         # Both zeroed each turn in the per-power reset loop.

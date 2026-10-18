@@ -1,0 +1,1462 @@
+{
+ "AppendOrder": {
+  "file": "Source/bot/AppendOrder.c",
+  "ghidra_callees": 0,
+  "address": "0x419d80",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x419d80",
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "BaseBot": {
+  "file": "Source/bot/BaseBot.c",
+  "ghidra_callees": 3,
+  "address": "0x45ebb0",
+  "callee_coverage": 1.0,
+  "rea_callees": 7,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "BuildAndSendSUB": {
+  "file": "Source/bot/BuildAndSendSUB.c",
+  "ghidra_callees": 18,
+  "address": "0x457890",
+  "callee_coverage": 1.0,
+  "rea_callees": 50,
+  "known_address": "0x457890",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "BuildHostilityRecord": {
+  "file": "Source/bot/BuildHostilityRecord.c",
+  "ghidra_callees": 3,
+  "address": "0x4222a0",
+  "callee_coverage": 1.0,
+  "rea_callees": 3,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ComputeOrderDipFlags": {
+  "file": "Source/bot/ComputeOrderDipFlags.c",
+  "ghidra_callees": 0,
+  "address": "0x4113d0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x4113d0",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "DEVIATE_MOVE": {
+  "file": "Source/bot/DEVIATE_MOVE.c",
+  "ghidra_callees": 3,
+  "address": "0x43a000",
+  "callee_coverage": 1.0,
+  "rea_callees": 17,
+  "known_address": "0x43a000",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "EvaluateOrderProposalsAndSendGOF": {
+  "file": "Source/bot/EvaluateOrderProposalsAndSendGOF.c",
+  "ghidra_callees": 5,
+  "address": "0x457520",
+  "callee_coverage": 1.0,
+  "rea_callees": 17,
+  "known_address": "0x457520",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "FRIENDLY": {
+  "file": "Source/bot/FRIENDLY.c",
+  "ghidra_callees": 3,
+  "address": "0x42dc40",
+  "callee_coverage": 1.0,
+  "rea_callees": 9,
+  "known_address": "0x42dc40",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "GenerateAndSubmitOrders": {
+  "file": "Source/bot/GenerateAndSubmitOrders.c",
+  "ghidra_callees": 12,
+  "address": "0x459548",
+  "callee_coverage": 1.0,
+  "rea_callees": 42,
+  "known_address": "0x459548",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "GenerateOrders": {
+  "file": "Source/bot/GenerateOrders.c",
+  "ghidra_callees": 2,
+  "address": "0x4466e0",
+  "callee_coverage": 1.0,
+  "rea_callees": 21,
+  "known_address": "0x4466e0",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "HOSTILITY": {
+  "file": "Source/bot/HOSTILITY.c",
+  "ghidra_callees": 2,
+  "address": "0x42ee90",
+  "callee_coverage": 1.0,
+  "rea_callees": 18,
+  "known_address": "0x42ee90",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "InitPositionForOrders": {
+  "file": "Source/bot/InitPositionForOrders.c",
+  "ghidra_callees": 10,
+  "address": "0x44d7b0",
+  "callee_coverage": 1.0,
+  "rea_callees": 22,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "MOVE_ANALYSIS": {
+  "file": "Source/bot/MOVE_ANALYSIS.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "STABBED": {
+  "file": "Source/bot/STABBED.c",
+  "ghidra_callees": 1,
+  "address": "0x42d0b0",
+  "callee_coverage": 1.0,
+  "rea_callees": 15,
+  "known_address": "0x42c730",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "SerializeOrders": {
+  "file": "Source/bot/SerializeOrders.c",
+  "ghidra_callees": 2,
+  "address": "0x403430",
+  "callee_coverage": 1.0,
+  "rea_callees": 4,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "SetGamePhase": {
+  "file": "Source/bot/SetGamePhase.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "SetOwnPower": {
+  "file": "Source/bot/SetOwnPower.c",
+  "ghidra_callees": 3,
+  "address": "0x460de0",
+  "callee_coverage": 0.333,
+  "rea_callees": 4,
+  "known_address": "0x460de0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "SnapshotProvinceState": {
+  "file": "Source/bot/SnapshotProvinceState.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "analyze_position": {
+  "file": "Source/bot/analyze_position.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "send_GOF": {
+  "file": "Source/bot/send_GOF.c",
+  "ghidra_callees": 11,
+  "address": "0x456b50",
+  "callee_coverage": 0.909,
+  "rea_callees": 26,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "BuildAllianceMsg": {
+  "file": "Source/communications/BuildAllianceMsg.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "CAL_MOVE": {
+  "file": "Source/communications/CAL_MOVE.c",
+  "ghidra_callees": 2,
+  "address": "0x4222a0",
+  "callee_coverage": 1.0,
+  "rea_callees": 3,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "CAL_VALUE": {
+  "file": "Source/communications/CAL_VALUE.c",
+  "ghidra_callees": 14,
+  "address": "0x4266b6",
+  "callee_coverage": 1.0,
+  "rea_callees": 29,
+  "known_address": "0x4266b6",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "CANCEL": {
+  "file": "Source/communications/CANCEL.c",
+  "ghidra_callees": 3,
+  "address": "0x41df20",
+  "callee_coverage": 1.0,
+  "rea_callees": 15,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "CCD_Handler": {
+  "file": "Source/communications/CCD_Handler.c",
+  "ghidra_callees": 3,
+  "address": "0x45eed0",
+  "callee_coverage": 0.333,
+  "rea_callees": 4,
+  "known_address": "0x45e470",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "CancelPriorPress": {
+  "file": "Source/communications/CancelPriorPress.c",
+  "ghidra_callees": 1,
+  "address": "0x40e8e0",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": "0x40e8e0",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "CheckTimeLimit": {
+  "file": "Source/communications/CheckTimeLimit.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "DMZ": {
+  "file": "Source/communications/DMZ.c",
+  "ghidra_callees": 3,
+  "address": "0x420100",
+  "callee_coverage": 1.0,
+  "rea_callees": 19,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "EvaluatePress": {
+  "file": "Source/communications/EvaluatePress.c",
+  "ghidra_callees": 4,
+  "address": "0x42fc40",
+  "callee_coverage": 1.0,
+  "rea_callees": 15,
+  "known_address": "0x42fc40",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ExecuteThennAction": {
+  "file": "Source/communications/ExecuteThennAction.c",
+  "ghidra_callees": 6,
+  "address": "0x439c30",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": "0x439c30",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "HLO_Dispatch": {
+  "file": "Source/communications/HLO_Dispatch.c",
+  "ghidra_callees": 5,
+  "address": "0x45abf0",
+  "callee_coverage": 0.4,
+  "rea_callees": 6,
+  "known_address": "0x45abf0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "HUH": {
+  "file": "Source/communications/HUH.c",
+  "ghidra_callees": 1,
+  "address": "0x45bd80",
+  "callee_coverage": 1.0,
+  "rea_callees": 3,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "InboundDAIDEDispatcher": {
+  "file": "Source/communications/InboundDAIDEDispatcher.c",
+  "ghidra_callees": 13,
+  "address": "0x45f1f0",
+  "callee_coverage": 0.923,
+  "rea_callees": 20,
+  "known_address": "0x45f1f0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "MAP_Handler": {
+  "file": "Source/communications/MAP_Handler.c",
+  "ghidra_callees": 2,
+  "address": "0x45f670",
+  "callee_coverage": 0.5,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "MDF_Handler": {
+  "file": "Source/communications/MDF_Handler.c",
+  "ghidra_callees": 2,
+  "address": "0x45f670",
+  "callee_coverage": 0.5,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "NOTDispatcher": {
+  "file": "Source/communications/NOTDispatcher.c",
+  "ghidra_callees": 2,
+  "address": "0x45eed0",
+  "callee_coverage": 0.5,
+  "rea_callees": 4,
+  "known_address": "0x45c5e0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "NOT_CCD_Handler": {
+  "file": "Source/communications/NOT_CCD_Handler.c",
+  "ghidra_callees": 2,
+  "address": "0x45eed0",
+  "callee_coverage": 0.5,
+  "rea_callees": 4,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "NOT_TME_Handler": {
+  "file": "Source/communications/NOT_TME_Handler.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "NOT_XDO": {
+  "file": "Source/communications/NOT_XDO.c",
+  "ghidra_callees": 2,
+  "address": "0x420dd0",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "NOWHandler": {
+  "file": "Source/communications/NOWHandler.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "ORD_Handler": {
+  "file": "Source/communications/ORD_Handler.c",
+  "ghidra_callees": 2,
+  "address": "0x45f670",
+  "callee_coverage": 0.5,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "OUT_Handler": {
+  "file": "Source/communications/OUT_Handler.c",
+  "ghidra_callees": 3,
+  "address": "0x45f1f0",
+  "callee_coverage": 0.667,
+  "rea_callees": 20,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "PCE": {
+  "file": "Source/communications/PCE.c",
+  "ghidra_callees": 3,
+  "address": "0x41daf0",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "PROPOSE": {
+  "file": "Source/communications/PROPOSE.c",
+  "ghidra_callees": 12,
+  "address": "0x431940",
+  "callee_coverage": 1.0,
+  "rea_callees": 32,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ParseHSTResponse": {
+  "file": "Source/communications/ParseHSTResponse.c",
+  "ghidra_callees": 3,
+  "address": "0x41b410",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": "0x41b410",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "ParseNOW": {
+  "file": "Source/communications/ParseNOW.c",
+  "ghidra_callees": 8,
+  "address": "0x463fb0",
+  "callee_coverage": 1.0,
+  "rea_callees": 19,
+  "known_address": "0x45aeb0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ParseNOWUnit": {
+  "file": "Source/communications/ParseNOWUnit.c",
+  "ghidra_callees": 8,
+  "address": "0x462bc0",
+  "callee_coverage": 1.0,
+  "rea_callees": 19,
+  "known_address": "0x45af40",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ProposeDMZ": {
+  "file": "Source/communications/ProposeDMZ.c",
+  "ghidra_callees": 10,
+  "address": "0x432960",
+  "callee_coverage": 0.9,
+  "rea_callees": 20,
+  "known_address": "0x432960",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "QueueIncomingMessage": {
+  "file": "Source/communications/QueueIncomingMessage.c",
+  "ghidra_callees": 2,
+  "address": "0x45e930",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "RECEIVE_MSG": {
+  "file": "Source/communications/RECEIVE_MSG.c",
+  "ghidra_callees": 1,
+  "address": "0x45cba0",
+  "callee_coverage": 1.0,
+  "rea_callees": 6,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "RECEIVE_PROPOSAL": {
+  "file": "Source/communications/RECEIVE_PROPOSAL.c",
+  "ghidra_callees": 12,
+  "address": "0x431fe0",
+  "callee_coverage": 1.0,
+  "rea_callees": 28,
+  "known_address": "0x431fe0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "REMOVE_DMZ": {
+  "file": "Source/communications/REMOVE_DMZ.c",
+  "ghidra_callees": 2,
+  "address": "0x421040",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "RESPOND": {
+  "file": "Source/communications/RESPOND.c",
+  "ghidra_callees": 12,
+  "address": "0x4216f0",
+  "callee_coverage": 1.0,
+  "rea_callees": 30,
+  "known_address": "0x4216f0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "RegisterAllowedPressToken": {
+  "file": "Source/communications/RegisterAllowedPressToken.c",
+  "ghidra_callees": 2,
+  "address": "0x418ed0",
+  "callee_coverage": 1.0,
+  "rea_callees": 2,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "SCO_Handler": {
+  "file": "Source/communications/SCO_Handler.c",
+  "ghidra_callees": 2,
+  "address": "0x45f670",
+  "callee_coverage": 0.5,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ScheduledPressDispatch": {
+  "file": "Source/communications/ScheduledPressDispatch.c",
+  "ghidra_callees": 1,
+  "address": "0x4424e0",
+  "callee_coverage": 1.0,
+  "rea_callees": 13,
+  "known_address": "0x4424e0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "SendAlliancePress": {
+  "file": "Source/communications/SendAlliancePress.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "SendAllyPressByPower": {
+  "file": "Source/communications/SendAllyPressByPower.c",
+  "ghidra_callees": 4,
+  "address": "0x421570",
+  "callee_coverage": 1.0,
+  "rea_callees": 9,
+  "known_address": "0x421570",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "SendDM": {
+  "file": "Source/communications/SendDM.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "UpdateRelationHistory": {
+  "file": "Source/communications/UpdateRelationHistory.c",
+  "ghidra_callees": 0,
+  "address": "0x40d7e0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x40d7e0",
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "XDO": {
+  "file": "Source/communications/XDO.c",
+  "ghidra_callees": 5,
+  "address": "0x420630",
+  "callee_coverage": 1.0,
+  "rea_callees": 22,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "YESDispatcher": {
+  "file": "Source/communications/YESDispatcher.c",
+  "ghidra_callees": 2,
+  "address": "0x45db40",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": "0x45db40",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "YES_DRW_Handler": {
+  "file": "Source/communications/YES_DRW_Handler.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "YES_OBS_Handler": {
+  "file": "Source/communications/YES_OBS_Handler.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "YES_TME_Handler": {
+  "file": "Source/communications/YES_TME_Handler.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "_eval_aly": {
+  "file": "Source/communications/_eval_aly.c",
+  "ghidra_callees": 3,
+  "address": "0x41e2d0",
+  "callee_coverage": 1.0,
+  "rea_callees": 14,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "_eval_dmz": {
+  "file": "Source/communications/_eval_dmz.c",
+  "ghidra_callees": 3,
+  "address": "0x41e2d0",
+  "callee_coverage": 1.0,
+  "rea_callees": 14,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "_eval_drw": {
+  "file": "Source/communications/_eval_drw.c",
+  "ghidra_callees": 3,
+  "address": "0x41ed30",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "_eval_not_dmz": {
+  "file": "Source/communications/_eval_not_dmz.c",
+  "ghidra_callees": 2,
+  "address": "0x41ea20",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "_eval_not_pce": {
+  "file": "Source/communications/_eval_not_pce.c",
+  "ghidra_callees": 2,
+  "address": "0x40d310",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "_eval_pce": {
+  "file": "Source/communications/_eval_pce.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "_eval_single_xdo": {
+  "file": "Source/communications/_eval_single_xdo.c",
+  "ghidra_callees": 10,
+  "address": "0x42c040",
+  "callee_coverage": 1.0,
+  "rea_callees": 20,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "_eval_slo": {
+  "file": "Source/communications/_eval_slo.c",
+  "ghidra_callees": 3,
+  "address": "0x41ea20",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "_eval_sub_xdo": {
+  "file": "Source/communications/_eval_sub_xdo.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "register_received_press": {
+  "file": "Source/communications/register_received_press.c",
+  "ghidra_callees": 9,
+  "address": "0x431310",
+  "callee_coverage": 0.889,
+  "rea_callees": 20,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ClearOrderList": {
+  "file": "Source/dispatch/ClearOrderList.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "DispatchSingleOrder": {
+  "file": "Source/dispatch/DispatchSingleOrder.c",
+  "ghidra_callees": 0,
+  "address": "0x44cc50",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x44cc50",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "IsLegalMove": {
+  "file": "Source/dispatch/IsLegalMove.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "ApplyInfluenceScores": {
+  "file": "Source/heuristics/ApplyInfluenceScores.c",
+  "ghidra_callees": 1,
+  "address": "0x4060c0",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "CAL_BOARD": {
+  "file": "Source/heuristics/CAL_BOARD.c",
+  "ghidra_callees": 0,
+  "address": "0x427960",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x427960",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ComputeBuildDelta": {
+  "file": "Source/heuristics/ComputeBuildDelta.c",
+  "ghidra_callees": 3,
+  "address": "0x40ab10",
+  "callee_coverage": 0.667,
+  "rea_callees": 5,
+  "known_address": "0x40ab10",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "ComputeDrawVote": {
+  "file": "Source/heuristics/ComputeDrawVote.c",
+  "ghidra_callees": 7,
+  "address": "0x4440e0",
+  "callee_coverage": 0.571,
+  "rea_callees": 10,
+  "known_address": "0x4440e0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ComputeInfluenceMatrix": {
+  "file": "Source/heuristics/ComputeInfluenceMatrix.c",
+  "ghidra_callees": 0,
+  "address": "0x40d8c0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x40d8c0",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "ComputePress": {
+  "file": "Source/heuristics/ComputePress.c",
+  "ghidra_callees": 0,
+  "address": "0x4401f0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x4401f0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ComputeWinBuilds_Populate": {
+  "file": "Source/heuristics/ComputeWinBuilds_Populate.c",
+  "ghidra_callees": 4,
+  "address": "0x442040",
+  "callee_coverage": 1.0,
+  "rea_callees": 14,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ComputeWinterBuilds": {
+  "file": "Source/heuristics/ComputeWinterBuilds.c",
+  "ghidra_callees": 1,
+  "address": "0x445d10",
+  "callee_coverage": 1.0,
+  "rea_callees": 4,
+  "known_address": "0x445be0",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "EvaluateAllianceScore": {
+  "file": "Source/heuristics/EvaluateAllianceScore.c",
+  "ghidra_callees": 2,
+  "address": "0x43bd20",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": "0x43bd20",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "EvaluateProvinceScore": {
+  "file": "Source/heuristics/EvaluateProvinceScore.c",
+  "ghidra_callees": 0,
+  "address": "0x433ce0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x433ce0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "InitScoringState": {
+  "file": "Source/heuristics/InitScoringState.c",
+  "ghidra_callees": 5,
+  "address": "0x445580",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "NormalizeInfluenceMatrix": {
+  "file": "Source/heuristics/NormalizeInfluenceMatrix.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "PostProcessOrders": {
+  "file": "Source/heuristics/PostProcessOrders.c",
+  "ghidra_callees": 0,
+  "address": "0x411120",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x411120",
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "PrepareDrawVoteSet": {
+  "file": "Source/heuristics/PrepareDrawVoteSet.c",
+  "ghidra_callees": 2,
+  "address": "0x44c9d0",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": "0x44c9d0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ScoreOrderCandidates": {
+  "file": "Source/heuristics/ScoreOrderCandidates.c",
+  "ghidra_callees": 11,
+  "address": "0x4559c0",
+  "callee_coverage": 0.818,
+  "rea_callees": 23,
+  "known_address": "0x4559c0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ScoreOrderCandidates_AllPowers": {
+  "file": "Source/heuristics/ScoreOrderCandidates_AllPowers.c",
+  "ghidra_callees": 1,
+  "address": "0x44a040",
+  "callee_coverage": 1.0,
+  "rea_callees": 17,
+  "known_address": "0x44a040",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ScoreOrderCandidates_OwnPower": {
+  "file": "Source/heuristics/ScoreOrderCandidates_OwnPower.c",
+  "ghidra_callees": 0,
+  "address": "0x4498d0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x4498d0",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ScoreProvinces": {
+  "file": "Source/heuristics/ScoreProvinces.c",
+  "ghidra_callees": 2,
+  "address": "0x447460",
+  "callee_coverage": 0.5,
+  "rea_callees": 20,
+  "known_address": "0x447460",
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "g_BuildCandidateList": {
+  "file": "Source/heuristics/g_BuildCandidateList.c",
+  "ghidra_callees": 5,
+  "address": "0x433ae0",
+  "callee_coverage": 1.0,
+  "rea_callees": 7,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "EvaluateOrderProposal": {
+  "file": "Source/monte_carlo/EvaluateOrderProposal.c",
+  "ghidra_callees": 15,
+  "address": "0x44e070",
+  "callee_coverage": 1.0,
+  "rea_callees": 38,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "EvaluateOrderScore": {
+  "file": "Source/monte_carlo/EvaluateOrderScore.c",
+  "ghidra_callees": 1,
+  "address": "0x437600",
+  "callee_coverage": 1.0,
+  "rea_callees": 9,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "InsertCandidateRecord": {
+  "file": "Source/monte_carlo/InsertCandidateRecord.c",
+  "ghidra_callees": 3,
+  "address": "0x44d6c0",
+  "callee_coverage": 1.0,
+  "rea_callees": 3,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "InsertOrderCandidate": {
+  "file": "Source/monte_carlo/InsertOrderCandidate.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "ProcessTurn": {
+  "file": "Source/monte_carlo/ProcessTurn.c",
+  "ghidra_callees": 20,
+  "address": "0x44f5c0",
+  "callee_coverage": 0.95,
+  "rea_callees": 70,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "RefreshOrderTable": {
+  "file": "Source/monte_carlo/RefreshOrderTable.c",
+  "ghidra_callees": 6,
+  "address": "0x424490",
+  "callee_coverage": 1.0,
+  "rea_callees": 12,
+  "known_address": "0x424490",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "RegisterProposalOrders": {
+  "file": "Source/monte_carlo/RegisterProposalOrders.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "RemoveOrderCandidate": {
+  "file": "Source/monte_carlo/RemoveOrderCandidate.c",
+  "ghidra_callees": 4,
+  "address": "0x417450",
+  "callee_coverage": 1.0,
+  "rea_callees": 9,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "ResetPerTrialState": {
+  "file": "Source/monte_carlo/ResetPerTrialState.c",
+  "ghidra_callees": 1,
+  "address": "0x410b70",
+  "callee_coverage": 0.0,
+  "rea_callees": 1,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "TrialEvaluateOrders": {
+  "file": "Source/monte_carlo/TrialEvaluateOrders.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "UpdateAllyOrderScore": {
+  "file": "Source/monte_carlo/UpdateAllyOrderScore.c",
+  "ghidra_callees": 15,
+  "address": "0x442770",
+  "callee_coverage": 0.8,
+  "rea_callees": 29,
+  "known_address": "0x442770",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "UpdateScoreState": {
+  "file": "Source/monte_carlo/UpdateScoreState.c",
+  "ghidra_callees": 0,
+  "address": "0x44c8e0",
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": "0x44c8e0",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "AssignHoldSupports": {
+  "file": "Source/moves/AssignHoldSupports.c",
+  "ghidra_callees": 1,
+  "address": "0x410b70",
+  "callee_coverage": 0.0,
+  "rea_callees": 1,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "AssignSupportOrder": {
+  "file": "Source/moves/AssignSupportOrder.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "BuildConvoyOrders": {
+  "file": "Source/moves/BuildConvoyOrders.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "BuildOrderSpec": {
+  "file": "Source/moves/BuildOrderSpec.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "BuildOrder_CTO": {
+  "file": "Source/moves/BuildOrder_CTO.c",
+  "ghidra_callees": 3,
+  "address": "0x461560",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "BuildOrder_CTO_Chain": {
+  "file": "Source/moves/BuildOrder_CTO_Chain.C",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "BuildOrder_CVY": {
+  "file": "Source/moves/BuildOrder_CVY.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "BuildOrder_HLD": {
+  "file": "Source/moves/BuildOrder_HLD.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "BuildOrder_MTO": {
+  "file": "Source/moves/BuildOrder_MTO.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "BuildOrder_RTO": {
+  "file": "Source/moves/BuildOrder_RTO.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "BuildOrder_SUP_HLD": {
+  "file": "Source/moves/BuildOrder_SUP_HLD.c",
+  "ghidra_callees": 1,
+  "address": "0x440900",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "BuildOrder_SUP_MTO": {
+  "file": "Source/moves/BuildOrder_SUP_MTO.c",
+  "ghidra_callees": 1,
+  "address": "0x440d90",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "BuildSupportOpportunities": {
+  "file": "Source/moves/BuildSupportOpportunities.c",
+  "ghidra_callees": 1,
+  "address": "0x4460a0",
+  "callee_coverage": 1.0,
+  "rea_callees": 8,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "BuildSupportProposals": {
+  "file": "Source/moves/BuildSupportProposals.c",
+  "ghidra_callees": 9,
+  "address": "0x43e370",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ComputeSafeReach": {
+  "file": "Source/moves/ComputeSafeReach.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ConcatTokenList": {
+  "file": "Source/moves/ConcatTokenList.c",
+  "ghidra_callees": 4,
+  "address": "0x466c40",
+  "callee_coverage": 0.5,
+  "rea_callees": 7,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "ConvoyList_Insert": {
+  "file": "Source/moves/ConvoyList_Insert.c",
+  "ghidra_callees": 1,
+  "address": "0x41c340",
+  "callee_coverage": 1.0,
+  "rea_callees": 2,
+  "known_address": "0x41c340",
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "EnumerateConvoyReach": {
+  "file": "Source/moves/EnumerateConvoyReach.c",
+  "ghidra_callees": 7,
+  "address": "0x433ae0",
+  "callee_coverage": 0.429,
+  "rea_callees": 7,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "EnumerateHoldOrders": {
+  "file": "Source/moves/EnumerateHoldOrders.c",
+  "ghidra_callees": 5,
+  "address": "0x43d910",
+  "callee_coverage": 1.0,
+  "rea_callees": 16,
+  "known_address": "0x455fd0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "MoveCandidate": {
+  "file": "Source/moves/MoveCandidate.c",
+  "ghidra_callees": 4,
+  "address": "0x411cf0",
+  "callee_coverage": 1.0,
+  "rea_callees": 9,
+  "known_address": "0x411cf0",
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "RegisterConvoyFleet": {
+  "file": "Source/moves/RegisterConvoyFleet.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "ScoreConvoyFleet": {
+  "file": "Source/moves/ScoreConvoyFleet.c",
+  "ghidra_callees": 1,
+  "address": "0x419790",
+  "callee_coverage": 1.0,
+  "rea_callees": 1,
+  "known_address": "0x419790",
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "ScoreSupportOpp": {
+  "file": "Source/moves/ScoreSupportOpp.c",
+  "ghidra_callees": 2,
+  "address": "0x404fd0",
+  "callee_coverage": 1.0,
+  "rea_callees": 2,
+  "known_address": "0x404fd0",
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "SerializeOrderToDAIDE": {
+  "file": "Source/moves/SerializeOrderToDAIDE.c",
+  "ghidra_callees": 6,
+  "address": "0x463690",
+  "callee_coverage": 0.833,
+  "rea_callees": 10,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "Container_Destroy": {
+  "file": "Source/utils/Container_Destroy.c",
+  "ghidra_callees": 6,
+  "address": "0x41af00",
+  "callee_coverage": 0.5,
+  "rea_callees": 4,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": false
+ },
+ "ERR": {
+  "file": "Source/utils/ERR.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "FloatToInt64": {
+  "file": "Source/utils/FloatToInt64.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "GameBoard_GetPowerRec": {
+  "file": "Source/utils/GameBoard_GetPowerRec.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "GetProvinceToken": {
+  "file": "Source/utils/GetProvinceToken.c",
+  "ghidra_callees": 2,
+  "address": "0x4273a0",
+  "callee_coverage": 1.0,
+  "rea_callees": 4,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "Iterator_GetData": {
+  "file": "Source/utils/Iterator_GetData.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "PackScoreU64": {
+  "file": "Source/utils/PackScoreU64.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "ParseDestinationWithCoast": {
+  "file": "Source/utils/ParseDestinationWithCoast.c",
+  "ghidra_callees": 2,
+  "address": "0x45fc30",
+  "callee_coverage": 1.0,
+  "rea_callees": 3,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "ParseOrderToken": {
+  "file": "Source/utils/ParseOrderToken.c",
+  "ghidra_callees": 3,
+  "address": "0x4629e0",
+  "callee_coverage": 1.0,
+  "rea_callees": 10,
+  "known_address": null,
+  "fingerprint_status": "ambiguous",
+  "verified": true
+ },
+ "SEND_LOG": {
+  "file": "Source/utils/SEND_LOG.c",
+  "ghidra_callees": 1,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ },
+ "TokenList_BuildOffsets": {
+  "file": "Source/utils/TokenList_BuildOffsets.c",
+  "ghidra_callees": 2,
+  "address": "0x466160",
+  "callee_coverage": 0.5,
+  "rea_callees": 1,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": false
+ },
+ "UnitList_FindOrInsert": {
+  "file": "Source/utils/UnitList_FindOrInsert.c",
+  "ghidra_callees": 4,
+  "address": "0x407720",
+  "callee_coverage": 1.0,
+  "rea_callees": 5,
+  "known_address": null,
+  "fingerprint_status": "matched",
+  "verified": true
+ },
+ "clear": {
+  "file": "Source/utils/clear.c",
+  "ghidra_callees": 0,
+  "address": null,
+  "callee_coverage": null,
+  "rea_callees": null,
+  "known_address": null,
+  "fingerprint_status": "too-few-refs",
+  "verified": false
+ }
+}

@@ -1,0 +1,16 @@
+// sub_49b058 @ 0x49b058
+// hopper name: sub_49b058
+// contains unmarked entry 0x475e69
+// referenced by: pointer
+// source: REA batch_decompile (Hopper) evidence ev_978c89719cd77bcdc6e75aab2597802dece863a13191649d2d009ca0630389cd
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_49b058() {
+    decomp_var_4 = ebp;
+    sub_47d6ee(saved_fp);
+    *(sub_4715ba() + 0x4);
+    loc_46f032();
+    *0x0 = decomp_var_c;
+    sub_47ad69();
+    return;
+}

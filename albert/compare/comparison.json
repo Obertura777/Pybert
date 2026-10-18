@@ -1,0 +1,6269 @@
+{
+ "pairs": [
+  {
+   "address": "0x401950",
+   "resolved": "0x401950",
+   "hopper_name": "sub_401950",
+   "evidence_id": "ev_977fbe10e3602e012dcf6a47b533de2359c0abd21f188ca3b6709232355c4feb",
+   "python_ports": [
+    "bot/strategy.py:101:_destroy_inner_list"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 23,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 3,
+    "rea_insns": 23,
+    "py_branches": 5
+   },
+   "callees": {
+    "total": 1,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40ab10",
+   "resolved": "0x40ab10",
+   "hopper_name": "sub_40ab10",
+   "evidence_id": "ev_5ed170979392193a129710dca7b5f5aa9a47ede1803ef4e735be585cf3c767b9",
+   "python_ports": [
+    "heuristics/win.py:41:compute_build_delta"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ComputeBuildDelta"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 147,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 31,
+    "rea_insns": 147,
+    "py_branches": 10
+   },
+   "callees": {
+    "total": 5,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x409de0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40b4b0",
+   "resolved": "0x40b4b0",
+   "hopper_name": "sub_40b4b0",
+   "evidence_id": "ev_486f0cc133582a60f2cc41ef28af31c1ffefa9cec9f7466d6cbe69f53f458336",
+   "python_ports": [],
+   "python_slices": [
+    "monte_carlo/trial.py:2532:_staged_unit_order"
+   ],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 74,
+   "dossier_body_coverage": 0.73,
+   "helpers_folded": 1,
+   "size": {
+    "rea_blocks": 9,
+    "rea_insns": 54,
+    "py_branches": 11
+   },
+   "callees": {
+    "total": 17,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x4058d0",
+      "python": null,
+      "hopper_lines": 186
+     },
+     {
+      "address": "0x407d00",
+      "python": null,
+      "hopper_lines": 282
+     },
+     {
+      "address": "0x4080f0",
+      "python": null,
+      "hopper_lines": 237
+     },
+     {
+      "address": "0x4083d0",
+      "python": null,
+      "hopper_lines": 202
+     },
+     {
+      "address": "0x408540",
+      "python": null,
+      "hopper_lines": 70
+     },
+     {
+      "address": "0x408660",
+      "python": null,
+      "hopper_lines": 83
+     },
+     {
+      "address": "0x408790",
+      "python": null,
+      "hopper_lines": 169
+     },
+     {
+      "address": "0x4089d0",
+      "python": null,
+      "hopper_lines": 389
+     },
+     {
+      "address": "0x40a030",
+      "python": null,
+      "hopper_lines": 538
+     },
+     {
+      "address": "0x40a720",
+      "python": null,
+      "hopper_lines": 81
+     },
+     {
+      "address": "0x40a870",
+      "python": null,
+      "hopper_lines": 67
+     },
+     {
+      "address": "0x40ace0",
+      "python": null,
+      "hopper_lines": 194
+     },
+     {
+      "address": "0x40afa0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40b350",
+      "python": null,
+      "hopper_lines": 79
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40b560",
+   "resolved": "0x40b560",
+   "hopper_name": "sub_40b560",
+   "evidence_id": "ev_d21cc3859be13ef27c6cb5fa79ad167aac67b2dd03049a3d58fbf65364d14590",
+   "python_ports": [],
+   "python_slices": [
+    "monte_carlo/trial.py:2565:_adjudicate_staged_orders"
+   ],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 349,
+   "dossier_body_coverage": 0.034,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 7,
+    "rea_insns": 12,
+    "py_branches": 4
+   },
+   "callees": {
+    "total": 28,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x402140",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402360",
+      "python": null,
+      "hopper_lines": 99
+     },
+     {
+      "address": "0x403b00",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x405120",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4058d0",
+      "python": null,
+      "hopper_lines": 186
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x407d00",
+      "python": null,
+      "hopper_lines": 282
+     },
+     {
+      "address": "0x4080f0",
+      "python": null,
+      "hopper_lines": 237
+     },
+     {
+      "address": "0x4083d0",
+      "python": null,
+      "hopper_lines": 202
+     },
+     {
+      "address": "0x408540",
+      "python": null,
+      "hopper_lines": 70
+     },
+     {
+      "address": "0x408660",
+      "python": null,
+      "hopper_lines": 83
+     },
+     {
+      "address": "0x408790",
+      "python": null,
+      "hopper_lines": 169
+     },
+     {
+      "address": "0x4089d0",
+      "python": null,
+      "hopper_lines": 389
+     },
+     {
+      "address": "0x409ad0",
+      "python": null,
+      "hopper_lines": 228
+     },
+     {
+      "address": "0x409de0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40a030",
+      "python": null,
+      "hopper_lines": 538
+     },
+     {
+      "address": "0x40a720",
+      "python": null,
+      "hopper_lines": 81
+     },
+     {
+      "address": "0x40a870",
+      "python": null,
+      "hopper_lines": 67
+     },
+     {
+      "address": "0x40ace0",
+      "python": null,
+      "hopper_lines": 194
+     },
+     {
+      "address": "0x40afa0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40b350",
+      "python": null,
+      "hopper_lines": 79
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40d8c0",
+   "resolved": "0x40d8c0",
+   "hopper_name": "sub_40d8c0",
+   "evidence_id": "ev_6b25314fe6c42e7d19466c7831539f683b9c1c62dd923945332f84e1f3b22b87",
+   "python_ports": [
+    "heuristics/influence.py:599:compute_influence_matrix",
+    "bot/strategy.py:1212:_post_friendly_update"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ComputeInfluenceMatrix"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 367,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 1,
+   "size": {
+    "rea_blocks": 81,
+    "rea_insns": 367,
+    "py_branches": 20
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     1.2,
+     6.0,
+     100.0,
+     500.0
+    ],
+    "floats_absent_in_port": [
+     1.2
+    ],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40df20",
+   "resolved": "0x40df20",
+   "hopper_name": "sub_40df20",
+   "evidence_id": "ev_3c0e657c8f059c8cc01dd19cd9fd3db0e5da2c87d93524c77d57fc23fbd38add",
+   "python_ports": [
+    "bot/analysis.py:69:_phase_handler"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:PhaseHandler"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 60,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 9,
+    "rea_insns": 60,
+    "py_branches": 3
+   },
+   "callees": {
+    "total": 0,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": []
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x40e700",
+   "resolved": "0x40e700",
+   "hopper_name": "sub_40e700",
+   "evidence_id": "ev_5ac1c4c2f3c297124cf6f78e6ab048c3d1d9af3bd8172188239df3bd59ff5140",
+   "python_ports": [],
+   "python_slices": [
+    "state.py:1792:_apply_sco_hook"
+   ],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 87,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 14,
+    "rea_insns": 87,
+    "py_branches": 5
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x465d90",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x410cf0",
+   "resolved": "0x410cf0",
+   "hopper_name": "sub_410cf0",
+   "evidence_id": "ev_a9ca78c7a1aef18e2ea91ac414ee0990f0143436078bfd7ed37832fb6e92b17c",
+   "python_ports": [
+    "bot/strategy.py:162:_destroy_candidate_tree"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 25,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 3,
+    "rea_insns": 25,
+    "py_branches": 7
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x411120",
+   "resolved": "0x411120",
+   "hopper_name": "sub_411120",
+   "evidence_id": "ev_9d545efd51d9478f681b9a1c53722c82524cfa52b6abab4944f7e11747b5408a",
+   "python_ports": [
+    "heuristics/strategy.py:287:post_process_orders",
+    "bot/analysis.py:412:_post_process_orders"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:PostProcessOrders"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 193,
+   "dossier_body_coverage": 0.793,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 50,
+    "rea_insns": 153,
+    "py_branches": 9
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     200
+    ],
+    "cmp_thresholds_absent_in_port": [
+     200
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4119d0",
+   "resolved": "0x4119d0",
+   "hopper_name": "sub_4119d0",
+   "evidence_id": "ev_d2a6d2888241416b17c0982bd6a4e74fc9ba6c2d00e556921b4d83212fa34243",
+   "python_ports": [
+    "bot/analysis.py:96:_analyze_position"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:AnalyzePosition"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 54,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 14,
+    "rea_insns": 54,
+    "py_branches": 2
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x419790",
+   "resolved": "0x419790",
+   "hopper_name": "sub_419790",
+   "evidence_id": "ev_daac73d98d5513d5717e3f577c6ed1350e7631cf6e140d89286e675371b4ce53",
+   "python_ports": [
+    "moves/convoy.py:560:score_convoy_fleet"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ScoreConvoyFleet"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 42,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 1,
+   "size": {
+    "rea_blocks": 8,
+    "rea_insns": 42,
+    "py_branches": 2
+   },
+   "callees": {
+    "total": 1,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x413ba0",
+      "python": null,
+      "hopper_lines": 119
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x41b410",
+   "resolved": "0x41b410",
+   "hopper_name": "sub_41b410",
+   "evidence_id": "ev_2d5f456daec73be59ed881f40b28ff64f493955c031606a5c91c2d17e94ad2f7",
+   "python_ports": [],
+   "python_slices": [
+    "bot/client/_orders.py:371:_initialize_press_session"
+   ],
+   "pair_basis": [
+    "name:ParseHSTResponse"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 700,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 30,
+    "rea_insns": 700,
+    "py_branches": 3
+   },
+   "callees": {
+    "total": 16,
+    "with_python_port": 2,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x466060",
+      "python": [
+       "get_sub_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x418ed0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466480",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466540",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     10,
+     20,
+     30
+    ],
+    "cmp_thresholds_absent_in_port": [
+     10,
+     20,
+     30
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x41c340",
+   "resolved": "0x41c340",
+   "hopper_name": "sub_41c340",
+   "evidence_id": "ev_6284d920f93c999cdfcb538a56d11d393b8faf3a72c0bec8a4be29338b084853",
+   "python_ports": [],
+   "python_slices": [
+    "dispatch/orders.py:88:_register_convoy_destination"
+   ],
+   "pair_basis": [
+    "name:ConvoyList_Insert"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 49,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 14,
+    "rea_insns": 49,
+    "py_branches": 1
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x419a70",
+      "python": null,
+      "hopper_lines": 181
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x41d270",
+   "resolved": "0x41d270",
+   "hopper_name": "sub_41d270",
+   "evidence_id": "ev_289febf78656ffa0747c30853b8d0802dcf34e2a9c713d1d61c1b6b359d3b3f7",
+   "python_ports": [
+    "moves/hold.py:435:assign_hold_supports"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 77,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 11,
+    "rea_insns": 77,
+    "py_branches": 5
+   },
+   "callees": {
+    "total": 5,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x41d360",
+   "resolved": "0x41d360",
+   "hopper_name": "sub_41d360",
+   "evidence_id": "ev_95a6bf8a373afe976735a27204223e9b7b05164bf8dd28b7d73a6b712e1a725d",
+   "python_ports": [
+    "dispatch/alliance.py:28:check_order_alliance"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 557,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 95,
+    "rea_insns": 557,
+    "py_branches": 33
+   },
+   "callees": {
+    "total": 12,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x422a90",
+   "resolved": "0x422a90",
+   "hopper_name": "sub_422a90",
+   "evidence_id": "ev_56b494d2a55aa36480075bac34117be81ca264d084813db33ad73e1fd7072877",
+   "python_ports": [
+    "dispatch/validator.py:38:validate_and_dispatch_order"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1284,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 96,
+    "rea_insns": 1284,
+    "py_branches": 88
+   },
+   "callees": {
+    "total": 21,
+    "with_python_port": 6,
+    "port_calls_them": 3,
+    "not_called_by_port": [
+     {
+      "address": "0x45fc30",
+      "python": [
+       "_unit_location_token",
+       "parse_destination_with_coast"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x466060",
+      "python": [
+       "get_sub_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x460a10",
+      "python": null,
+      "hopper_lines": 46
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x424490",
+   "resolved": "0x424490",
+   "hopper_name": "sub_424490",
+   "evidence_id": "ev_b1dc51494f3e5fde765542efa418367fb3281ad50097953c560c76c6581f8384",
+   "python_ports": [
+    "monte_carlo/trial.py:3117:_refresh_order_table"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:RefreshOrderTable"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 282,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 4,
+   "size": {
+    "rea_blocks": 71,
+    "rea_insns": 282,
+    "py_branches": 36
+   },
+   "callees": {
+    "total": 12,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f260",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x414e10",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x419fa0",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     10.0
+    ],
+    "floats_absent_in_port": [
+     10.0
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     30,
+     50
+    ],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x424850",
+   "resolved": "0x424850",
+   "hopper_name": "sub_424850",
+   "evidence_id": "ev_ae8eebe2bbcc3a91dc4d327cafc6630a90db37a71af1e3aa875c4bb7e57e7680",
+   "python_ports": [
+    "bot/analysis.py:39:_candidate_rank_threshold",
+    "bot/analysis.py:495:_rank_candidates_for_power"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address",
+    "name:Recover"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1219,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 420,
+    "rea_insns": 1219,
+    "py_branches": 51
+   },
+   "callees": {
+    "total": 13,
+    "with_python_port": 2,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f260",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x412540",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x414e10",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x419fa0",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.05,
+     0.078,
+     0.5,
+     0.6,
+     0.666,
+     1.75,
+     1.8,
+     5.0,
+     90.0,
+     100.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     10
+    ],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": [
+     3000.0,
+     10000.0
+    ]
+   },
+   "strings": []
+  },
+  {
+   "address": "0x427960",
+   "resolved": "0x427620",
+   "hopper_name": "sub_427620",
+   "evidence_id": "ev_267858625ddbdd9276a33bcff7479a97fa01d4e4563b7ed9d05b74f1bfa3aa2b",
+   "python_ports": [
+    "heuristics/board.py:399:cal_board"
+   ],
+   "python_slices": [
+    "heuristics/board.py:41:_populate_enemy_rank_matrix",
+    "heuristics/board.py:79:_apply_distressed_ally_rescue",
+    "heuristics/board.py:135:_apply_late_gang_up",
+    "heuristics/board.py:262:_is_weak_influence_target",
+    "heuristics/board.py:278:_apply_weak_elimination_and_sc_grab",
+    "heuristics/board.py:320:_apply_dominance_sweep",
+    "heuristics/board.py:348:_apply_alliance_agreement_enemies"
+   ],
+   "pair_basis": [
+    "name:CAL_BOARD"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": "0x427620",
+   "body_insns": 4633,
+   "dossier_body_coverage": 0.951,
+   "helpers_folded": 11,
+   "size": {
+    "rea_blocks": 729,
+    "rea_insns": 4588,
+    "py_branches": 318
+   },
+   "callees": {
+    "total": 8,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x40bfa0",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x419e60",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x47a5af",
+      "python": null,
+      "hopper_lines": 74
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     1.45,
+     1.7,
+     2.0,
+     5.0,
+     8.0,
+     10.0,
+     15.0,
+     25.0,
+     41.0,
+     50.0,
+     65.0,
+     69.0,
+     70.0,
+     75.0,
+     100.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     -20,
+     -10,
+     10,
+     12,
+     15,
+     16,
+     60,
+     70,
+     75,
+     80,
+     85
+    ],
+    "cmp_thresholds_absent_in_port": [
+     12
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "Due to a proximity to victory tie, We are siding with power that we have more trust",
+    "Near End Game Factor = %.1f",
+    "New selection is based on Alliances against (%s)",
+    "New selection is possible enemy 1 (%s) as our identified enemy (random number %d < %d)",
+    "New selection is possible enemy 1 (%s) as our identified enemy - we are keeping our opening alliance",
+    "New selection is possible enemy 2 (%s) as our identified enemy (random number %d > %d)",
+    "New selection is possible enemy 2 (%s) as our identified enemy - we are keeping our opening alliance)",
+    "Other power (%s) is close to Victory: But I will keep my alliance with him",
+    "Our Deceit Level = %d",
+    "Our ally (%s) is distressed and being attacked by its 2 worst enemies- who only have 1 enemy each",
+    "Our top 4 feared powers are (%s)(%s)(%s)(%s)",
+    "The lone lead power is (%s)",
+    "We are ahead of everyone and will make everyone our enemy- ha ha ha ha",
+    "We are at war with at least one of our Top 3 enemies and need to validate",
+    "We are at war with our opening selected enemy (%s) and sticking with it",
+    "We are at war with our top 2 enemies",
+    "We are attempting to gang up on (%s): with our good ally (%s)",
+    "We are attempting to gang up on our #1 (%s): with our good ally (%s)",
+    "We are attempting to gang up on our #2 (%s): with our good ally (%s)",
+    "We are close to elimination: Near End Game Factor = %.1f",
+    "We are very small and trying to grab an SC from (%s): who left one vulnerable",
+    "We have %d enemies",
+    "We have set (%s) as enemy because of an alliance agreement",
+    "We have validated possible enemy 1 (%s) as our identified enemy",
+    "We have validated possible enemy 3 (%s) as our identified enemy",
+    "We need to eliminate (%s): who has 1 SC (even though a power is close to victory)",
+    "We need to eliminate (%s): who is very weak",
+    "We need to eliminate (%s): who is very weak (even though a power is close to victory)",
+    "We select (%s) as enemy because we trust him less",
+    "We select (%s) as enemy because we we maybe getting a peace signal from poss enemy1",
+    "We select (%s) as enemy because we we maybe getting a peace signal from poss enemy2",
+    "We select (%s) by random selection (random number %d < %d)",
+    "We select (%s) by random selection (random number %d > %d)",
+    "We still have our opening best Ally (%s)",
+    "We still have our opening second best Ally (%s)"
+   ]
+  },
+  {
+   "address": "0x42c730",
+   "resolved": "0x42c040",
+   "hopper_name": "sub_42c040",
+   "evidence_id": "ev_b821c1921f1bf5a38a22585f3fe68b07483849b00d35eaeea1a7df29a73397e9",
+   "python_ports": [
+    "bot/strategy.py:232:_stabbed"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:STABBED"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": "0x42c040",
+   "body_insns": 39,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 5,
+   "size": {
+    "rea_blocks": 4,
+    "rea_insns": 618,
+    "py_branches": 70
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40d310",
+      "python": null,
+      "hopper_lines": 54
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "message: %s"
+   ]
+  },
+  {
+   "address": "0x42dc40",
+   "resolved": "0x42db50",
+   "hopper_name": "sub_42db50",
+   "evidence_id": "ev_75893c84989215a6e2cd426b3240fe2d04cbf751edc726eab320c747c82f2514",
+   "python_ports": [
+    "bot/strategy.py:876:_friendly"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:FRIENDLY"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": "0x42db50",
+   "body_insns": 340,
+   "dossier_body_coverage": 0.982,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 97,
+    "rea_insns": 379,
+    "py_branches": 0
+   },
+   "callees": {
+    "total": 7,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x40d7e0",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     -50,
+     10,
+     16,
+     50
+    ],
+    "cmp_thresholds_absent_in_port": [
+     -50,
+     10,
+     16,
+     50
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "I think we are getting a peace signal from (%s)"
+   ]
+  },
+  {
+   "address": "0x42ee90",
+   "resolved": "0x42ee90",
+   "hopper_name": "sub_42ee90",
+   "evidence_id": "ev_e272f01d880d0ad9071229fbd5636d345974c626598ff643591b8fab35c0519f",
+   "python_ports": [
+    "bot/strategy.py:882:_hostility"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:HOSTILITY"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 954,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 4,
+   "size": {
+    "rea_blocks": 184,
+    "rea_insns": 954,
+    "py_branches": 90
+   },
+   "callees": {
+    "total": 17,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40bfa0",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x40d7e0",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x4108a0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4113d0",
+      "python": null,
+      "hopper_lines": 336
+     },
+     {
+      "address": "0x419e60",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x421570",
+      "python": null,
+      "hopper_lines": 60
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x427620",
+      "python": null,
+      "hopper_lines": 38249
+     },
+     {
+      "address": "0x47a5af",
+      "python": null,
+      "hopper_lines": 74
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     3.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     10,
+     15,
+     16,
+     25,
+     50,
+     75
+    ],
+    "cmp_thresholds_absent_in_port": [
+     10
+    ],
+    "port_floats_absent_in_binary": [
+     17.0
+    ]
+   },
+   "strings": [
+    "A good mutual enemy with our best Ally is (%s)",
+    "Attempting to actively form peace with (%s)",
+    "Enemy is now desired just starting this turn (%d)<(%d)",
+    "Enemy not desired yet",
+    "We thought we were going to attack (%s)- but changed our minds"
+   ]
+  },
+  {
+   "address": "0x433ae0",
+   "resolved": "0x433ae0",
+   "hopper_name": "sub_433ae0",
+   "evidence_id": "ev_2bad3f3dbb472fc5a15f85f768271876d85f5459bdee5ded11233af8110197d5",
+   "python_ports": [],
+   "python_slices": [
+    "heuristics/_primitives.py:54:build_candidate_list_find"
+   ],
+   "pair_basis": [
+    "name:g_BuildCandidateList"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 117,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 12,
+    "rea_insns": 117,
+    "py_branches": 0
+   },
+   "callees": {
+    "total": 7,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x40eee0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x41aa20",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x430b90",
+      "python": null,
+      "hopper_lines": 186
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x433ce0",
+   "resolved": "0x433ce0",
+   "hopper_name": "sub_433ce0",
+   "evidence_id": "ev_7919e85b640efa833878a94a6a146c80aaeb702148bd381b9095e959eb9b5c07",
+   "python_ports": [
+    "heuristics/_primitives.py:67:evaluate_province_score",
+    "state.py:1982:get_max_threatening_adj_scs"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:EvaluateProvinceScore"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 297,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 76,
+    "rea_insns": 297,
+    "py_branches": 31
+   },
+   "callees": {
+    "total": 7,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40fab0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     3.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x436470",
+   "resolved": "0x436470",
+   "hopper_name": "sub_436470",
+   "evidence_id": "ev_9b69abe7554b5b53683050ac83d53c4a04ba9f1ef571d04f8e8112def7303ace",
+   "python_ports": [
+    "heuristics/influence.py:299:apply_influence_scores"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "manual-rea-evidence"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1129,
+   "dossier_body_coverage": 0.947,
+   "helpers_folded": 11,
+   "size": {
+    "rea_blocks": 250,
+    "rea_insns": 1069,
+    "py_branches": 83
+   },
+   "callees": {
+    "total": 15,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x419d80",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     2.0,
+     5.0,
+     6.0,
+     8.0,
+     9.0,
+     100.0
+    ],
+    "floats_absent_in_port": [
+     2.0,
+     6.0
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     65
+    ],
+    "port_floats_absent_in_binary": [
+     100000000.0,
+     1e+22
+    ]
+   },
+   "strings": []
+  },
+  {
+   "address": "0x437600",
+   "resolved": "0x437600",
+   "hopper_name": "sub_437600",
+   "evidence_id": "ev_e912641e33657372cdcb6abb678b6ee2475dca4756dc13e53fd010b801f7b9fd",
+   "python_ports": [
+    "monte_carlo/evaluation.py:140:evaluate_order_score"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ScoreOrderSet"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1447,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 404,
+    "rea_insns": 1447,
+    "py_branches": 132
+   },
+   "callees": {
+    "total": 9,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40e890",
+      "python": null,
+      "hopper_lines": 28
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.05,
+     0.050000001,
+     0.1,
+     0.15,
+     0.150000006,
+     0.2,
+     0.25,
+     0.3,
+     0.300000012,
+     0.330000013,
+     0.35,
+     0.4,
+     0.5,
+     0.75,
+     0.800000012,
+     0.85,
+     100.0,
+     500.0
+    ],
+    "floats_absent_in_port": [
+     0.85
+    ],
+    "binary_cmp_thresholds": [
+     10,
+     15
+    ],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x43a000",
+   "resolved": "0x439ed0",
+   "hopper_name": "sub_439ed0",
+   "evidence_id": "ev_1149428205ce144fabb8adb68dd47eddf5e202eb79ceb3258b6385ab862dc19a",
+   "python_ports": [
+    "bot/strategy.py:430:_deviate_move"
+   ],
+   "python_slices": [
+    "bot/strategy.py:745:_apply_deviate_stab",
+    "bot/strategy.py:810:_apply_deviate_neutral",
+    "bot/strategy.py:836:_apply_deviate_consequences"
+   ],
+   "pair_basis": [
+    "name:DEVIATE_MOVE"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": "0x439ed0",
+   "body_insns": 2049,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 10,
+   "size": {
+    "rea_blocks": 565,
+    "rea_insns": 2130,
+    "py_branches": 138
+   },
+   "callees": {
+    "total": 14,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402140",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40bfa0",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x410a60",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x419e60",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x47a5af",
+      "python": null,
+      "hopper_lines": 74
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     -10,
+     16,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     16,
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "(%s) has been stabbed by mutual enemy: Reset trust and turns unallied counter",
+    "Power (%s) did not make his expected move this turn",
+    "Power (%s) did not make his expected support order this turn",
+    "We have been attacked by (%s) during the retreat phase",
+    "We have been attacked by (%s) during the turn",
+    "We have been stabbed and will try to eliminate past descresions with (%s) which we may now share an enemy with",
+    "We have been stabbed by (%s) during the retreat phase",
+    "We have been stabbed by (%s) during the turn",
+    "We have unduly pressured by (%s) during this turn"
+   ]
+  },
+  {
+   "address": "0x43bd20",
+   "resolved": "0x43bd20",
+   "hopper_name": "sub_43bd20",
+   "evidence_id": "ev_eb4566045ce34e347e608f589a2f972f75519f203157ade8dfcd6952a6d191df",
+   "python_ports": [
+    "heuristics/_primitives.py:723:evaluate_alliance_score"
+   ],
+   "python_slices": [
+    "heuristics/_primitives.py:349:_apply_sc_controller_phase",
+    "heuristics/_primitives.py:1280:evaluate_alliance_scores_batch"
+   ],
+   "pair_basis": [
+    "name:EvaluateAllianceScore"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1840,
+   "dossier_body_coverage": 0.844,
+   "helpers_folded": 17,
+   "size": {
+    "rea_blocks": 394,
+    "rea_insns": 1553,
+    "py_branches": 289
+   },
+   "callees": {
+    "total": 11,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f380",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c270",
+      "python": null,
+      "hopper_lines": 101
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.0625,
+     0.1,
+     0.125,
+     0.5,
+     0.75,
+     0.85,
+     3.0,
+     6.0,
+     10.0,
+     100.0,
+     300.0,
+     10000.0
+    ],
+    "floats_absent_in_port": [
+     0.0625,
+     0.125,
+     0.5
+    ],
+    "binary_cmp_thresholds": [
+     10,
+     20,
+     30,
+     35,
+     50,
+     65,
+     1000
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x43d910",
+   "resolved": "0x43d910",
+   "hopper_name": "sub_43d910",
+   "evidence_id": "ev_b97e434063701af41de931c1911e9ae895e1f236a1b698b5b86205fe825e5320",
+   "python_ports": [
+    "moves/hold.py:116:enumerate_hold_orders",
+    "moves/hold.py:334:_build_hold_order_seqs"
+   ],
+   "python_slices": [
+    "moves/hold.py:196:_build_reach_matrices"
+   ],
+   "pair_basis": [
+    "name:EnumerateHoldOrders"
+   ],
+   "label_conflict": [
+    "enumerate_hold_orders cites 0x455fd0"
+   ],
+   "not_a_function_entry": null,
+   "body_insns": 464,
+   "dossier_body_coverage": 0.983,
+   "helpers_folded": 5,
+   "size": {
+    "rea_blocks": 107,
+    "rea_insns": 456,
+    "py_branches": 36
+   },
+   "callees": {
+    "total": 15,
+    "with_python_port": 3,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x460be0",
+      "python": [
+       "_reset_per_trial_state"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f380",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x41c270",
+      "python": null,
+      "hopper_lines": 101
+     },
+     {
+      "address": "0x460670",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466c40",
+      "python": null,
+      "hopper_lines": 61
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x43dfb0",
+   "resolved": "0x43dfb0",
+   "hopper_name": "sub_43dfb0",
+   "evidence_id": "ev_1a2deb2c680508d5c6eed380d0f492b092de895ab200853fb5a923345de06464",
+   "python_ports": [
+    "moves/hold.py:256:compute_safe_reach"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 280,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 4,
+   "size": {
+    "rea_blocks": 81,
+    "rea_insns": 280,
+    "py_branches": 28
+   },
+   "callees": {
+    "total": 6,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x43e370",
+   "resolved": "0x43e370",
+   "hopper_name": "sub_43e370",
+   "evidence_id": "ev_c7341b20b11e0c253cc3fdf5b4563e8a6befe2d37f67d8ee4ed928e1f9c14e5a",
+   "python_ports": [
+    "moves/support.py:347:build_support_proposals"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:BuildSupportProposals"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 655,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 161,
+    "rea_insns": 655,
+    "py_branches": 53
+   },
+   "callees": {
+    "total": 16,
+    "with_python_port": 2,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x463690",
+      "python": [
+       "_build_movement_order_token"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4064f0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x410910",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x419240",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x42e120",
+      "python": null,
+      "hopper_lines": 57
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     15
+    ],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4401f0",
+   "resolved": "0x4401f0",
+   "hopper_name": "sub_4401f0",
+   "evidence_id": "ev_d917f3568bb9a8e3f79da4ab39f91b35a53156655b57c339cd02c0deb0009982",
+   "python_ports": [
+    "heuristics/strategy.py:491:compute_press",
+    "bot/analysis.py:418:_compute_press"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ComputePress"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 152,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 46,
+    "rea_insns": 152,
+    "py_branches": 19
+   },
+   "callees": {
+    "total": 4,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4412c0",
+   "resolved": "0x4412c0",
+   "hopper_name": "sub_4412c0",
+   "evidence_id": "ev_c0da90bcce9d7b06fdc2cc6ddb31aa67b32f0bd5515a0faaeaa9770842442fd7",
+   "python_ports": [
+    "moves/support.py:157:assign_support_order"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 426,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 114,
+    "rea_insns": 426,
+    "py_branches": 51
+   },
+   "callees": {
+    "total": 6,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.85
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x442040",
+   "resolved": "0x442040",
+   "hopper_name": "sub_442040",
+   "evidence_id": "ev_d671a49980d3bb86946ff106904e2161f5ae62547492039f0ac7e727f316e1b3",
+   "python_ports": [
+    "heuristics/win.py:333:compute_win_removes"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 312,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 61,
+    "rea_insns": 312,
+    "py_branches": 6
+   },
+   "callees": {
+    "total": 14,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f660",
+      "python": null,
+      "hopper_lines": 54
+     },
+     {
+      "address": "0x412800",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x4150e0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x41a010",
+      "python": null,
+      "hopper_lines": 51
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x461010",
+      "python": null,
+      "hopper_lines": 29
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     16
+    ],
+    "cmp_thresholds_absent_in_port": [
+     16
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "Removal selected : %s %s"
+   ]
+  },
+  {
+   "address": "0x442770",
+   "resolved": "0x442770",
+   "hopper_name": "sub_442770",
+   "evidence_id": "ev_e48b7c64d99aef06f3eea6cba6fead5ee11e91e08b7ae3f62880f2e83b399bc2",
+   "python_ports": [
+    "monte_carlo/trial.py:2773:_update_ally_order_score"
+   ],
+   "python_slices": [
+    "monte_carlo/trial.py:2603:_build_alliance_candidate_batches",
+    "state.py:2042:add_key_weight"
+   ],
+   "pair_basis": [
+    "name:UpdateAllyOrderScore"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1598,
+   "dossier_body_coverage": 0.952,
+   "helpers_folded": 9,
+   "size": {
+    "rea_blocks": 446,
+    "rea_insns": 1521,
+    "py_branches": 109
+   },
+   "callees": {
+    "total": 30,
+    "with_python_port": 4,
+    "port_calls_them": 3,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4054c0",
+      "python": null,
+      "hopper_lines": 41
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x40e310",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f260",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f380",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x410ad0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4150e0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x419f30",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x41a010",
+      "python": null,
+      "hopper_lines": 51
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x41c270",
+      "python": null,
+      "hopper_lines": 101
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     16,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     16,
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x443ed0",
+   "resolved": "0x443ed0",
+   "hopper_name": "sub_443ed0",
+   "evidence_id": "ev_a7842c23ed1b4d3cf13f415a8d58d571bfa2bbdde7bb6e7e5943405ca4bd474d",
+   "python_ports": [],
+   "python_slices": [
+    "bot/gof.py:134:_send_gof"
+   ],
+   "pair_basis": [
+    "name:AwaitPressAndSendGOF"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 140,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 26,
+    "rea_insns": 140,
+    "py_branches": 0
+   },
+   "callees": {
+    "total": 10,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x411740",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4117d0",
+      "python": null,
+      "hopper_lines": 138
+     },
+     {
+      "address": "0x4424e0",
+      "python": null,
+      "hopper_lines": 113
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4440e0",
+   "resolved": "0x4440e0",
+   "hopper_name": "sub_4440e0",
+   "evidence_id": "ev_838254854f4b905148e7e743365a028621d358e13772892e4f64a72c6f9c433e",
+   "python_ports": [
+    "heuristics/strategy.py:21:compute_draw_vote"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ComputeDrawVote"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1462,
+   "dossier_body_coverage": 0.161,
+   "helpers_folded": 8,
+   "size": {
+    "rea_blocks": 39,
+    "rea_insns": 235,
+    "py_branches": 97
+   },
+   "callees": {
+    "total": 22,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40e210",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41ad70",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x41af00",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x422170",
+      "python": null,
+      "hopper_lines": 46
+     },
+     {
+      "address": "0x422200",
+      "python": null,
+      "hopper_lines": 60
+     },
+     {
+      "address": "0x460a10",
+      "python": null,
+      "hopper_lines": 46
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x445580",
+   "resolved": "0x445580",
+   "hopper_name": "sub_445580",
+   "evidence_id": "ev_555880efb0d8ead01185de9722f8fe6f238cd96fe2105425cda5fdb6b5b45e8a",
+   "python_ports": [
+    "bot/orders.py:174:_init_scoring_state"
+   ],
+   "python_slices": [
+    "bot/orders.py:142:_build_position_urgency"
+   ],
+   "pair_basis": [
+    "name:InitScoringState"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 447,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 103,
+    "rea_insns": 447,
+    "py_branches": 30
+   },
+   "callees": {
+    "total": 12,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f7f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41a180",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x41afd0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.7,
+     10000.0
+    ],
+    "floats_absent_in_port": [
+     0.7
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     65
+    ],
+    "port_floats_absent_in_binary": [
+     10.0
+    ]
+   },
+   "strings": []
+  },
+  {
+   "address": "0x445be0",
+   "resolved": "0x445be0",
+   "hopper_name": "sub_445be0",
+   "evidence_id": "ev_4a67e9ff62efe95a1dd66019360b3c109fb0a608d3faee3351b4af1d9e9a412d",
+   "python_ports": [
+    "heuristics/_primitives.py:134:compute_winter_builds"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ComputeWinterBuilds"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 341,
+   "dossier_body_coverage": 0.1,
+   "helpers_folded": 4,
+   "size": {
+    "rea_blocks": 3,
+    "rea_insns": 34,
+    "py_branches": 41
+   },
+   "callees": {
+    "total": 4,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f7f0",
+      "python": null,
+      "hopper_lines": 43
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     30.0,
+     10000.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4460a0",
+   "resolved": "0x4460a0",
+   "hopper_name": "sub_4460a0",
+   "evidence_id": "ev_bc8f4c3a00f2ba1c03ec41e17569671c54a52feadbe7e2371bec037e1c9090f4",
+   "python_ports": [
+    "moves/support.py:37:build_support_opportunities"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 315,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 4,
+   "size": {
+    "rea_blocks": 83,
+    "rea_insns": 315,
+    "py_branches": 36
+   },
+   "callees": {
+    "total": 8,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x419800",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4466e0",
+   "resolved": "0x4466e0",
+   "hopper_name": "sub_4466e0",
+   "evidence_id": "ev_1bc925b7c59f37086e603661842ea2d6d96946a3d0a2a12f7d5b21e29774b9f6",
+   "python_ports": [
+    "heuristics/influence.py:492:compute_alliance_score",
+    "heuristics/influence.py:534:set_opening_targets",
+    "monte_carlo/generation.py:108:generate_orders"
+   ],
+   "python_slices": [
+    "heuristics/influence.py:204:_normalize_movement_heat",
+    "monte_carlo/generation.py:21:_initial_build_heat_seed",
+    "monte_carlo/generation.py:44:_diffuse_integer_heat",
+    "monte_carlo/generation.py:61:_populate_candidate_scores_from_heat",
+    "monte_carlo/generation.py:87:_sum_influence_heat"
+   ],
+   "pair_basis": [
+    "name:GenerateOrders"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 920,
+   "dossier_body_coverage": 0.938,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 182,
+    "rea_insns": 863,
+    "py_branches": 45
+   },
+   "callees": {
+    "total": 19,
+    "with_python_port": 3,
+    "port_calls_them": 3,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x419070",
+      "python": null,
+      "hopper_lines": 168
+     },
+     {
+      "address": "0x41a3a0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     -3.0,
+     1.2,
+     2.5,
+     3.0,
+     100.0,
+     500.0
+    ],
+    "floats_absent_in_port": [
+     1.2
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     65,
+     1536
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     65,
+     1536
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x447460",
+   "resolved": "0x447460",
+   "hopper_name": "sub_447460",
+   "evidence_id": "ev_3c34db8c56c3e90cab3bcecf37189ae8a6d83eacdabb3dbad4840338685a830d",
+   "python_ports": [
+    "heuristics/scoring.py:482:score_provinces"
+   ],
+   "python_slices": [
+    "heuristics/scoring.py:130:_cleanup_sc_designations"
+   ],
+   "pair_basis": [
+    "name:ScoreProvinces"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 2870,
+   "dossier_body_coverage": 0.86,
+   "helpers_folded": 7,
+   "size": {
+    "rea_blocks": 672,
+    "rea_insns": 2468,
+    "py_branches": 255
+   },
+   "callees": {
+    "total": 18,
+    "with_python_port": 2,
+    "port_calls_them": 2,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.95,
+     2.0,
+     3.0,
+     6.0
+    ],
+    "floats_absent_in_port": [
+     6.0
+    ],
+    "binary_cmp_thresholds": [
+     10,
+     12,
+     15,
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4498d0",
+   "resolved": "0x447460",
+   "hopper_name": "sub_447460",
+   "evidence_id": "ev_71b8c4626264e1243a4fb95fdc9d7720e685e544ecd8c38a025cc6999c2540cc",
+   "python_ports": [
+    "heuristics/scoring.py:1405:score_order_candidates_own_power"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:ScoreOrderCandidates_OwnPower"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": "0x447460",
+   "body_insns": 2328,
+   "dossier_body_coverage": 0.826,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 524,
+    "rea_insns": 2468,
+    "py_branches": 28
+   },
+   "callees": {
+    "total": 17,
+    "with_python_port": 2,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x433ce0",
+      "python": [
+       "evaluate_province_score",
+       "get_max_threatening_adj_scs"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x445be0",
+      "python": [
+       "compute_winter_builds"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.95,
+     3.0,
+     6.0
+    ],
+    "floats_absent_in_port": [
+     0.95,
+     3.0,
+     6.0
+    ],
+    "binary_cmp_thresholds": [
+     10,
+     12,
+     15,
+     20,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     12,
+     15,
+     20,
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44a040",
+   "resolved": "0x44a040",
+   "hopper_name": "sub_44a040",
+   "evidence_id": "ev_c82b93b6e1ecd1a58737e8ee0ef219bfbbd26a259afb81326c842a5fd1a5133a",
+   "python_ports": [
+    "heuristics/scoring.py:78:_populate_threat_path_scores",
+    "heuristics/scoring.py:162:score_order_candidates_all_powers"
+   ],
+   "python_slices": [
+    "heuristics/scoring.py:104:_apply_enemy_sc_flank_denial"
+   ],
+   "pair_basis": [
+    "name:ScoreOrderCandidates_AllPowers"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1579,
+   "dossier_body_coverage": 0.935,
+   "helpers_folded": 12,
+   "size": {
+    "rea_blocks": 406,
+    "rea_insns": 1476,
+    "py_branches": 153
+   },
+   "callees": {
+    "total": 16,
+    "with_python_port": 2,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x47b370",
+      "python": [
+       "_safe_pow"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x47b5f6",
+      "python": null,
+      "hopper_lines": 37
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     0.3,
+     0.5,
+     10.0
+    ],
+    "floats_absent_in_port": [
+     0.3
+    ],
+    "binary_cmp_thresholds": [
+     -10,
+     10,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44b760",
+   "resolved": "0x44b760",
+   "hopper_name": "sub_44b760",
+   "evidence_id": "ev_8581b8ccfbcc92f942d9da77854bb59035c01452cc5f7eaa8cd18396070aa3bd",
+   "python_ports": [
+    "moves/convoy.py:578:build_convoy_orders"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 295,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 27,
+    "rea_insns": 295,
+    "py_branches": 20
+   },
+   "callees": {
+    "total": 10,
+    "with_python_port": 2,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x41c340",
+      "python": [
+       "_register_convoy_destination"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x411cf0",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x437510",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x460880",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x461560",
+      "python": null,
+      "hopper_lines": 63
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44bd40",
+   "resolved": "0x44bd40",
+   "hopper_name": "sub_44bd40",
+   "evidence_id": "ev_fe537209fc848929b1a530c5787ff66ee7342dc95d4e21cfe2e7375fe6cfd877",
+   "python_ports": [
+    "heuristics/win.py:201:compute_win_builds"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 828,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 200,
+    "rea_insns": 828,
+    "py_branches": 26
+   },
+   "callees": {
+    "total": 24,
+    "with_python_port": 1,
+    "port_calls_them": 1,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x402650",
+      "python": null,
+      "hopper_lines": 149
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40cd30",
+      "python": null,
+      "hopper_lines": 231
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x412800",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x4150e0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x41a010",
+      "python": null,
+      "hopper_lines": 51
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x41cd70",
+      "python": null,
+      "hopper_lines": 246
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x460f60",
+      "python": null,
+      "hopper_lines": 34
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     100.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     16,
+     42,
+     50
+    ],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": [
+     35.0
+    ]
+   },
+   "strings": [
+    "%s %d",
+    "Waiving %d builds"
+   ]
+  },
+  {
+   "address": "0x44c8e0",
+   "resolved": "0x44c8e0",
+   "hopper_name": "sub_44c8e0",
+   "evidence_id": "ev_eca0f3576f55ecb211f308ec5c6753f76fc06103ab2b2e213ff39e4515153879",
+   "python_ports": [
+    "monte_carlo/trial.py:3239:update_score_state"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:UpdateScoreState"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 78,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 17,
+    "rea_insns": 78,
+    "py_branches": 6
+   },
+   "callees": {
+    "total": 4,
+    "with_python_port": 2,
+    "port_calls_them": 2,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44c9d0",
+   "resolved": "0x44c9d0",
+   "hopper_name": "sub_44c9d0",
+   "evidence_id": "ev_af42620e7109b4a94213823e34090e6852498019e98c472291212d0c3169ec74",
+   "python_ports": [
+    "bot/analysis.py:440:_prepare_draw_vote_set"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:PrepareDrawVoteSet"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 136,
+   "dossier_body_coverage": 0.794,
+   "helpers_folded": 1,
+   "size": {
+    "rea_blocks": 7,
+    "rea_insns": 108,
+    "py_branches": 11
+   },
+   "callees": {
+    "total": 8,
+    "with_python_port": 2,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44cc50",
+   "resolved": "0x44cc50",
+   "hopper_name": "sub_44cc50",
+   "evidence_id": "ev_df930de9312b68c77c9f7e44e38b8430d34729ddbb1955b713eba2d219becc23",
+   "python_ports": [
+    "dispatch/orders.py:176:dispatch_single_order"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:DispatchSingleOrder"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 490,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 6,
+   "size": {
+    "rea_blocks": 22,
+    "rea_insns": 490,
+    "py_branches": 139
+   },
+   "callees": {
+    "total": 21,
+    "with_python_port": 4,
+    "port_calls_them": 2,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x466060",
+      "python": [
+       "get_sub_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x437510",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x440840",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x440900",
+      "python": null,
+      "hopper_lines": 729
+     },
+     {
+      "address": "0x440d90",
+      "python": null,
+      "hopper_lines": 737
+     },
+     {
+      "address": "0x44bbe0",
+      "python": null,
+      "hopper_lines": 42
+     },
+     {
+      "address": "0x460880",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x461560",
+      "python": null,
+      "hopper_lines": 63
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44d6c0",
+   "resolved": "0x44d6c0",
+   "hopper_name": "sub_44d6c0",
+   "evidence_id": "ev_1615c9a002aac4a1a8602fdc16b8e04b892a4ad5f8372c35b32faca8f980a184",
+   "python_ports": [
+    "monte_carlo/evaluation.py:661:insert_candidate_record"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:InsertCandidateRecord"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 94,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 12,
+    "rea_insns": 94,
+    "py_branches": 11
+   },
+   "callees": {
+    "total": 3,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x40f1c0",
+      "python": null,
+      "hopper_lines": 52
+     },
+     {
+      "address": "0x44d4b0",
+      "python": null,
+      "hopper_lines": 138
+     },
+     {
+      "address": "0x465cf0",
+      "python": null,
+      "hopper_lines": 56
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44d7b0",
+   "resolved": "0x44d7b0",
+   "hopper_name": "sub_44d7b0",
+   "evidence_id": "ev_43370b755193c7b072481c63fcf6a9172e7d127f24b25720be3848bdcf26ced5",
+   "python_ports": [
+    "bot/orders.py:72:_init_position_for_orders"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:InitPositionForOrders"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 577,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 11,
+   "size": {
+    "rea_blocks": 106,
+    "rea_insns": 577,
+    "py_branches": 74
+   },
+   "callees": {
+    "total": 22,
+    "with_python_port": 3,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x44d6c0",
+      "python": [
+       "insert_candidate_record"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x419150",
+      "python": null,
+      "hopper_lines": 151
+     },
+     {
+      "address": "0x41c480",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x4225b0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x43ee00",
+      "python": null,
+      "hopper_lines": 1574
+     },
+     {
+      "address": "0x446540",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     10000.0
+    ],
+    "floats_absent_in_port": [
+     10000.0
+    ],
+    "binary_cmp_thresholds": [
+     30,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     65
+    ],
+    "port_floats_absent_in_binary": [
+     300.0
+    ]
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44e070",
+   "resolved": "0x44e070",
+   "hopper_name": "sub_44e070",
+   "evidence_id": "ev_b99a20f3ddced11f4f496e95f51be73181a65cf5778d30e9cd47e2553b9e46bd",
+   "python_ports": [
+    "monte_carlo/evaluation.py:787:evaluate_order_proposal"
+   ],
+   "python_slices": [
+    "monte_carlo/evaluation.py:738:_early_game_order_adjacency_bonus"
+   ],
+   "pair_basis": [
+    "name:EvaluateOrderProposal"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1396,
+   "dossier_body_coverage": 0.908,
+   "helpers_folded": 6,
+   "size": {
+    "rea_blocks": 352,
+    "rea_insns": 1268,
+    "py_branches": 112
+   },
+   "callees": {
+    "total": 37,
+    "with_python_port": 6,
+    "port_calls_them": 3,
+    "not_called_by_port": [
+     {
+      "address": "0x460be0",
+      "python": [
+       "_reset_per_trial_state"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x463690",
+      "python": [
+       "_build_movement_order_token"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402140",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x4225b0",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x4226e0",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x433a20",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x446540",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x460670",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x4606e0",
+      "python": null,
+      "hopper_lines": 29
+     },
+     {
+      "address": "0x460770",
+      "python": null,
+      "hopper_lines": 29
+     },
+     {
+      "address": "0x4607f0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x460880",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x461560",
+      "python": null,
+      "hopper_lines": 63
+     },
+     {
+      "address": "0x465cf0",
+      "python": null,
+      "hopper_lines": 56
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466c40",
+      "python": null,
+      "hopper_lines": 61
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     10000.0
+    ],
+    "floats_absent_in_port": [
+     10000.0
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     30,
+     65
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     65
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x44f5c0",
+   "resolved": "0x44f5c0",
+   "hopper_name": "sub_44f5c0",
+   "evidence_id": "ev_65007617f8d28c34d805119ef11c58858a9faa73b2aca2ccbc01299bf61f6c91",
+   "python_ports": [
+    "monte_carlo/trial.py:479:_apply_convoy_swap",
+    "monte_carlo/trial.py:1091:process_turn"
+   ],
+   "python_slices": [
+    "moves/convoy.py:390:populate_convoy_routes",
+    "moves/convoy.py:421:_populate_convoy_routes_for_src",
+    "moves/convoy.py:470:_enumerate_convoy_chains_for_src",
+    "monte_carlo/trial.py:90:_step3_designation_trust",
+    "monte_carlo/trial.py:156:_apply_step3_support_filter",
+    "monte_carlo/trial.py:208:_accumulate_other_score",
+    "monte_carlo/trial.py:249:_apply_step4_xdo_constraint",
+    "monte_carlo/trial.py:292:_build_negotiated_province_context",
+    "monte_carlo/trial.py:345:_resolve_own_occupied_destination",
+    "monte_carlo/trial.py:391:_dedupe_step5_fleet_candidates",
+    "monte_carlo/trial.py:412:_apply_step1_source_dedup",
+    "monte_carlo/trial.py:426:_apply_step6_target_filter",
+    "monte_carlo/trial.py:577:_post_phase_hold_support_allowed",
+    "monte_carlo/trial.py:600:_build_post_phase_mto",
+    "monte_carlo/trial.py:637:_apply_post_phase_support_sweep",
+    "monte_carlo/trial.py:722:_candidate_tree_score",
+    "monte_carlo/trial.py:735:_reset_trial_proximity_score",
+    "monte_carlo/trial.py:755:_recompute_trial_support_demand",
+    "monte_carlo/trial.py:808:_secondary_exploit_enabled",
+    "monte_carlo/trial.py:826:_select_secondary_exploit_target",
+    "monte_carlo/trial.py:905:_proposal_support_trust_allowed",
+    "monte_carlo/trial.py:983:_build_proposal_support_order",
+    "bot/client/_orders.py:180:_prepare_proposal_orders_for_turn",
+    "bot/client/_orders.py:207:_run_send_gof_candidate_pass"
+   ],
+   "pair_basis": [
+    "name:ProcessTurn"
+   ],
+   "label_conflict": [
+    "process_turn cites 0x453220"
+   ],
+   "not_a_function_entry": null,
+   "body_insns": 6368,
+   "dossier_body_coverage": 0.988,
+   "helpers_folded": 42,
+   "size": {
+    "rea_blocks": 1563,
+    "rea_insns": 6294,
+    "py_branches": 664
+   },
+   "callees": {
+    "total": 69,
+    "with_python_port": 10,
+    "port_calls_them": 6,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x41c340",
+      "python": [
+       "_register_convoy_destination"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x466060",
+      "python": [
+       "get_sub_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402140",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402650",
+      "python": null,
+      "hopper_lines": 149
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x404fd0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x4075b0",
+      "python": null,
+      "hopper_lines": 90
+     },
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x40e9b0",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f6f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f7f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x411cf0",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x412800",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x41a010",
+      "python": null,
+      "hopper_lines": 51
+     },
+     {
+      "address": "0x41a090",
+      "python": null,
+      "hopper_lines": 31
+     },
+     {
+      "address": "0x41c1e0",
+      "python": null,
+      "hopper_lines": 71
+     },
+     {
+      "address": "0x4273a0",
+      "python": null,
+      "hopper_lines": 93
+     },
+     {
+      "address": "0x440840",
+      "python": null,
+      "hopper_lines": 33
+     },
+     {
+      "address": "0x440900",
+      "python": null,
+      "hopper_lines": 729
+     },
+     {
+      "address": "0x440d90",
+      "python": null,
+      "hopper_lines": 737
+     },
+     {
+      "address": "0x44bbe0",
+      "python": null,
+      "hopper_lines": 42
+     },
+     {
+      "address": "0x460670",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x4606e0",
+      "python": null,
+      "hopper_lines": 29
+     },
+     {
+      "address": "0x460770",
+      "python": null,
+      "hopper_lines": 29
+     },
+     {
+      "address": "0x4607f0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x47bac0",
+      "python": null,
+      "hopper_lines": 57
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     2.0
+    ],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     9,
+     10,
+     15,
+     16,
+     20,
+     30,
+     35,
+     40,
+     50,
+     60,
+     65,
+     80,
+     85,
+     90,
+     500,
+     5000,
+     32287
+    ],
+    "cmp_thresholds_absent_in_port": [
+     85,
+     90
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": [
+    "%s %d",
+    "Attempt to bounce own unit",
+    "Destination not accepted",
+    "Destination selected : %s %s",
+    "New destination selected : %s %s (%d chance)",
+    "Occupying unit not moving",
+    "Occupying unit unordered",
+    "Province Claimed by Ally or providing Foreign Support which we will honour",
+    "Province occupied",
+    "Selecting destination for %s",
+    "Unit already moving here",
+    "Unordered Unit, ordered to hold"
+   ]
+  },
+  {
+   "address": "0x456b50",
+   "resolved": "0x456b50",
+   "hopper_name": "sub_456b50",
+   "evidence_id": "ev_cc5e80058f6958909ce73f792f30b3db475a151a3c030c830087b320ca7e0bbe",
+   "python_ports": [
+    "bot/client/_orders.py:629:_send_gof_pass"
+   ],
+   "python_slices": [
+    "bot/client/_orders.py:173:_prepare_broadcast_nodes_for_movement",
+    "bot/client/_orders.py:196:_reset_send_gof_order_state"
+   ],
+   "pair_basis": [
+    "name:send_GOF"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 627,
+   "dossier_body_coverage": 0.864,
+   "helpers_folded": 10,
+   "size": {
+    "rea_blocks": 92,
+    "rea_insns": 542,
+    "py_branches": 95
+   },
+   "callees": {
+    "total": 27,
+    "with_python_port": 12,
+    "port_calls_them": 5,
+    "not_called_by_port": [
+     {
+      "address": "0x410cf0",
+      "python": [
+       "_destroy_candidate_tree"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x43d910",
+      "python": [
+       "_build_hold_order_seqs",
+       "_build_reach_matrices",
+       "enumerate_hold_orders"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x43dfb0",
+      "python": [
+       "compute_safe_reach"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x443ed0",
+      "python": [
+       "_send_gof"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x44a040",
+      "python": [
+       "_apply_enemy_sc_flank_denial",
+       "_populate_threat_path_scores",
+       "score_order_candidates_all_powers"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x460be0",
+      "python": [
+       "_reset_per_trial_state"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x40f470",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f5f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x41cd70",
+      "python": null,
+      "hopper_lines": 246
+     },
+     {
+      "address": "0x4340d0",
+      "python": null,
+      "hopper_lines": 2100
+     },
+     {
+      "address": "0x4418e0",
+      "python": null,
+      "hopper_lines": 440
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x457520",
+   "resolved": "0x457520",
+   "hopper_name": "sub_457520",
+   "evidence_id": "ev_c7611fe5c88bf2d7b004367a94df48e5673328f2995b4144e62abd334bb95e14",
+   "python_ports": [
+    "bot/client/_orders.py:731:_rerun_send_gof",
+    "bot/gof.py:152:_evaluate_order_proposals_and_send_gof"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:EvaluateOrderProposalsAndSendGOF"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 254,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 3,
+   "size": {
+    "rea_blocks": 70,
+    "rea_insns": 254,
+    "py_branches": 29
+   },
+   "callees": {
+    "total": 17,
+    "with_python_port": 3,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401520",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402210",
+      "python": null,
+      "hopper_lines": 40
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x40cdc0",
+      "python": null,
+      "hopper_lines": 170
+     },
+     {
+      "address": "0x40f860",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x4240d0",
+      "python": null,
+      "hopper_lines": 96
+     },
+     {
+      "address": "0x4424e0",
+      "python": null,
+      "hopper_lines": 113
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": [
+     100.0,
+     500.0
+    ]
+   },
+   "strings": []
+  },
+  {
+   "address": "0x457890",
+   "resolved": "0x457890",
+   "hopper_name": "sub_457890",
+   "evidence_id": "ev_cf2ff1df65aec506f69fad0bffb59915cbb63375a8cef9ea9977307f62b69ec9",
+   "python_ports": [],
+   "python_slices": [
+    "bot/client/_orders.py:140:_normalize_broadcast_nodes"
+   ],
+   "pair_basis": [
+    "name:BuildAndSendSUB"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 1646,
+   "dossier_body_coverage": 0.994,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 391,
+    "rea_insns": 1636,
+    "py_branches": 6
+   },
+   "callees": {
+    "total": 49,
+    "with_python_port": 10,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x410cf0",
+      "python": [
+       "_destroy_candidate_tree"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x422a90",
+      "python": [
+       "validate_and_dispatch_order"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x424490",
+      "python": [
+       "_refresh_order_table"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x424850",
+      "python": [
+       "_candidate_rank_threshold",
+       "_rank_candidates_for_power"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x443ed0",
+      "python": [
+       "_send_gof"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x44c8e0",
+      "python": [
+       "update_score_state"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x457520",
+      "python": [
+       "_evaluate_order_proposals_and_send_gof",
+       "_rerun_send_gof"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x466060",
+      "python": [
+       "get_sub_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402210",
+      "python": null,
+      "hopper_lines": 40
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x40f260",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f470",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40f7f0",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x419300",
+      "python": null,
+      "hopper_lines": 76
+     },
+     {
+      "address": "0x421570",
+      "python": null,
+      "hopper_lines": 60
+     },
+     {
+      "address": "0x4216f0",
+      "python": null,
+      "hopper_lines": 2825
+     },
+     {
+      "address": "0x422960",
+      "python": null,
+      "hopper_lines": 40
+     },
+     {
+      "address": "0x42fc40",
+      "python": null,
+      "hopper_lines": 316
+     },
+     {
+      "address": "0x430480",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x431fe0",
+      "python": null,
+      "hopper_lines": 254
+     },
+     {
+      "address": "0x4424e0",
+      "python": null,
+      "hopper_lines": 113
+     },
+     {
+      "address": "0x4559c0",
+      "python": null,
+      "hopper_lines": 1885
+     },
+     {
+      "address": "0x465cf0",
+      "python": null,
+      "hopper_lines": 56
+     },
+     {
+      "address": "0x465d90",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466c40",
+      "python": null,
+      "hopper_lines": 61
+     },
+     {
+      "address": "0x466ed0",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [
+     100.0
+    ],
+    "floats_absent_in_port": [
+     100.0
+    ],
+    "binary_cmp_thresholds": [
+     20,
+     240
+    ],
+    "cmp_thresholds_absent_in_port": [
+     20,
+     240
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x459548",
+   "resolved": "0x4592a0",
+   "hopper_name": "sub_4592a0",
+   "evidence_id": "ev_3d82ca61e45989d8974e9ed10f435ca055175be8a7c9342eecc017e3396b2cc6",
+   "python_ports": [
+    "bot/client/_orders.py:393:generate_and_submit_orders"
+   ],
+   "python_slices": [
+    "bot/client/_orders.py:95:_refresh_opening_turn_flag",
+    "bot/client/_orders.py:109:_insert_base_broadcast_node"
+   ],
+   "pair_basis": [
+    "name:GenerateAndSubmitOrders"
+   ],
+   "label_conflict": [
+    "_refresh_opening_turn_flag cites 0x45953f",
+    "generate_and_submit_orders cites 0x4592a0"
+   ],
+   "not_a_function_entry": "0x4592a0",
+   "body_insns": 734,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 8,
+   "size": {
+    "rea_blocks": 104,
+    "rea_insns": 896,
+    "py_branches": 140
+   },
+   "callees": {
+    "total": 34,
+    "with_python_port": 12,
+    "port_calls_them": 9,
+    "not_called_by_port": [
+     {
+      "address": "0x401950",
+      "python": [
+       "_destroy_inner_list"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x410cf0",
+      "python": [
+       "_destroy_candidate_tree"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x40bba0",
+      "python": null,
+      "hopper_lines": 51
+     },
+     {
+      "address": "0x40bfa0",
+      "python": null,
+      "hopper_lines": 38
+     },
+     {
+      "address": "0x40cdc0",
+      "python": null,
+      "hopper_lines": 170
+     },
+     {
+      "address": "0x419e60",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x42d0b0",
+      "python": null,
+      "hopper_lines": 4329
+     },
+     {
+      "address": "0x42db50",
+      "python": null,
+      "hopper_lines": 4497
+     },
+     {
+      "address": "0x430480",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x435210",
+      "python": null,
+      "hopper_lines": 7884
+     },
+     {
+      "address": "0x439ed0",
+      "python": null,
+      "hopper_lines": 32663
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466ed0",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x466f80",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     240
+    ],
+    "cmp_thresholds_absent_in_port": [
+     240
+    ],
+    "port_floats_absent_in_binary": [
+     100.0,
+     500.0
+    ]
+   },
+   "strings": [
+    "Initiation of Alliance Debug"
+   ]
+  },
+  {
+   "address": "0x45fc30",
+   "resolved": "0x45fc30",
+   "hopper_name": "sub_45fc30",
+   "evidence_id": "ev_e1a79ffb5702bd1edd20645df1a431ef125ab20cba8251563925784f4e21070b",
+   "python_ports": [
+    "dispatch/orders.py:99:parse_destination_with_coast"
+   ],
+   "python_slices": [
+    "moves/_constants.py:57:_unit_location_token"
+   ],
+   "pair_basis": [
+    "name:ParseDestinationWithCoast"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 38,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 3,
+    "rea_insns": 38,
+    "py_branches": 10
+   },
+   "callees": {
+    "total": 3,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": []
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x45fe30",
+   "resolved": "0x45fe30",
+   "hopper_name": "sub_45fe30",
+   "evidence_id": "ev_7a0eb646b5507b6aa81df272dcafbe61d9a32694290b26febeb114b415c3fa56",
+   "python_ports": [],
+   "python_slices": [
+    "state.py:45:_order_result_flags"
+   ],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 100,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 1,
+   "size": {
+    "rea_blocks": 27,
+    "rea_insns": 100,
+    "py_branches": 13
+   },
+   "callees": {
+    "total": 3,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": []
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     68
+    ],
+    "cmp_thresholds_absent_in_port": [
+     68
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x45ffa0",
+   "resolved": "0x45ffa0",
+   "hopper_name": "sub_45ffa0",
+   "evidence_id": "ev_1370630d35b0c36c2775bed9a187ac45ab5cb4c645cf760367ca602a2a6071f9",
+   "python_ports": [
+    "dispatch/orders.py:141:_format_order_seq",
+    "bot/orders.py:358:_target_unit_tok",
+    "bot/orders.py:845:_unit_string_at"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address",
+    "name:Format"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 77,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 1,
+    "rea_insns": 77,
+    "py_branches": 17
+   },
+   "callees": {
+    "total": 7,
+    "with_python_port": 1,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x465aa0",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466330",
+      "python": null,
+      "hopper_lines": 52
+     },
+     {
+      "address": "0x466540",
+      "python": null,
+      "hopper_lines": 25
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x460110",
+   "resolved": "0x460110",
+   "hopper_name": "sub_460110",
+   "evidence_id": "ev_fa1f646b74694968f4608480e29a4da4eff0f9a8317335461379a9877cd4ed2b",
+   "python_ports": [
+    "bot/orders.py:445:_build_retreat_order_token"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 108,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 7,
+    "rea_insns": 108,
+    "py_branches": 8
+   },
+   "callees": {
+    "total": 7,
+    "with_python_port": 2,
+    "port_calls_them": 0,
+    "not_called_by_port": [
+     {
+      "address": "0x45ffa0",
+      "python": [
+       "_format_order_seq",
+       "_target_unit_tok",
+       "_unit_string_at"
+      ],
+      "called_by_port": false
+     },
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466330",
+      "python": null,
+      "hopper_lines": 52
+     },
+     {
+      "address": "0x466480",
+      "python": null,
+      "hopper_lines": 26
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x460b30",
+   "resolved": "0x460b30",
+   "hopper_name": "sub_460b30",
+   "evidence_id": "ev_55aec743c8ea3d01bafd72ecdd1cbba5385138db40717afb4eb36ab04922d4db",
+   "python_ports": [
+    "dispatch/legality.py:19:_is_legal_mto"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 68,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 16,
+    "rea_insns": 68,
+    "py_branches": 13
+   },
+   "callees": {
+    "total": 3,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x4602f0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x460ac0",
+      "python": null,
+      "hopper_lines": 39
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x460be0",
+   "resolved": "0x460be0",
+   "hopper_name": "sub_460be0",
+   "evidence_id": "ev_4489823934394a782df288b159fd7dc462c96048618b37e2f9394945268014bf",
+   "python_ports": [
+    "monte_carlo/trial.py:1179:_reset_per_trial_state"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 99,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 24,
+    "rea_insns": 99,
+    "py_branches": 2
+   },
+   "callees": {
+    "total": 4,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x4619f0",
+   "resolved": "0x4619f0",
+   "hopper_name": "sub_4619f0",
+   "evidence_id": "ev_642d100f0bf385313fe1366eba748742156983ab2be5cb5a5aaf79fca63d3e5d",
+   "python_ports": [
+    "dispatch/legality.py:58:is_convoy_reachable"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 324,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 2,
+   "size": {
+    "rea_blocks": 67,
+    "rea_insns": 324,
+    "py_branches": 27
+   },
+   "callees": {
+    "total": 11,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x401590",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x401ff0",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402060",
+      "python": null,
+      "hopper_lines": 32
+     },
+     {
+      "address": "0x402b70",
+      "python": null,
+      "hopper_lines": 455
+     },
+     {
+      "address": "0x403430",
+      "python": null,
+      "hopper_lines": 77
+     },
+     {
+      "address": "0x404ce0",
+      "python": null,
+      "hopper_lines": 89
+     },
+     {
+      "address": "0x40f400",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x460a10",
+      "python": null,
+      "hopper_lines": 46
+     },
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x463690",
+   "resolved": "0x463690",
+   "hopper_name": "sub_463690",
+   "evidence_id": "ev_238daf4b3f82e0f3e3482aabd054165d80f9d9be0df41216095592da405e1aa8",
+   "python_ports": [
+    "bot/orders.py:279:_build_movement_order_token"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 396,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 22,
+    "rea_insns": 396,
+    "py_branches": 24
+   },
+   "callees": {
+    "total": 10,
+    "with_python_port": 2,
+    "port_calls_them": 1,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x407720",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466330",
+      "python": null,
+      "hopper_lines": 52
+     },
+     {
+      "address": "0x466480",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466c40",
+      "python": null,
+      "hopper_lines": 61
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x464460",
+   "resolved": "0x464460",
+   "hopper_name": "sub_464460",
+   "evidence_id": "ev_75c7c26af65f6134034a9c0b4248a90ed0b2ab3a018285255f1d221f94548616",
+   "python_ports": [
+    "bot/gof.py:31:_build_gof_seq"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 355,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 60,
+    "rea_insns": 355,
+    "py_branches": 11
+   },
+   "callees": {
+    "total": 15,
+    "with_python_port": 3,
+    "port_calls_them": 2,
+    "not_called_by_port": [
+     {
+      "address": "0x465fa0",
+      "python": [
+       "free_list"
+      ],
+      "called_by_port": false
+     }
+    ],
+    "nontrivial_unported": [
+     {
+      "address": "0x401390",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x40e680",
+      "python": null,
+      "hopper_lines": 43
+     },
+     {
+      "address": "0x465aa0",
+      "python": null,
+      "hopper_lines": 75
+     },
+     {
+      "address": "0x465ff0",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466330",
+      "python": null,
+      "hopper_lines": 52
+     },
+     {
+      "address": "0x466480",
+      "python": null,
+      "hopper_lines": 26
+     },
+     {
+      "address": "0x466540",
+      "python": null,
+      "hopper_lines": 25
+     },
+     {
+      "address": "0x466c40",
+      "python": null,
+      "hopper_lines": 61
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x465fa0",
+   "resolved": "0x465fa0",
+   "hopper_name": "sub_465fa0",
+   "evidence_id": "ev_20949d3335972873c69c1f6b34db415bd63b9b59117e98a8edf46bb1a591a2d1",
+   "python_ports": [
+    "bot/strategy.py:132:free_list"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 27,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 5,
+    "rea_insns": 27,
+    "py_branches": 3
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x47c8f9",
+      "python": null,
+      "hopper_lines": 42
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x466060",
+   "resolved": "0x466060",
+   "hopper_name": "sub_466060",
+   "evidence_id": "ev_7768890e89c7201ebccc6d5ed50ef4b880b4192981e816fdef06fdbd705bf126",
+   "python_ports": [
+    "bot/orders.py:749:get_sub_list"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "name:GetSubList"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 62,
+   "dossier_body_coverage": 1.0,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 9,
+    "rea_insns": 62,
+    "py_branches": 11
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x465940",
+      "python": null,
+      "hopper_lines": 100
+     },
+     {
+      "address": "0x465c70",
+      "python": null,
+      "hopper_lines": 30
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [],
+    "cmp_thresholds_absent_in_port": [],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  },
+  {
+   "address": "0x47b370",
+   "resolved": "0x47b370",
+   "hopper_name": "sub_47b370",
+   "evidence_id": "ev_b530777ae113f0ec2f0e95ffb9b9b6ed8dc51ef4eb2b1b95e69d883598fb0d6c",
+   "python_ports": [
+    "heuristics/_primitives.py:265:_safe_pow"
+   ],
+   "python_slices": [],
+   "pair_basis": [
+    "address"
+   ],
+   "label_conflict": [],
+   "not_a_function_entry": null,
+   "body_insns": 33,
+   "dossier_body_coverage": 0.697,
+   "helpers_folded": 0,
+   "size": {
+    "rea_blocks": 6,
+    "rea_insns": 23,
+    "py_branches": 2
+   },
+   "callees": {
+    "total": 2,
+    "with_python_port": 0,
+    "port_calls_them": 0,
+    "not_called_by_port": [],
+    "nontrivial_unported": [
+     {
+      "address": "0x47b3cd",
+      "python": null,
+      "hopper_lines": 518
+     },
+     {
+      "address": "0x483d69",
+      "python": null,
+      "hopper_lines": 1267
+     }
+    ]
+   },
+   "constants": {
+    "binary_floats": [],
+    "floats_absent_in_port": [],
+    "binary_cmp_thresholds": [
+     127,
+     8064
+    ],
+    "cmp_thresholds_absent_in_port": [
+     127,
+     8064
+    ],
+    "port_floats_absent_in_binary": []
+   },
+   "strings": []
+  }
+ ],
+ "unpaired_python": [
+  "heuristics/_primitives.py:278:_float_to_int64",
+  "heuristics/_primitives.py:292:_signed_int_div",
+  "heuristics/_primitives.py:308:_signed_divide_array",
+  "heuristics/_primitives.py:321:_trusted_foreign_sc_mask",
+  "heuristics/_primitives.py:511:_apply_controlled_sc_pressure_phase",
+  "heuristics/_primitives.py:596:_apply_alliance_province_phase",
+  "heuristics/_primitives.py:687:_apply_alliance_seasonal_phase",
+  "heuristics/_primitives.py:44:target_province",
+  "heuristics/_primitives.py:49:coast_short",
+  "heuristics/_primitives.py:152:normalize_type",
+  "heuristics/_primitives.py:155:normalize_coast",
+  "heuristics/_primitives.py:158:unit_matches",
+  "heuristics/_primitives.py:1685:_candidate_vector",
+  "heuristics/board.py:19:_fear_weighted_threshold",
+  "heuristics/board.py:202:_apply_validated_top3_gang_up",
+  "heuristics/board.py:155:_hostile",
+  "heuristics/board.py:161:_good_ally",
+  "heuristics/board.py:166:_candidate_works",
+  "heuristics/board.py:177:_try_side",
+  "heuristics/board.py:219:_hostile",
+  "heuristics/board.py:225:_mark",
+  "heuristics/board.py:289:_mark",
+  "heuristics/board.py:866:_peace_signal_from",
+  "heuristics/board.py:872:_neutral",
+  "heuristics/board.py:1121:_mark_branch4_enemy",
+  "heuristics/influence.py:22:_runtime_province_count",
+  "heuristics/influence.py:33:_populate_contact_matrices",
+  "heuristics/influence.py:57:_populate_influence_ratio",
+  "heuristics/influence.py:83:_apply_heat_nodes",
+  "heuristics/influence.py:106:_compute_apply_heat_score",
+  "heuristics/influence.py:222:_populate_unit_adjacency_count",
+  "heuristics/influence.py:249:_max_pair_support_score",
+  "heuristics/influence.py:266:_is_append_order_province",
+  "heuristics/influence.py:282:_populate_global_province_score",
+  "heuristics/influence.py:585:update_relation_history",
+  "heuristics/influence.py:675:normalize_influence_matrix",
+  "heuristics/scoring.py:38:_seed_and_fold_coasts",
+  "heuristics/scoring.py:1457:bfs_province_for_token",
+  "heuristics/scoring.py:1245:keeps_round9",
+  "heuristics/snapshot.py:23:snapshot_province_state",
+  "heuristics/snapshot.py:187:_adjs",
+  "heuristics/strategy.py:336:_legacy_generate_self_proposals",
+  "heuristics/strategy.py:44:_new_meta",
+  "heuristics/strategy.py:65:_normalise_unit",
+  "heuristics/strategy.py:73:_typed_adjacencies",
+  "heuristics/strategy.py:78:_is_non_water",
+  "heuristics/win.py:109:populate_build_candidates",
+  "heuristics/win.py:174:populate_remove_candidates",
+  "moves/convoy.py:47:_filtered_adj",
+  "moves/convoy.py:58:_harmonic_dist_weight",
+  "moves/convoy.py:71:_topology_base_provinces",
+  "moves/convoy.py:84:_fleet_tokens_for_province",
+  "moves/convoy.py:103:_fleet_state_adjacencies",
+  "moves/convoy.py:132:_convoy_dist_weight",
+  "moves/convoy.py:137:enumerate_convoy_reach",
+  "moves/convoy.py:364:register_convoy_fleet",
+  "moves/convoy.py:446:_get_convoy_route",
+  "moves/convoy.py:167:ensure_outer",
+  "moves/convoy.py:176:insert",
+  "moves/hold.py:42:_find_or_insert",
+  "moves/hold.py:54:_get_ally_trust_for_adj",
+  "moves/hold.py:95:_typed_unit_adjacencies",
+  "moves/support.py:598:build_order_sup_mto",
+  "moves/support.py:771:build_order_sup_hld",
+  "monte_carlo/adjudicator.py:663:adjudicate_movement",
+  "monte_carlo/adjudicator.py:48:__init__",
+  "monte_carlo/adjudicator.py:77:__init__",
+  "monte_carlo/adjudicator.py:90:run",
+  "monte_carlo/adjudicator.py:123:_initialise",
+  "monte_carlo/adjudicator.py:143:_cancel_inconsistent_convoys",
+  "monte_carlo/adjudicator.py:167:_cancel_inconsistent_supports",
+  "monte_carlo/adjudicator.py:189:_direct_attacks_cut_support",
+  "monte_carlo/adjudicator.py:204:_build_support_chains",
+  "monte_carlo/adjudicator.py:219:_build_convoy_subversion",
+  "monte_carlo/adjudicator.py:243:_strongest",
+  "monte_carlo/adjudicator.py:260:_attack_winner",
+  "monte_carlo/adjudicator.py:271:_empty_province_winner",
+  "monte_carlo/adjudicator.py:275:_circle_status",
+  "monte_carlo/adjudicator.py:286:_fail",
+  "monte_carlo/adjudicator.py:292:_move_succeeds",
+  "monte_carlo/adjudicator.py:299:_standoff",
+  "monte_carlo/adjudicator.py:304:_move_fails",
+  "monte_carlo/adjudicator.py:312:_cut_support_at",
+  "monte_carlo/adjudicator.py:325:_dislodge",
+  "monte_carlo/adjudicator.py:330:_break_convoy",
+  "monte_carlo/adjudicator.py:340:_next_subversion_key",
+  "monte_carlo/adjudicator.py:345:_resolve_unsubverted_convoys",
+  "monte_carlo/adjudicator.py:376:_supported_reference",
+  "monte_carlo/adjudicator.py:387:_check_futile_convoys",
+  "monte_carlo/adjudicator.py:430:_check_indomitable_convoys",
+  "monte_carlo/adjudicator.py:471:_resolve_circles_of_subversion",
+  "monte_carlo/adjudicator.py:506:_classify_moves",
+  "monte_carlo/adjudicator.py:548:_resolve_circles_of_movement",
+  "monte_carlo/adjudicator.py:596:_resolve_strong_head_to_heads",
+  "monte_carlo/adjudicator.py:621:_resolve_equal_head_to_heads",
+  "monte_carlo/adjudicator.py:640:_resolve_attacks_on",
+  "monte_carlo/adjudicator.py:569:step",
+  "monte_carlo/evaluation.py:26:_float32",
+  "monte_carlo/evaluation.py:47:snapshot_order_entry",
+  "monte_carlo/evaluation.py:66:restore_order_entry",
+  "monte_carlo/evaluation.py:104:candidate_orders_key",
+  "monte_carlo/evaluation.py:120:candidate_record_key",
+  "monte_carlo/trial.py:66:_live_unit_adjacencies",
+  "monte_carlo/trial.py:81:trial_evaluate_orders",
+  "monte_carlo/trial.py:552:_post_phase_move_support_allowed",
+  "monte_carlo/trial.py:872:_remove_first_convoy_candidate",
+  "monte_carlo/trial.py:887:_insert_order_candidate",
+  "monte_carlo/trial.py:1031:_apply_proposal_support_candidate",
+  "monte_carlo/trial.py:2517:_variant_base",
+  "monte_carlo/trial.py:3280:check_time_limit",
+  "monte_carlo/trial.py:108:read_slot",
+  "monte_carlo/trial.py:307:add_record",
+  "monte_carlo/trial.py:922:designation",
+  "monte_carlo/trial.py:927:trust_for",
+  "monte_carlo/trial.py:1206:_build_order_hld",
+  "monte_carlo/trial.py:1237:_build_order_mto",
+  "monte_carlo/trial.py:2540:base",
+  "monte_carlo/trial.py:2643:adjacencies",
+  "monte_carlo/trial.py:3170:_passes_sc_gate",
+  "monte_carlo/trial.py:2676:add",
+  "dispatch/orders.py:64:_destination_score",
+  "dispatch/validator.py:91:destination_parts",
+  "bot/analysis.py:110:_move_analysis_unit_adjacencies",
+  "bot/analysis.py:132:_build_move_pressure_matrices",
+  "bot/analysis.py:221:_move_analysis",
+  "bot/analysis.py:424:_cleanup_turn",
+  "bot/analysis.py:784:_game_phase",
+  "bot/analysis.py:792:_game_status",
+  "bot/analysis.py:322:_split_lt",
+  "bot/client/_orders.py:83:_begin_turn_timing",
+  "bot/client/_orders.py:742:_validate_orders",
+  "bot/client/_orders.py:778:_submit_adjustment_orders",
+  "bot/orders.py:33:_refresh_order_dip_owner",
+  "bot/orders.py:522:_populate_retreat_orders",
+  "bot/orders.py:715:_format_retreat_commands",
+  "bot/orders.py:823:_build_order_seq_from_table",
+  "bot/strategy.py:38:_rand_stride",
+  "bot/strategy.py:48:_int64_words",
+  "bot/strategy.py:58:_stab_ally_slot_remove",
+  "bot/strategy.py:84:_get_best_ally_slots",
+  "bot/strategy.py:91:_set_best_ally_slots",
+  "bot/strategy.py:204:_stab_clear_ally_list",
+  "bot/strategy.py:308:_in_list",
+  "bot/strategy.py:456:_positive_trust",
+  "bot/strategy.py:461:_exact_snapshot",
+  "bot/strategy.py:470:_spr_designates",
+  "bot/strategy.py:476:_sum_designates",
+  "bot/strategy.py:482:_protected",
+  "state.py:17:_albert_province_order",
+  "state.py:72:_parse_retreat_order",
+  "state.py:108:_parse_movement_order",
+  "state.py:29:key",
+  "state.py:240:__init__",
+  "state.py:1357:synchronize_from_game",
+  "state.py:1815:get_unit_type",
+  "state.py:1818:has_unit",
+  "state.py:1821:has_own_unit",
+  "state.py:1824:get_unit_power",
+  "state.py:1827:get_unit_adjacencies",
+  "state.py:1830:get_adjacent_provinces",
+  "state.py:1834:get_power_units",
+  "state.py:1838:get_unit_owner",
+  "state.py:1842:get_power_rec",
+  "state.py:1856:can_reach",
+  "state.py:1859:can_reach_by_type",
+  "state.py:1912:get_reachable_edges",
+  "state.py:1953:resolve_fleet_coast",
+  "state.py:2023:candidate_set_contains",
+  "state.py:2026:fss",
+  "state.py:2037:key_weight",
+  "state.py:2048:get_candidate_score",
+  "state.py:2051:get_enemy_reach",
+  "state.py:2054:get_trial_order_table",
+  "state.py:1744:_phase_results",
+  "state.py:1767:_load",
+  "rng.py:19:seed",
+  "rng.py:25:getstate",
+  "rng.py:30:setstate",
+  "rng.py:35:raw_rand",
+  "rng.py:42:randrange",
+  "rng.py:50:randint"
+ ]
+}

@@ -1,0 +1,15 @@
+// sub_483ca5 @ 0x483ca5
+// hopper name: sub_483ca5
+// referenced by: called
+// source: REA batch_decompile (Hopper) evidence ev_90494415b61eb82ac839c6366207db207de74b6d5171126d2db053d56f8875a3
+// binary: Albert.exe sha256 449dec83b23974401cd47afa83532c3e3747681d24a4c96f780d5afd985e4dfb
+
+sub_483ca5() {
+    decomp_var_4 = esi;
+    esp = (esp - 0x10) + 0xc;
+    if (sub_48cb38(0x0, 0x10000, 0x30000) != 0x0) {
+            sub_47a828();
+            esp = (esp - 0x14) + 0x14;
+    }
+    return;
+}

@@ -171,6 +171,23 @@ def _build_position_urgency(state: InnerGameState) -> np.ndarray:
     return urgency
 
 
+def _top_share_mean(ratios: list) -> float:
+    """InitScoringState's per-pair urgency average, Albert.exe 0x445a0f-0x445ab0.
+
+    Ratios go into an RB-tree via FUN_0041a180, whose comparator descends
+    (a new key goes left of a smaller node; equal keys go after existing
+    ones).  Then k = FloatToInt64(n * 0.7), with k = 1 if that is 0, and the
+    first k nodes (the largest ratios) are summed in float32 and divided by
+    (float)k.  Ghidra hid the `n * 0.7` operand of FloatToInt64.
+    """
+    ordered = sorted(ratios, key=lambda r: -float(r))   # stable: equal keys keep insertion order
+    k = int(len(ordered) * 0.7) or 1
+    total = np.float32(0.0)
+    for r in ordered[:k]:
+        total = np.float32(total + np.float32(r))
+    return float(np.float32(total / np.float32(k)))
+
+
 def _init_scoring_state(state: InnerGameState) -> None:
     """
     Port of InitScoringState (Source/heuristics/InitScoringState.c).
@@ -229,8 +246,7 @@ def _init_scoring_state(state: InnerGameState) -> None:
     # ── Step 3a: DAT_00624810 — avg urgency ratio per power pair ──────────────
     # For each (outer, inner) pair: gather build_urgency[outer,p]/build_urgency[inner,p]
     # over SCs p controlled by inner and build_urgency[inner,p] > 0, then
-    # average.  C uses a sorted-insert path (FUN_0041a180) and divides by count;
-    # simple mean is equivalent.
+    # average the largest 70% (see _top_share_mean; InitScoringState 0x445a0f).
     g_urgency_avg = np.zeros((num_powers, num_powers), dtype=np.float64)
     for outer in range(num_powers):
         for inner in range(num_powers):
@@ -243,9 +259,9 @@ def _init_scoring_state(state: InnerGameState) -> None:
                 u_inner = build_urgency[inner, prov]
                 if u_inner <= 0.0:
                     continue
-                ratios.append(build_urgency[outer, prov] / u_inner)
+                ratios.append(np.float32(np.float32(build_urgency[outer, prov]) / np.float32(u_inner)))
             if ratios:
-                g_urgency_avg[outer, inner] = float(np.mean(ratios))
+                g_urgency_avg[outer, inner] = _top_share_mean(ratios)
 
     # ── Step 3b: DAT_006239e8 — ratio-of-ratios (InitScoringState.c:306–333) ─
     # g_urgency_ratio[outer, inner] = g_urgency_avg[outer, inner] / g_urgency_avg[inner, outer]

@@ -479,6 +479,16 @@ def score_order_candidates_all_powers(state: InnerGameState, round_weights: list
 
 # ── ScoreProvinces ────────────────────────────────────────────────────────────
 
+def _influence_blend(state: InnerGameState, row: int, col: int) -> float:
+    """ScoreProvinces' 6:1 influence blend, Albert.exe 0x448fe2-0x448ffc.
+
+        fld A[i] ; fmul 6.0 ; fld 7.0 ; fdiv st1,st0 ; fdivr B[i] ; faddp
+    A = DAT_00b82db8 (NormalizeInfluenceMatrix), B = DAT_00b84948 (GenerateOrders).
+    """
+    return (float(state.g_influence_matrix_norm[row, col]) * 6.0 / 7.0
+            + float(state.g_influence_matrix_b[row, col]) / 7.0)
+
+
 def score_provinces(state: InnerGameState,
                     move_weight: float,
                     build_weight: float,
@@ -1108,9 +1118,15 @@ def score_provinces(state: InnerGameState,
                             and not uncertain):
                         pending = 5.0
                     else:
-                        # C: PackScoreU64 rounds ST0 (= current pending float)
-                        # to int64 via banker's rounding (ScoreProvinces.c:1174-1176).
-                        pending = float(_float_to_int64(pending))
+                        # Albert.exe 0x448fe2-0x449011: ST0 is not just
+                        # `pending` — it is pending + A*6/7 + B/7, with
+                        # A = DAT_00b82db8 (NormalizeInfluenceMatrix) and
+                        # B = DAT_00b84948 (GenerateOrders), both indexed
+                        # [outer_power, effective_power]; 6.0 @ 0x4afa20,
+                        # 7.0 @ 0x4afd80.  Ghidra hid the x87 operands.
+                        pending = float(_float_to_int64(
+                            pending + _influence_blend(state, outer_power, effective_power)
+                        ))
                     # C:1188/1194 re-reads the +0x20 SCO controller token.
                     owner_scs = int(state.sc_count[controller])
                     wt = int(getattr(state, 'win_threshold', 18)) or 18
